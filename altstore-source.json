@@ -18,6 +18,15 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "2.18.3",
+          "buildVersion": "72",
+          "date": "2026-06-14",
+          "localizedDescription": "Workouts header layout fix",
+          "downloadURL": "https://github.com/NoopApp/noop/releases/download/v2.18.3/NOOP-v2.18.3-ios.ipa",
+          "size": 6599824,
+          "minOSVersion": "17.0"
+        },
+        {
           "version": "2.18.2",
           "buildVersion": "71",
           "date": "2026-06-14",
@@ -370,12 +379,12 @@
           "NSHealthUpdateUsageDescription": "NOOP writes the metrics it computes from your strap back into Apple Health, on-device and only when you allow it."
         }
       },
-      "version": "2.18.2",
-      "buildVersion": "71",
+      "version": "2.18.3",
+      "buildVersion": "72",
       "versionDate": "2026-06-14",
-      "versionDescription": "Times follow your 12-/24-hour setting",
-      "downloadURL": "https://github.com/NoopApp/noop/releases/download/v2.18.2/NOOP-v2.18.2-ios.ipa",
-      "size": 6594449,
+      "versionDescription": "Workouts header layout fix",
+      "downloadURL": "https://github.com/NoopApp/noop/releases/download/v2.18.3/NOOP-v2.18.3-ios.ipa",
+      "size": 6599824,
       "minOSVersion": "17.0"
     }
   ],
