@@ -823,15 +823,25 @@ struct TodayView: View {
                 status: calibrationStatus ?? "\(hrvInsightStatus(d, score: score))",
                 detail: calibrationDetail ?? "\(hrvInsightDetail(d, score: score))",
                 statusColor: score.map { StrandPalette.recoveryColor($0) } ?? StrandPalette.textTertiary,
-                tint: StrandPalette.chargeColor
+                tint: StrandPalette.chargeColor,
+                // Reserve room on the overline + status rows for the greeting + state-pill overlay
+                // below, so they don't collide on a narrow iPhone (#69).
+                titleTrailingInset: 188
             )
             .overlay(alignment: .topTrailing) {
+                // Greeting + data-confidence pill sit in the card's top-right. Cap the cluster's
+                // width and let the greeting scale-to-fit (rather than wrap) so on a narrow iPhone
+                // it stays a tidy single line in the corner and never crowds the card's own
+                // "Synthesis" overline / large status word (#69). Right-aligned so it hugs the edge.
                 HStack(spacing: 8) {
                     Text(greetingWord)
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     recoveryStatePill(score: score)
                 }
+                .frame(maxWidth: 220, alignment: .trailing)
                 .padding(18)
             }
 

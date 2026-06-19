@@ -17,6 +17,11 @@ approximate; downloads are on the [Releases](https://noop.fans/NoopApp/noop/rele
 
 ---
 
+## 5.2.4 — Today-card tidy-up + OnePlus pairing fix
+
+- **Fixed (iPhone & Mac):** the greeting and status word on the Today "Synthesis" card could crowd together on smaller iPhones — "Good evening" and the recovery/calibration pill now sit cleanly in the corner without colliding with the card's headline. (#69)
+- **Fixed (Android):** WHOOP 4.0 pairing could loop forever on some OnePlus phones (Android 13). Their Bluetooth stack fires the MTU/connection-setup callback twice with the same value, which wedged the CCCD subscription so the secure handshake never finished. NOOP now ignores the duplicate callback and gives the stack a brief settle before subscribing, so pairing completes. (#50 — thanks @aldomurph for the rigorous logs.)
+
 ## 5.2.3 — WHOOP 5/MG connection fix (iPhone & Mac)
 
 A focused fix for a WHOOP 5.0/MG connection loop, diagnosed from a community strap log (#74).

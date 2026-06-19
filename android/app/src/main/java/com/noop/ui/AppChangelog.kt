@@ -25,7 +25,7 @@ object AppChangelog {
      * Bump this when you add a release below. The "What's New" sheet shows automatically when the
      * stored last-seen version is behind this. (Decoupled from the bundle version on purpose.)
      */
-    const val CURRENT_VERSION = "5.2.2"
+    const val CURRENT_VERSION = "5.2.4"
 
     data class Release(
         val version: String,
@@ -36,6 +36,13 @@ object AppChangelog {
 
     /** Newest first. */
     val releases: List<Release> = listOf(
+        Release(
+            version = "5.2.4",
+            title = "OnePlus pairing fix",
+            date = "June 2026",
+            items = listOf(
+                "**Fixed: WHOOP 4.0 pairing could get stuck in a loop on some OnePlus phones.** Their Bluetooth fires the connection setup twice in a row, which wedged the secure handshake — NOOP now ignores the duplicate and gives the link a moment to settle, so pairing completes. (#50)",
+            )),
         Release(
             version = "5.2.2",
             title = "Security & reliability hardening",

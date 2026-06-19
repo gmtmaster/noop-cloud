@@ -246,8 +246,12 @@ public struct InsightCard: View {
     let category: LocalizedStringKey, status: LocalizedStringKey, detail: LocalizedStringKey
     var statusColor: Color = StrandPalette.accent
     var tint: Color? = nil
-    public init(category: LocalizedStringKey, status: LocalizedStringKey, detail: LocalizedStringKey, statusColor: Color = StrandPalette.accent, tint: Color? = nil) {
-        self.category = category; self.status = status; self.detail = detail; self.statusColor = statusColor; self.tint = tint
+    /// Extra trailing inset reserved on the overline + status rows so a caller's
+    /// `.overlay(alignment: .topTrailing)` (greeting + state pill) doesn't run over the
+    /// card's own title text on a narrow screen (#69). Defaults to 0 — no effect unless set.
+    var titleTrailingInset: CGFloat = 0
+    public init(category: LocalizedStringKey, status: LocalizedStringKey, detail: LocalizedStringKey, statusColor: Color = StrandPalette.accent, tint: Color? = nil, titleTrailingInset: CGFloat = 0) {
+        self.category = category; self.status = status; self.detail = detail; self.statusColor = statusColor; self.tint = tint; self.titleTrailingInset = titleTrailingInset
     }
     public var body: some View {
         // Defaults the card wash to the status colour so the coaching card sits in the
@@ -258,8 +262,13 @@ public struct InsightCard: View {
         let shape = RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous)
         return NoopCard(padding: 18, tint: hue) {
             VStack(alignment: .leading, spacing: 8) {
+                // The overline + large status share a row with any top-trailing overlay, so they
+                // carry the trailing inset; the detail paragraph runs full width below the pill.
                 Text(category).strandOverline()
+                    .padding(.trailing, titleTrailingInset)
                 Text(status).font(StrandFont.rounded(28, weight: .bold)).foregroundStyle(statusColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.trailing, titleTrailingInset)
                 Text(detail).font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

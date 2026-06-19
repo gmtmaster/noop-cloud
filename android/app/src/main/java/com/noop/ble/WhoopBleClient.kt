@@ -431,6 +431,14 @@ class WhoopBleClient(
          *  Nord 2 wedged the post-discovery bond/CCCD phase, which had no timeout). 7s comfortably
          *  spans the MTU exchange → discovery → CCCD drain → confirmed bond write on a healthy link. */
         private const val BOND_WATCHDOG_MS = 7_000L
+        /** OnePlus-only settle delay before the FIRST CCCD descriptor write after service discovery
+         *  (#50). The OnePlus Nord 2 GATT stack needs a beat to settle post-discovery; writing the first
+         *  descriptor immediately races the still-unsettled stack and the subscribe returns BUSY. ~450ms
+         *  is well within the 7s bond watchdog, so it can't cause a bounce. */
+        private const val ONEPLUS_CCCD_SETTLE_MS = 450L
+        /** Dedup window for a spurious duplicate onMtuChanged (#50): a second callback with the SAME mtu
+         *  arriving within this of the first is the OnePlus double-MTU bug and is ignored. */
+        private const val DUPLICATE_MTU_WINDOW_MS = 1_000L
 
         /** ATT error codes the GATT stack surfaces as `status` when a strap refuses the encrypted bond —
          *  the Android analogue of CoreBluetooth's "Encryption/Authentication is insufficient" error the
@@ -1997,6 +2005,15 @@ class WhoopBleClient(
      *  the fallback can race — compareAndSet makes the once-only claim atomic. (PR #85) */
     private val serviceDiscoveryKicked = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** Last MTU value reported by onMtuChanged and when (System.currentTimeMillis), to dedupe a
+     *  spurious double callback. The OnePlus Nord 2 BT stack fires onMtuChanged TWICE in quick
+     *  succession with the SAME mtu/status (#50): the second one re-enters service discovery / corrupts
+     *  GATT state, so every subsequent CCCD descriptor write returns BUSY forever and the WHOOP 4.0 bond
+     *  never completes (stuck "finishing the secure handshake"). A same-value MTU re-callback is always
+     *  spurious on any device, so this dedup is safe to apply unconditionally — not OnePlus-gated. */
+    private var lastMtuValue = -1
+    private var lastMtuAtMs = 0L
+
     /** Start service discovery exactly once per connection, whichever path (onMtuChanged or the
      *  fallback timeout) reaches here first. Idempotent via [serviceDiscoveryKicked]. */
     @SuppressLint("MissingPermission")
@@ -2109,6 +2126,19 @@ class WhoopBleClient(
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            // Dedupe the OnePlus double-MTU GATT bug (#50): the OnePlus Nord 2 stack fires onMtuChanged
+            // TWICE in quick succession with the SAME mtu/status. The second, spurious callback re-enters
+            // service discovery / corrupts GATT state, so every subsequent CCCD descriptor write returns
+            // BUSY forever and the WHOOP 4.0 bond never completes ("finishing the secure handshake"). A
+            // same-value MTU re-callback within the window is always spurious, so this is safe on every
+            // device (not OnePlus-gated).
+            val now = System.currentTimeMillis()
+            if (now - lastMtuAtMs < DUPLICATE_MTU_WINDOW_MS && mtu == lastMtuValue) {
+                log("Ignoring duplicate MTU callback (mtu=$mtu) — OnePlus/spurious")
+                return
+            }
+            lastMtuValue = mtu
+            lastMtuAtMs = now
             // Whatever the strap granted (≤ requested). Log it, then discover. kickServiceDiscovery is
             // idempotent, so a late callback after the fallback timeout already fired is a no-op. (PR #85)
             log("MTU negotiated: $mtu (status=$status)")
@@ -2172,7 +2202,19 @@ class WhoopBleClient(
 
             // Enable notifications one at a time. When the queue is fully drained, startSession() fires
             // the first command (bond / CLIENT_HELLO) — never racing the descriptor writes.
-            drainCccdQueue(g)
+            //
+            // OnePlus double-MTU GATT bug settle (#50): on the OnePlus Nord 2, the stack is still
+            // unsettled immediately after service discovery — the first CCCD descriptor write races it
+            // and comes back BUSY (then every subscribe wedges and the WHOOP 4.0 bond never completes).
+            // Give it a short beat to settle before the first write. The delay (~450ms) is well inside
+            // the bond watchdog, so it can't cause a bounce; cancelled in reset/teardown like every other
+            // posted runnable. Other devices drain immediately (unchanged behaviour).
+            if (Build.MANUFACTURER.equals("OnePlus", ignoreCase = true)) {
+                log("OnePlus detected — settling ${ONEPLUS_CCCD_SETTLE_MS}ms before first CCCD write (#50)")
+                handler.postDelayed({ gatt?.let { drainCccdQueue(it) } }, ONEPLUS_CCCD_SETTLE_MS)
+            } else {
+                drainCccdQueue(g)
+            }
         }
 
         override fun onCharacteristicWrite(
@@ -3758,6 +3800,10 @@ class WhoopBleClient(
         cccdInFlight = false
         cccdRetries = 0
         sessionStarted = false
+        // Clear the onMtuChanged dedup (#50) so the first MTU callback of the NEXT connection — even to
+        // the same strap with the same granted mtu — is never mistaken for a duplicate of the last one.
+        lastMtuValue = -1
+        lastMtuAtMs = 0L
         // The strap forgets the realtime-HR toggle across a disconnect; the post-bond branch re-arms it
         // from [wantsRealtime]. Clear only the "what we last sent" flag — the screen/preference WANTS
         // ([screenWantsRealtime]/[keepStreamForData]/[wantsRealtime]) are intent and must survive a
