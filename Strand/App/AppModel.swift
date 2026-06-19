@@ -511,7 +511,7 @@ final class AppModel: ObservableObject {
     /// connect to the chosen strap targets the right family. All via existing public methods.
     func presentWhoopScan(model: WhoopModel) {
         UserDefaults.standard.set(model.rawValue, forKey: "selectedWhoopModel")
-        ble.prepareForModelSwitch()           // idle the engine + clear sticky bond
+        ble.prepareForPresentScan(model: model) // idle for a family switch, but KEEP a live same-family bond (#74)
         ble.connect(model: model)             // select the family (sets engine selectedModel + framing)
         ble.scanForWhoops()                   // take over the central, present nearby straps only
     }

@@ -17,6 +17,14 @@ approximate; downloads are on the [Releases](https://noop.fans/NoopApp/noop/rele
 
 ---
 
+## 5.2.3 — WHOOP 5/MG connection fix (iPhone & Mac)
+
+A focused fix for a WHOOP 5.0/MG connection loop, diagnosed from a community strap log (#74).
+
+- **Fixed (WHOOP 5/MG):** opening **Add a WHOOP** while a 5/MG was connected and streaming tore down the live connection (`prepareForModelSwitch` → intentional disconnect), and the strap could then loop on "connecting" instead of re-bonding — also silencing haptics. NOOP now **keeps a live same-family connection** while presenting the scan; a genuine family switch (or nothing connected) still idles the engine first. (iPhone & Mac — shared Swift BLE engine.)
+- **Fixed:** the "bond refused — likely still paired to the WHOOP app" hint no longer fires when NOOP **already bonded to that exact strap this session** (a transient reconnect race) — it recovers quietly via the #52 stale-pin handoff instead of showing misleading pairing-mode guidance.
+- Note: this is an Apple-only build; the Android BLE path is separate and is being checked for the same pattern.
+
 ## 5.2.2 — security & reliability hardening (all platforms)
 
 A security-focused patch. No behaviour changes for normal use; these harden the import path and the build supply chain.

@@ -628,6 +628,21 @@ public final class BLEManager: NSObject, ObservableObject {
         state.encryptedBond = false
     }
 
+    /// Idle the engine before presenting an Add-a-WHOOP scan — but ONLY when we're not already
+    /// connected to a strap of this same family. Opening the scan must NOT tear down a live, bonded
+    /// same-family connection: a WHOOP 5/MG that just bonded refuses the encrypted re-bond on the
+    /// reconnect ("Encryption/Authentication is insufficient") and loops forever (#74). A genuine
+    /// family switch (e.g. a connected 4.0 while scanning for a 5/MG, or nothing connected) still
+    /// idles via `prepareForModelSwitch()` so the scan starts clean. `connect()` reuses the live
+    /// same-family peripheral on its "Already connected — refreshing" path.
+    public func prepareForPresentScan(model: WhoopModel) {
+        if state.connected, selectedModel.deviceFamily == model.deviceFamily {
+            log("Add-a-WHOOP scan: keeping the live \(selectedModel.displayName) connection (#74) — presenting nearby straps without dropping it")
+            return
+        }
+        prepareForModelSwitch()
+    }
+
     // MARK: Multi-WHOOP (additive — inert on the single-WHOOP path)
 
     /// Pin connections to ONE specific strap by its CBPeripheral.identifier.uuidString. The app sets
@@ -2229,8 +2244,16 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             // "Encryption/Authentication is insufficient" and the link never authenticates. Surface
             // actionable pairing-mode guidance instead of failing silently (issue #17).
             if selectedModel.deviceFamily == .whoop5, !didBond, insufficient {
-                state.pairingHint = "Close the official WHOOP app (or turn its phone's Bluetooth off), put the strap in pairing mode (on a 5.0/MG, tap the band repeatedly until the LEDs flash blue), then reconnect."
-                log("WHOOP 5/MG: bond refused — the strap is likely still paired to the WHOOP app. Put it in pairing mode (blue LEDs) with the WHOOP app closed, then reconnect.")
+                // #74: if we already bonded to THIS exact strap this session, the refusal is a
+                // transient reconnect race (the link was just torn down), NOT the WHOOP app holding
+                // the pairing — don't show the misleading pairing-mode guidance. The stale-pin
+                // recovery below (#52) re-adopts the working strap.
+                if lastBondedPeripheralUUID == peripheral.identifier {
+                    log("WHOOP 5/MG: re-bond on a strap we already bonded to this session was refused — transient reconnect race, recovering without the pairing-mode prompt.")
+                } else {
+                    state.pairingHint = "Close the official WHOOP app (or turn its phone's Bluetooth off), put the strap in pairing mode (on a 5.0/MG, tap the band repeatedly until the LEDs flash blue), then reconnect."
+                    log("WHOOP 5/MG: bond refused — the strap is likely still paired to the WHOOP app. Put it in pairing mode (blue LEDs) with the WHOOP app closed, then reconnect.")
+                }
             }
             // Multi-WHOOP stale-pin recovery (#52). When a stale registry pin points at a strap that keeps
             // refusing the encrypted bond ("Encryption/Authentication is insufficient") but a DIFFERENT
