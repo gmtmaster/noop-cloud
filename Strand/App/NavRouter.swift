@@ -32,6 +32,13 @@ final class NavRouter: ObservableObject {
     /// active shell (macOS sidebar / iOS tab) reacts and routes itself, then resets this to nil.
     @Published var requestedDestination: Destination?
 
+    /// Set when a screen's top-bar "+" asks the shell to open the quick-action sheet (the sheet lives
+    /// in the iOS shell). The shell presents it, then resets this to false.
+    @Published var quickActionsRequested = false
+
+    /// Ask the shell to open the quick-action sheet (Live HR · workout · journal · breathe).
+    func requestQuickActions() { quickActionsRequested = true }
+
     /// Ask the shell to open the Devices manager (pair / switch bands). The shell decides how.
     func openDevices() { requestedDestination = .devices }
     /// Open the v5 Insights hub (the n-of-1 "what moves your Charge" surface).

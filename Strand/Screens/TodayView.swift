@@ -26,6 +26,7 @@ struct TodayView: View {
     @EnvironmentObject var repo: Repository
     @EnvironmentObject var live: LiveState
     @EnvironmentObject var profile: ProfileStore
+    @EnvironmentObject var router: NavRouter
 
     // Imperial/Metric display preference (D#103). Only the Weight tile carries a convertible unit here.
     @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
@@ -307,6 +308,21 @@ struct TodayView: View {
                 .accessibilityLabel("Profile and settings")
                 Spacer()
                 StrapBatteryBadge(pct: live.batteryPct)
+                // Quick-action "+" — moved here from the tab bar to balance the avatar on the left and
+                // free the bottom bar to four clean tabs. Routes to the shell's quick-action sheet.
+                Button { router.requestQuickActions() } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(StrandPalette.goldDeepText)
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(LinearGradient(gradient: StrandPalette.goldGradient,
+                                                                 startPoint: .topLeading, endPoint: .bottomTrailing)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 8)
+                .accessibilityLabel("Quick actions")
+                .accessibilityHint("Start a workout, log your journal, or breathe")
             }
         }
         .frame(height: 36)

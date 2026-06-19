@@ -56,9 +56,7 @@ struct RootTabView: View {
             // easing cubic-bezier(0.22,1,0.36,1).
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: selectedTab)
 
-            FloatingTabBar(selection: $selectedTab) {
-                withAnimation(Self.sheetEase) { quickAction = .menu }
-            }
+            FloatingTabBar(selection: $selectedTab)
         }
         .task { await repo.refresh() }
         // Quick-action sheet presents with the calm easing (~0.42s) per the README sheet spec —
@@ -89,6 +87,13 @@ struct RootTabView: View {
                 router.requestedDestination = nil
             case nil:
                 break
+            }
+        }
+        // A screen's top-bar "+" routes here: open the quick-action sheet, then clear the flag.
+        .onChange(of: router.quickActionsRequested) { _, req in
+            if req {
+                withAnimation(Self.sheetEase) { quickAction = .menu }
+                router.quickActionsRequested = false
             }
         }
     }
@@ -347,8 +352,6 @@ private struct QuickActionSheet: View {
 /// Glass where available, a `.ultraThinMaterial` fallback below. Replaces the hidden native tab bar.
 private struct FloatingTabBar: View {
     @Binding var selection: Int
-    let onAction: () -> Void
-    @State private var addPressed = false
 
     private struct Item: Identifiable { let title: LocalizedStringKey; let icon: String; let tag: Int; var id: Int { tag } }
     private let nav = [Item(title: "Today", icon: "square.grid.2x2", tag: 0),
@@ -357,12 +360,11 @@ private struct FloatingTabBar: View {
                        Item(title: "More", icon: "ellipsis", tag: 3)]
 
     var body: some View {
-        // One frosted glass bar: Today · Trends · [add] · Sleep · More. The add button is a small,
-        // contained gold disc — same gold language, differentiated, but not hogging the bar.
+        // One frosted glass bar, four evenly-spaced tabs. The quick-action "+" now lives in the
+        // top-right of each screen's header (balancing the profile avatar on the left).
         HStack(spacing: 2) {
             tabButton(nav[0])
             tabButton(nav[1])
-            addButton
             tabButton(nav[2])
             tabButton(nav[3])
         }
@@ -396,30 +398,6 @@ private struct FloatingTabBar: View {
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
     }
 
-    /// A small, contained gold disc for quick actions — sits inline in the bar (no floating FAB).
-    private var addButton: some View {
-        Button(action: onAction) {
-            Image(systemName: "plus")
-                .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(StrandPalette.goldDeepText)
-                .frame(width: 38, height: 38)
-                .background(
-                    Circle().fill(LinearGradient(gradient: StrandPalette.goldGradient,
-                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
-                )
-                .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
-                .scaleEffect(addPressed ? 0.92 : 1)
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
-        .accessibilityLabel("Quick actions")
-        .accessibilityHint("Start a workout, log your journal, or breathe")
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in if !addPressed { withAnimation(StrandMotion.interactive) { addPressed = true } } }
-                .onEnded { _ in withAnimation(StrandMotion.interactive) { addPressed = false } }
-        )
-    }
 }
 
 // MARK: - Liquid Glass (iOS 26) with a Material fallback
