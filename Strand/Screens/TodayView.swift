@@ -24,7 +24,15 @@ import Foundation
 
 struct TodayView: View {
     @EnvironmentObject var repo: Repository
-    @EnvironmentObject var live: LiveState
+    // PERF (scroll stutter): TodayView deliberately does NOT observe `LiveState` directly. A connected
+    // strap publishes `LiveState` ~1 Hz (heart rate + each R-R packet), and an `@EnvironmentObject live`
+    // here would invalidate the ENTIRE Today `body` on every tick — re-evaluating the scene backdrop, the
+    // three rings, every sparkline tile, the HR chart and the cards while the user is mid-scroll, which is
+    // the reported jank. Instead the handful of regions that actually show live values (the top-bar
+    // recording light, the "syncing history" note, the strap battery + sync rows) are extracted into small
+    // leaf subviews that each own their OWN `@EnvironmentObject live`, so a 1 Hz tick only re-renders those
+    // dots/rows, never the rest of the dashboard. The memoized derivations below already absorbed the
+    // EXPENSIVE recomputes; this removes the cheap-but-constant view-tree re-evaluation flood on top.
     @EnvironmentObject var profile: ProfileStore
     @EnvironmentObject var router: NavRouter
     /// The "update ringer" — the bell in the top bar opens this inbox; dismissed Today cards post into it.
@@ -295,7 +303,11 @@ struct TodayView: View {
     /// now"), so this returns the honest state at offset 0 and `nil` otherwise (the chip then isn't
     /// rendered). "Recording" requires BOTH a live connection AND a current live HR sample, so a connected
     /// strap that isn't yet streaming HR reads as a last-sync / not-recording state, not a false "Recording".
-    private var recordingState: RecordingState? {
+    /// Resolves the recording state for the selected day from a `LiveState` snapshot. Takes `live` as a
+    /// parameter rather than reading `self.live` so TodayView itself doesn't observe `LiveState` (see the
+    /// PERF note on the missing `@EnvironmentObject live`); the small `RecordingStatusLight` subview that
+    /// DOES observe `live` calls this. Past days aren't "recording", so it's nil off offset 0.
+    static func recordingState(live: LiveState, selectedDayOffset: Int) -> RecordingState? {
         guard selectedDayOffset == 0 else { return nil }
         // #580 — a connected WHOOP 5/MG streaming live HR but offloading no history reads "Connected —
         // history sync is experimental on 5.0" rather than a WHOOP-4-style "not recording"/sync-error.
@@ -512,16 +524,11 @@ struct TodayView: View {
             // Uniform 36pt circular icon set: recording-status light, updates bell, quick-add (+), menu.
             HStack(spacing: 8) {
                 // Recording status — a colour-coded light (green recording / amber synced / red not
-                // recording), replacing the old full-width banner. Taps to Devices to connect.
-                if let state = recordingState {
-                    Button { StrandHaptic.selection.play(); router.openDevices() } label: {
-                        Circle().fill(StrandPalette.surfaceInset)
-                            .frame(width: 36, height: 36)
-                            .overlay(Circle().fill(recordingHue(state)).frame(width: 10, height: 10))
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(state.accessibilityText)
+                // recording), replacing the old full-width banner. Taps to Devices to connect. Its OWN
+                // subview observes LiveState so a ~1 Hz HR tick re-renders just this 36pt dot, not all of
+                // Today (the scroll-stutter fix — see the @EnvironmentObject note at the top of the type).
+                RecordingStatusLight(selectedDayOffset: selectedDayOffset) {
+                    StrandHaptic.selection.play(); router.openDevices()
                 }
                 // Updates bell.
                 Button { showUpdatesInbox = true } label: {
@@ -569,17 +576,6 @@ struct TodayView: View {
             }
         }
         .frame(height: 46)
-    }
-
-    /// Colour for the compact recording-status light: green recording, amber last-synced, red not
-    /// recording, accent for experimental history. Mirrors the old chip's semantics in one dot.
-    private func recordingHue(_ state: RecordingState) -> Color {
-        switch state {
-        case .recording:           return StrandPalette.statusPositive
-        case .lastSynced:          return StrandPalette.statusWarning
-        case .notRecording:        return Color(red: 0.98, green: 0.27, blue: 0.23)
-        case .historyExperimental: return StrandPalette.accent
-        }
     }
 
     private func topNavChevron(_ name: String, enabled: Bool, _ action: @escaping () -> Void) -> some View {
@@ -644,7 +640,14 @@ struct TodayView: View {
 
     var body: some View {
         ScreenScaffold(title: scaffoldTitle, onRefresh: { await repo.refresh() },
-                       topBackground: showDayCycleBackground ? AnyView(SceneScreenBackground()) : nil) {
+                       // PERF (scroll stutter): flatten the day-cycle scene (a gradient-masked image with a
+                       // gradient overlay + opacity) into ONE cached GPU layer via `.drawingGroup()`, so it
+                       // composites once rather than re-rasterizing its mask/overlay on each body pass / scroll
+                       // recomposite. The scene is plain alpha compositing — no blend modes — so the flatten is
+                       // visually identical. Scoped to this call site, leaving SceneScreenBackground reusable
+                       // un-flattened elsewhere.
+                       topBackground: showDayCycleBackground
+                           ? AnyView(SceneScreenBackground().drawingGroup()) : nil) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 #if os(iOS)
                 // Compact top bar: profile/settings (left) · ‹ Today › day-nav (centre, bold) · strap
@@ -660,7 +663,9 @@ struct TodayView: View {
                 // so they stay anchored to today rather than reappearing on every navigated past day.
                 if selectedDayOffset == 0 && repo.today?.recovery == nil {
                     // While the strap is mid-offload, say so — empty tiles read as final otherwise (#77).
-                    if live.backfilling { SyncingHistoryNote(chunks: live.syncChunksThisSession) }
+                    // Its own subview observes LiveState (backfilling + chunk count tick during an offload)
+                    // so it refreshes without re-rendering the rest of Today (scroll-stutter fix).
+                    SyncingHistoryNoteIfBackfilling()
                     if !scoresBuildingDismissed {
                         DataPendingNote(
                             title: "Live now. Your scores are building.",
@@ -1330,75 +1335,6 @@ struct TodayView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    // MARK: Component 3 — recording-status chip
-
-    /// The honest recording chip on TODAY: a status word (Recording / Last synced Xm ago / Not recording),
-    /// its detail line, and — when not recording — a tap that opens Devices to connect. A connected,
-    /// recording strap shows a live pulse dot; otherwise a steady dot in the state's hue. Rendered only at
-    /// offset 0 (a past day isn't "recording"); `recordingState` is nil otherwise, so this is empty.
-    @ViewBuilder
-    private var recordingStatusChip: some View {
-        if let state = recordingState {
-            let isLive = state == .recording
-            let hue: Color = {
-                switch state {
-                case .recording:           return StrandPalette.statusPositive
-                case .lastSynced:          return StrandPalette.statusWarning
-                case .notRecording:        return StrandPalette.textTertiary
-                case .historyExperimental: return StrandPalette.accent
-                }
-            }()
-            // "Not recording" is the only actionable state (tap to connect) — wrap it in a Button; the
-            // other two are read-outs. A Group keeps one body shape either way.
-            Group {
-                if case .notRecording = state {
-                    Button {
-                        StrandHaptic.selection.play()
-                        router.openDevices()
-                    } label: { recordingChipBody(state: state, hue: hue, isLive: isLive) }
-                    .buttonStyle(StrandPressableButtonStyle())
-                } else {
-                    recordingChipBody(state: state, hue: hue, isLive: isLive)
-                }
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(state.accessibilityText)
-            .accessibilityAddTraits(state == .notRecording ? .isButton : [])
-        }
-    }
-
-    /// The recording chip's visual body: a status dot, the bold status word, and the detail line. Shared
-    /// by the read-out and the tappable "Not recording" variant so they read identically.
-    @ViewBuilder
-    private func recordingChipBody(state: RecordingState, hue: Color, isLive: Bool) -> some View {
-        HStack(spacing: 10) {
-            // A pulsing dot when live, a steady one otherwise — colour AND motion, not hue alone.
-            RecordingDot(color: hue, pulsing: isLive)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(state.label)
-                    .font(StrandFont.subhead.weight(.semibold))
-                    .foregroundStyle(StrandPalette.textPrimary)
-                    .lineLimit(1)
-                Text(state.detail)
-                    .font(StrandFont.footnote)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            Spacer(minLength: 0)
-            if case .notRecording = state {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .accessibilityHidden(true)
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(StrandPalette.surfaceInset))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(hue.opacity(0.28), lineWidth: 1))
     }
 
     // MARK: Component 2 — explained score note (calibrating / carried / needs-strap)
@@ -2262,85 +2198,14 @@ struct TodayView: View {
         }
     }
 
-    /// Honest strap-sync outcome for a cloud-free app (ports the Android Live line, ed6a31d): the
-    /// stalled-offload error when the last one died, else "History synced N ago". Hidden while an
-    /// offload runs — SyncingHistoryNote already says so. TimelineView re-renders the relative label
-    /// each minute so "5 min ago" can't go stale while the window sits open with no strap connected
-    /// (LiveState publishes nothing then).
-    @ViewBuilder
-    private var strapSyncRow: some View {
-        if !live.backfilling {
-            TimelineView(.periodic(from: .now, by: 60)) { context in
-                HStack(alignment: .top, spacing: 10) {
-                    SourceBadge("Strap sync",
-                                tint: live.lastSyncError != nil ? StrandPalette.statusWarning
-                                    : live.lastSyncedAt != nil ? StrandPalette.accent
-                                    : StrandPalette.textTertiary)
-                    Spacer()
-                    if let error = live.lastSyncError {
-                        Text(error)
-                            .font(StrandFont.captionNumber)
-                            .foregroundStyle(StrandPalette.statusWarning)
-                            .multilineTextAlignment(.trailing)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else if let at = live.lastSyncedAt {
-                        Text("History synced \(relativeAgo(at, now: context.date.timeIntervalSince1970))")
-                            .font(StrandFont.captionNumber)
-                            .foregroundStyle(StrandPalette.textSecondary)
-                    } else {
-                        Text("Not synced yet")
-                            .font(StrandFont.captionNumber)
-                            .foregroundStyle(StrandPalette.textTertiary)
-                    }
-                }
-            }
-        }
-    }
+    /// Honest strap-sync outcome — the live-observing subview (StrapSyncRow) renders it. Kept as a
+    /// property so `sourcesSection`'s call site is unchanged; the subview owns the `LiveState` observation
+    /// so a 1 Hz HR tick refreshes only this row, not the whole dashboard (scroll-stutter fix).
+    private var strapSyncRow: some View { StrapSyncRow() }
 
-    /// Strap battery on the dashboard (#159) — the live reading the keep-alive refreshes, so a glance
-    /// covers charge without opening Live. Rendered ONLY while a strap is connected AND a reading
-    /// exists; otherwise the row (and its divider) isn't there at all — no empty state.
-    @ViewBuilder
-    private var strapBatteryRow: some View {
-        if live.connected, let pct = live.batteryPct {
-            Divider().overlay(StrandPalette.hairline)
-            HStack(spacing: 10) {
-                SourceBadge("Strap battery", tint: batteryTint(pct))
-                Spacer()
-                HStack(spacing: 5) {
-                    Image(systemName: batterySymbol(pct))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(batteryTint(pct))
-                    Text("\(Int(pct.rounded()))%")
-                        .font(StrandFont.captionNumber)
-                        .foregroundStyle(StrandPalette.textSecondary)
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Strap battery \(Int(pct.rounded())) percent\(live.charging == true ? ", charging" : "")")
-            }
-        }
-    }
-
-    /// Battery tint — same thresholds as the menu-bar stat (MenuBarContent.batteryTone).
-    private func batteryTint(_ pct: Double) -> Color {
-        switch pct {
-        case ..<15: return StrandPalette.statusCritical
-        case ..<35: return StrandPalette.statusWarning
-        default:    return StrandPalette.statusPositive
-        }
-    }
-
-    /// Level-banded battery glyph; the bolt variant when the strap reports charging.
-    private func batterySymbol(_ pct: Double) -> String {
-        if live.charging == true { return "battery.100.bolt" }
-        switch pct {
-        case ..<13: return "battery.0"
-        case ..<38: return "battery.25"
-        case ..<63: return "battery.50"
-        case ..<88: return "battery.75"
-        default:    return "battery.100"
-        }
-    }
+    /// Strap battery on the dashboard (#159) — the live-observing subview (StrapBatteryRow) renders it,
+    /// including its own leading divider when shown. Property wrapper keeps the call site unchanged.
+    private var strapBatteryRow: some View { StrapBatteryRow() }
 
     // MARK: - Scoring-guide info affordance
 
@@ -2817,30 +2682,136 @@ private struct TodayLoadKey: Equatable {
     let offset: Int
 }
 
-/// A small status dot for the recording chip — a steady filled dot, or a breathing pulse halo when the
-/// strap is live (recording). Honours Reduce Motion (no pulse). Local to TodayView so it doesn't disturb
-/// the design package's pill dots.
-private struct RecordingDot: View {
-    var color: Color
-    var pulsing: Bool
-    @State private var animate = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        ZStack {
-            if pulsing {
-                Circle().fill(color)
-                    .frame(width: 8, height: 8)
-                    .scaleEffect(animate ? 2.2 : 1.0)
-                    .opacity(animate ? 0.0 : 0.5)
-            }
-            Circle().fill(color)
-                .frame(width: 8, height: 8)
-                .shadow(color: color.opacity(0.7), radius: pulsing ? 3 : 1)
+// MARK: - Live-observing leaf subviews (scroll-stutter isolation)
+//
+// TodayView itself does NOT observe `LiveState` (see the @EnvironmentObject note at the top of the
+// type). These small leaves each hold their OWN `@EnvironmentObject var live`, so a connected strap's
+// ~1 Hz publish re-renders only the affected dot / note / row, never the rings, scene, sparklines,
+// HR chart or cards. They render byte-for-byte what the inline code did before the extraction.
+
+/// The compact 36pt recording-status light in the iOS top bar — a colour-coded dot (green recording,
+/// amber last-synced, red not recording, accent for experimental 5.0 history). Taps to Devices. Owns
+/// the `LiveState` observation so a live-HR tick refreshes only this dot.
+private struct RecordingStatusLight: View {
+    @EnvironmentObject private var live: LiveState
+    let selectedDayOffset: Int
+    let onTap: () -> Void
+
+    /// Colour for the light: green recording, amber last-synced, red not recording, accent for
+    /// experimental history. Mirrors the prior `TodayView.recordingHue` semantics verbatim.
+    private func hue(_ state: RecordingState) -> Color {
+        switch state {
+        case .recording:           return StrandPalette.statusPositive
+        case .lastSynced:          return StrandPalette.statusWarning
+        case .notRecording:        return Color(red: 0.98, green: 0.27, blue: 0.23)
+        case .historyExperimental: return StrandPalette.accent
         }
-        .frame(width: 8, height: 8)
-        .onAppear { if pulsing && !reduceMotion { animate = true } }
-        .animation(pulsing && !reduceMotion ? StrandMotion.breathe : nil, value: animate)
-        .accessibilityHidden(true)
+    }
+
+    var body: some View {
+        if let state = TodayView.recordingState(live: live, selectedDayOffset: selectedDayOffset) {
+            Button(action: onTap) {
+                Circle().fill(StrandPalette.surfaceInset)
+                    .frame(width: 36, height: 36)
+                    .overlay(Circle().fill(hue(state)).frame(width: 10, height: 10))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(state.accessibilityText)
+        }
+    }
+}
+
+/// The "Syncing strap history…" note, shown only while a historical offload is running (#77). Owns the
+/// `LiveState` observation so the chunk count ticks without re-rendering the rest of Today.
+private struct SyncingHistoryNoteIfBackfilling: View {
+    @EnvironmentObject private var live: LiveState
+    var body: some View {
+        if live.backfilling { SyncingHistoryNote(chunks: live.syncChunksThisSession) }
+    }
+}
+
+/// Honest strap-sync outcome row for the Data Sources card (ports the Android Live line, ed6a31d): the
+/// stalled-offload error when the last one died, else "History synced N ago". Hidden while an offload
+/// runs — the SyncingHistoryNote already says so. The `TimelineView` re-renders the relative label each
+/// minute. Owns the `LiveState` observation (scroll-stutter isolation).
+private struct StrapSyncRow: View {
+    @EnvironmentObject private var live: LiveState
+    var body: some View {
+        if !live.backfilling {
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                HStack(alignment: .top, spacing: 10) {
+                    SourceBadge("Strap sync",
+                                tint: live.lastSyncError != nil ? StrandPalette.statusWarning
+                                    : live.lastSyncedAt != nil ? StrandPalette.accent
+                                    : StrandPalette.textTertiary)
+                    Spacer()
+                    if let error = live.lastSyncError {
+                        Text(error)
+                            .font(StrandFont.captionNumber)
+                            .foregroundStyle(StrandPalette.statusWarning)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if let at = live.lastSyncedAt {
+                        Text("History synced \(relativeAgo(at, now: context.date.timeIntervalSince1970))")
+                            .font(StrandFont.captionNumber)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    } else {
+                        Text("Not synced yet")
+                            .font(StrandFont.captionNumber)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Strap battery row for the Data Sources card (#159) — shown ONLY while a strap is connected AND a
+/// reading exists, with its own leading divider so the row + divider appear/vanish together (no empty
+/// state). Owns the `LiveState` observation (scroll-stutter isolation).
+private struct StrapBatteryRow: View {
+    @EnvironmentObject private var live: LiveState
+
+    /// Battery tint — same thresholds as the menu-bar stat (MenuBarContent.batteryTone).
+    private func tint(_ pct: Double) -> Color {
+        switch pct {
+        case ..<15: return StrandPalette.statusCritical
+        case ..<35: return StrandPalette.statusWarning
+        default:    return StrandPalette.statusPositive
+        }
+    }
+
+    /// Level-banded battery glyph; the bolt variant when the strap reports charging.
+    private func symbol(_ pct: Double) -> String {
+        if live.charging == true { return "battery.100.bolt" }
+        switch pct {
+        case ..<13: return "battery.0"
+        case ..<38: return "battery.25"
+        case ..<63: return "battery.50"
+        case ..<88: return "battery.75"
+        default:    return "battery.100"
+        }
+    }
+
+    var body: some View {
+        if live.connected, let pct = live.batteryPct {
+            Divider().overlay(StrandPalette.hairline)
+            HStack(spacing: 10) {
+                SourceBadge("Strap battery", tint: tint(pct))
+                Spacer()
+                HStack(spacing: 5) {
+                    Image(systemName: symbol(pct))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(tint(pct))
+                    Text("\(Int(pct.rounded()))%")
+                        .font(StrandFont.captionNumber)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Strap battery \(Int(pct.rounded())) percent\(live.charging == true ? ", charging" : "")")
+            }
+        }
     }
 }
 

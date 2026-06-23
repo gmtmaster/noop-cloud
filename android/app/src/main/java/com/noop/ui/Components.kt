@@ -60,6 +60,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
@@ -284,37 +285,17 @@ fun ConnectionDot(
     size: Dp = 9.dp,
     modifier: Modifier = Modifier,
 ) {
-    val transition = rememberInfiniteTransition(label = "dot")
-    val scale by transition.animateFloat(
-        initialValue = 1.0f,
-        targetValue = if (pulsing) 2.4f else 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(Motion.breathPeriodMs, easing = Motion.easeInOut),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "dotScale",
-    )
-    val haloAlpha by transition.animateFloat(
-        initialValue = 0.5f,
-        targetValue = if (pulsing) 0.0f else 0.5f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(Motion.breathPeriodMs, easing = Motion.easeInOut),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "dotHalo",
-    )
     Box(
         modifier = modifier.size(size),
         contentAlignment = Alignment.Center,
     ) {
+        // PERF (#scroll-jank): only spin up the infinite breathing transition when the dot ACTUALLY pulses.
+        // The transition lived unconditionally here, so every static (non-pulsing) ConnectionDot — and there
+        // are several on Today (each StatePill, source pill, etc.) — kept a running animation-clock
+        // subscription invalidating the frame, for a halo that wasn't even drawn. Hoisting it into a child
+        // that's composed only when `pulsing` means a still dot does zero per-frame work. Identical visuals.
         if (pulsing) {
-            Box(
-                modifier = Modifier
-                    .size(size)
-                    .drawBehind {
-                        drawCircleScaled(tone.color, scale, haloAlpha)
-                    },
-            )
+            PulsingDotHalo(tone = tone, size = size)
         }
         Box(
             modifier = Modifier
@@ -323,6 +304,38 @@ fun ConnectionDot(
                 .background(tone.color),
         )
     }
+}
+
+/** The breathing halo behind a LIVE [ConnectionDot]. Isolated so the infinite transition only exists while
+ *  the dot is actually pulsing (a still dot creates no animation subscription — the scroll-jank fix). */
+@Composable
+private fun PulsingDotHalo(tone: StrandTone, size: Dp) {
+    val transition = rememberInfiniteTransition(label = "dot")
+    val scale by transition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 2.4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(Motion.breathPeriodMs, easing = Motion.easeInOut),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "dotScale",
+    )
+    val haloAlpha by transition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 0.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(Motion.breathPeriodMs, easing = Motion.easeInOut),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "dotHalo",
+    )
+    Box(
+        modifier = Modifier
+            .size(size)
+            .drawBehind {
+                drawCircleScaled(tone.color, scale, haloAlpha)
+            },
+    )
 }
 
 private fun DrawScope.drawCircleScaled(
@@ -1139,7 +1152,14 @@ fun ScreenScaffold(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.TopCenter)
-                    .offset(y = -statusBarTop),
+                    .offset(y = -statusBarTop)
+                    // PERF (#scroll-jank): promote the static scene backdrop to its OWN compositing layer so
+                    // its gradient + bitmap rasterise ONCE into a render node and are reused as a texture on
+                    // every scroll frame, instead of the parent re-issuing the scene's `drawBehind` draw each
+                    // time the (sibling) scroll column composites over it. The backdrop reads no scroll state
+                    // and never moves, so an empty `graphicsLayer {}` is purely an isolation hint —
+                    // appearance-identical. Mirrors keeping the iOS scene as a static screen-level backdrop.
+                    .graphicsLayer { },
             ) {
                 topBackground()
             }

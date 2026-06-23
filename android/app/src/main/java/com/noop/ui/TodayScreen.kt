@@ -54,6 +54,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -128,6 +129,24 @@ import kotlin.math.roundToInt
 private const val CARD_SCORES_BUILDING = "scoresBuilding"
 private const val CARD_NEW_HERE = "newHere"
 
+/**
+ * The minimal, stable slice of the BLE [com.noop.ble.LiveState] the Today top-level body reads. Pulled out
+ * so a per-second heart-rate tick — which the body does not display numerically — produces an EQUAL value
+ * and skips recomposing the whole dashboard (the redesign's scroll-jank fix). `hrStreaming` collapses the
+ * ticking bpm to "is a live stream present" (the only thing the recording light needs); all other fields
+ * change at most every few seconds. A plain data class so [androidx.compose.runtime.derivedStateOf] can
+ * structurally-compare successive snapshots and emit only on a real change.
+ */
+private data class TodayLiveSnapshot(
+    val connected: Boolean,
+    val hrStreaming: Boolean,
+    val lastSyncAt: Long?,
+    val backfilling: Boolean,
+    val syncChunksThisSession: Int,
+    val historySyncExperimental: Boolean,
+    val batteryPct: Double?,
+)
+
 @Composable
 fun TodayScreen(
     viewModel: AppViewModel,
@@ -142,6 +161,28 @@ fun TodayScreen(
     val alert by viewModel.healthAlert.collectAsStateWithLifecycle()
     val days by viewModel.recentDays.collectAsStateWithLifecycle()
     val live by viewModel.live.collectAsStateWithLifecycle()
+    // PERF (#scroll-jank): the BLE live state ticks the heart rate roughly once a second. Reading the raw
+    // `live` object directly in this top-level body would recompose the ENTIRE Today tree (rings, cards,
+    // scene-positioning) on every bpm change — visible as scroll stutter on real devices. The body only
+    // needs a handful of stable, slow-changing fields, and the live HR matters here only as "is a stream
+    // present" (null↔non-null), never the bpm number. Funnel those through a `derivedStateOf` snapshot so a
+    // 72→73 bpm tick produces an EQUAL snapshot and the body is NOT recomposed; it only recomposes when
+    // connection / sync / battery / streaming-presence actually change. The live bpm number is rendered
+    // elsewhere (HeartRateTrendCard), which scopes its own collection. Appearance-preserving.
+    val liveSnap by remember {
+        derivedStateOf {
+            val s = live
+            TodayLiveSnapshot(
+                connected = s.connected,
+                hrStreaming = s.heartRate != null,
+                lastSyncAt = s.lastSyncAt,
+                backfilling = s.backfilling,
+                syncChunksThisSession = s.syncChunksThisSession,
+                historySyncExperimental = s.historySyncExperimental,
+                batteryPct = s.batteryPct,
+            )
+        }
+    }
     var footer by remember { mutableStateOf(TodayFooterState()) }
     // rememberSaveable (not plain remember): the bottom-tab NavHost (AppRoot) navigates with
     // saveState/restoreState, which only restores rememberSaveable-backed state. With plain remember a
@@ -636,13 +677,15 @@ fun TodayScreen(
         // #580 — a connected WHOOP 5/MG streaming live HR but offloading no history reads "Connected"
         // (history sync experimental on 5.0), overriding the honest resolver. Mirrors Swift `recordingState`.
         val headerRecordingState: RecordingState? = if (selectedDayOffset == 0) {
-            if (live.connected && live.historySyncExperimental) {
+            if (liveSnap.connected && liveSnap.historySyncExperimental) {
                 RecordingState.HistoryExperimental
             } else {
                 recordingStateFor(
-                    connected = live.connected,
-                    liveHeartRate = live.heartRate,
-                    lastSyncAtSec = live.lastSyncAt,
+                    connected = liveSnap.connected,
+                    // `recordingStateFor` only checks liveHeartRate for nullness (is a stream present), so
+                    // the streaming boolean is sufficient and keeps the per-second bpm tick out of this body.
+                    liveHeartRate = if (liveSnap.hrStreaming) 1 else null,
+                    lastSyncAtSec = liveSnap.lastSyncAt,
                     nowSec = System.currentTimeMillis() / 1000,
                 )
             }
@@ -679,7 +722,7 @@ fun TodayScreen(
         // the Updates inbox (restorable from there). Only anchored to today (offset 0).
         if (displayMetric?.recovery == null) {
             // While the strap is mid-offload, say so — empty tiles read as final otherwise (#77).
-            if (live.backfilling) SyncingHistoryNote(chunks = live.syncChunksThisSession)
+            if (liveSnap.backfilling) SyncingHistoryNote(chunks = liveSnap.syncChunksThisSession)
             // Explained score state (COMPONENT 2): when there's no own number to show, say WHY and WHAT to
             // do — "Calibrating" (N more nights, no fake number) or "Needs the strap" (no data overnight).
             // The CarriedLastNight state is already shown in full on the hero (the prior value + its date
@@ -920,7 +963,7 @@ fun TodayScreen(
         SupportRow(onSupport = onSupport)
         // Strap battery only while the link is up AND a real reading exists — a stale % from a
         // dropped connection must not present as live (#159).
-        TodaySourcesSection(footer, strapBatteryPct = if (live.connected) live.batteryPct?.roundToInt() else null)
+        TodaySourcesSection(footer, strapBatteryPct = if (liveSnap.connected) liveSnap.batteryPct?.roundToInt() else null)
     }
 
     // Scoring guide sheet — full-screen Dialog, mirroring Settings' What's-new presentation. Opened
