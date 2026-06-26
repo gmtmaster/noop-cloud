@@ -348,6 +348,18 @@ fun TodayScreen(
                     .mapNotNull { s -> s.soc?.let { s.ts to it } }
                 val rated = if (liveSnap.whoop5) BatteryEstimator.ratedLifeHoursWhoop5
                             else BatteryEstimator.ratedLifeHoursWhoop4
+                // Battery test mode (Test Centre #713): emit the discharge-run / fitted-slope / gate ANALYSIS
+                // trace, not only the per-reading "bank soc=" line. This LaunchedEffect re-runs on a natural
+                // throttle (battery% / connection / charging changes), never a tight loop, and reuses the
+                // samples + rated just loaded, so there is no extra Room read. estimateTrace returns the SAME
+                // Estimate the badge shows, so no displayed number changes. Gated zero-cost when the mode is off
+                // (one SharedPreferences bool read) and routed to the .battery-tagged strap log via externalLog.
+                if (com.noop.testcentre.TestCentre.from(context)
+                        .active(com.noop.testcentre.TestDomain.BATTERY)) {
+                    for (line in BatteryEstimator.estimateTrace(samples, rated).second) {
+                        viewModel.ble.externalLog(line, com.noop.testcentre.TestDomain.BATTERY)
+                    }
+                }
                 BatteryEstimator.estimate(samples, rated)?.let { est ->
                     val hours = est.hoursRemaining
                     if (!hours.isFinite() || hours <= 0.0) null

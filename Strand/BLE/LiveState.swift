@@ -327,6 +327,11 @@ public final class LiveState: ObservableObject {
         // Rides the redacting sink; the banked SoC series is the readout + trace source (#713, Test Centre).
         if TestCentre.active(.battery) {
             append(log: "bank soc=\(String(format: "%.1f", pct)) t=\(now)s", domain: .battery)
+            // Also emit the discharge-run / slope / gate ANALYSIS trace, once per banked reading. The strap
+            // banks at most one SoC point every ~8 minutes (the dedup above), so this is a natural throttle,
+            // never a tight loop. emitBatteryTrace re-checks the same gate and is pure (it reads batteryEstimate,
+            // changing no displayed number), so the headline "~X left" badge is unaffected. (#713, Test Centre.)
+            emitBatteryTrace()
         }
     }
 
