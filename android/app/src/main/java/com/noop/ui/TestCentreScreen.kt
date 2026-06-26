@@ -323,6 +323,9 @@ private fun AdvancedCard(vm: AppViewModel, is5MG: Boolean) {
     val context = LocalContext.current
     val puffin = remember { PuffinExperiment.from(context) }
     var v2 by remember { mutableStateOf(puffin.experimentalSleepV2) }
+    // Re-hosted Continuous-HRV toggle, bound to the SAME NoopPrefs key (noop.continuousHrv) the Settings
+    // card uses, so flipping it here or there is one and the same setting (mirrors the iOS Test Centre).
+    var continuousHrv by remember { mutableStateOf(NoopPrefs.continuousHrv(context)) }
     var probes by remember { mutableStateOf(puffin.isEnabled) }
     var deepData by remember { mutableStateOf(puffin.isDeepDataEnabled) }
     var broadcast by remember { mutableStateOf(puffin.broadcastHr) }
@@ -335,6 +338,11 @@ private fun AdvancedCard(vm: AppViewModel, is5MG: Boolean) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             ToggleRowTC("Experimental sleep staging (V2)", v2) {
                 v2 = it; puffin.experimentalSleepV2 = it
+            }
+            // Same write path as Settings: vm.setContinuousHrv persists noop.continuousHrv and re-applies
+            // keep-stream-for-data, so the live capture follows the toggle from either screen.
+            ToggleRowTC("Continuous HRV capture", continuousHrv) {
+                continuousHrv = it; vm.setContinuousHrv(it)
             }
             if (is5MG) {
                 ToggleRowTC("Try WHOOP 5/MG protocol probes", probes) {
