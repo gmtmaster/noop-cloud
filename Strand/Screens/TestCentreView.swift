@@ -374,6 +374,9 @@ private struct TestModeRow: View {
             if on, mode.domain == .steps {
                 StepsReadoutPanel(live: live)
             }
+            if on, mode.domain == .workouts {
+                WorkoutsReadoutPanel(live: live)
+            }
             HStack {
                 Spacer()
                 Button("Report") { report.start(mode: mode, live: live) }
@@ -500,6 +503,22 @@ private struct StepsReadoutPanel: View {
         VStack(alignment: .leading, spacing: 4) {
             ReadoutRow(label: "Steps today", value: steps.map(String.init) ?? "no estimate yet")
             ReadoutRow(label: "Calibration", value: calState ?? "no calibration yet")
+        }
+        .padding(.top, 2)
+    }
+}
+
+/// The Workouts & GPS live-readout panel: the last session summary (event + sport + counts), parsed from the
+/// `.workouts`-tagged log tail the session-lifecycle emitter writes, by the pure `WorkoutsReadout`. Binding
+/// off the tagged tail mirrors the Recovery / HRV / Steps panels, so the app layer needs no new published
+/// properties. No hardcoded colours; uses the same ReadoutRow tokens as the other panels. No em-dash here.
+private struct WorkoutsReadoutPanel: View {
+    @ObservedObject var live: LiveState
+
+    var body: some View {
+        let summary = WorkoutsReadout.lastSessionSummary(taggedTail: live.taggedTail(domain: .workouts))
+        VStack(alignment: .leading, spacing: 4) {
+            ReadoutRow(label: "Last session", value: summary ?? "no session yet")
         }
         .padding(.top, 2)
     }

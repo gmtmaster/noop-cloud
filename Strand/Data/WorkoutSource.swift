@@ -1,5 +1,6 @@
 import Foundation
 import WhoopStore
+import StrandAnalytics   // WorkoutsTrace — the dedup-decision line formatter for the Workouts test mode
 
 /// Origin of a workout row, classified from its stored `source` column. The macOS read model
 /// (`WorkoutRow`) carries no `deviceId`, so the row's origin has to be recovered from `source`.
@@ -163,6 +164,44 @@ enum WorkoutSource: Equatable {
             kept.append(row)
         }
         return kept
+    }
+
+    /// A short, source-only descriptor of a row for the Workouts test-mode dedup trace ("strap" / "apple" /
+    /// "detected" / "manual" / "lifting" / "activityFile"). No timestamps or free text.
+    static func sourceLabel(_ row: WorkoutRow) -> String {
+        switch classify(row.source) {
+        case .whoop:        return "strap"
+        case .apple:        return "apple"
+        case .detected:     return "detected"
+        case .manual:       return "manual"
+        case .lifting:      return "lifting"
+        case .activityFile: return "activityFile"
+        }
+    }
+
+    /// Diagnostic twin of `dedupCrossSource(...)` for the Workouts & GPS test mode: returns the BYTE-IDENTICAL
+    /// kept list (the SAME walk, the SAME `preferred` choice) plus a trace line per collapsed pair naming the
+    /// kept vs dropped source and their richness. The kept output equals `dedupCrossSource(...)` exactly, so
+    /// the trace can never diverge from the list the screen shows. Only called when the mode is on.
+    static func dedupCrossSourceTrace(_ rows: [WorkoutRow]) -> (kept: [WorkoutRow], trace: [String]) {
+        var kept: [WorkoutRow] = []
+        kept.reserveCapacity(rows.count)
+        var lines: [String] = []
+        outer: for row in rows {
+            for i in kept.indices where sameActivity(kept[i], row) {
+                let winner = preferred(kept[i], row)
+                // The winner is one of the two; the other is the dropped one.
+                let loser = (winner.startTs == kept[i].startTs && winner.source == kept[i].source) ? row : kept[i]
+                lines.append(WorkoutsTrace.dedupLine(
+                    sportKey: sportKey(row.sport),
+                    keptSource: sourceLabel(winner), droppedSource: sourceLabel(loser),
+                    keptRichness: richness(winner), droppedRichness: richness(loser)))
+                kept[i] = winner
+                continue outer
+            }
+            kept.append(row)
+        }
+        return (kept, lines)
     }
 
     // MARK: - Building / preserving rows

@@ -191,6 +191,12 @@ final class AppModel: ObservableObject {
         // was computed per day. `live` is captured strongly (created just above) — the engine outlives the
         // app session, so there's no retain-cycle risk worth a weak dance here. (Sleep overhaul §2.5.)
         self.intelligence.diagnosticSink = { [live] line, domain in live.append(log: line, domain: domain) }
+        // Workouts & GPS test mode (Test Centre): wire the Repository (auto-detect inputs/why + cross-source
+        // dedup decisions) and the GPS recorder (fix-progress) tagged sinks to the SAME shareable strap log.
+        // Each emitter re-checks `TestCentre.active(.workouts)` before building a line, so these wirings are
+        // inert (one UserDefaults bool read) when the mode is off. `live` is captured strongly, as above.
+        self.repo.workoutsLog = { [live] line in live.append(log: line, domain: .workouts) }
+        self.gpsRecorder.workoutsLog = { [live] line in live.append(log: line, domain: .workouts) }
         // Smooth HR centrally so it's solid everywhere it's shown.
         live.$heartRate.sink { [weak self] _ in self?.ingestHR() }.store(in: &hrCancellables)
         live.$rr.sink { [weak self] _ in self?.ingestHR() }.store(in: &hrCancellables)
@@ -453,7 +459,19 @@ final class AppModel: ObservableObject {
         // Make the session durable from the first instant (#529): persist it now so an OS kill right
         // after Start — before any HR sample lands — can still be rehydrated + ended on relaunch.
         persistActiveWorkout()
+        // Workouts & GPS test mode (Test Centre): one session-start line tagged `.workouts`. Zero-cost when
+        // off (the gate is one UserDefaults bool read), so the lifecycle of a missing workout is visible.
+        emitWorkoutsTrace(WorkoutsTrace.sessionLine(
+            event: "start", sportKey: WorkoutSource.sportKey(resolved), hrSamples: 0))
         buzz(loops: 1)
+    }
+
+    /// Emit one Workouts & GPS test-mode line tagged `.workouts` iff the mode is on. The cheap
+    /// `TestCentre.active(.workouts)` gate is checked BEFORE the @autoclosure builds the line, so nothing is
+    /// constructed when the mode is off. Diagnostic only - the session lifecycle is unchanged.
+    private func emitWorkoutsTrace(_ build: @autoclosure () -> String) {
+        guard TestCentre.active(.workouts) else { return }
+        live.append(log: build(), domain: .workouts)
     }
 
     /// Persist the in-flight manual workout to `UserDefaults` so it survives the app being killed mid-
@@ -510,7 +528,14 @@ final class AppModel: ObservableObject {
         let samples = w.samples
         // Save when there's an HR window OR a real GPS route — a GPS-only walk (HR not streaming) is
         // still a workout (parity with Android's `samples.size < 2 && track.size < 2` discard gate).
-        guard samples.count >= 2 || route != nil else { lastWorkout = nil; return }
+        guard samples.count >= 2 || route != nil else {
+            // Workouts & GPS test mode: record WHY a session vanished (too short / no route), tagged `.workouts`.
+            emitWorkoutsTrace(WorkoutsTrace.sessionLine(
+                event: "discarded", sportKey: WorkoutSource.sportKey(w.sport),
+                hrSamples: samples.count, gpsPoints: route == nil ? 0 : nil))
+            lastWorkout = nil
+            return
+        }
         let end = Date()
         let avg = samples.isEmpty ? nil
             : Int((Double(samples.map(\.bpm).reduce(0, +)) / Double(samples.count)).rounded())
@@ -537,6 +562,14 @@ final class AppModel: ObservableObject {
         // device only; mirrors the moments / sleepMarks UserDefaults persistence. (#524)
         if let route { RouteStore.store(route, startTs: startTs, sport: w.sport) }
         lastWorkout = row
+        // Workouts & GPS test mode: one session-end summary tagged `.workouts` (the lastSessionSummary readout
+        // source) carrying the captured HR window size, the duration, and the accepted GPS point count, so the
+        // lifecycle of a saved session is visible end to end. `pointCount` is the recorder's accepted-fix tally
+        // (not reset by stop), 0 for a non-GPS session. Zero-cost when off.
+        emitWorkoutsTrace(WorkoutsTrace.sessionLine(
+            event: "end", sportKey: WorkoutSource.sportKey(w.sport), hrSamples: samples.count,
+            durationSec: Int(end.timeIntervalSince(w.start)),
+            gpsPoints: wasGps ? gpsRecorder.pointCount : nil))
         buzz(loops: 2)
         Task { [weak self] in
             guard let self else { return }

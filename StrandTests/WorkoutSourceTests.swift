@@ -124,6 +124,33 @@ final class WorkoutSourceTests: XCTestCase {
         XCTAssertEqual(a.first?.strain, 14.0)   // kept the row with the captured trace
     }
 
+    func testDedupTraceKeptIsByteIdenticalAndNamesThePair() {
+        // The Workouts test-mode dedup twin must return the SAME kept list dedupCrossSource does, plus a
+        // decision line naming the kept vs dropped source. (Trace cannot diverge from the screen's list.)
+        let live = richRow(start: 1000, end: 4600, sport: "Running", source: "whoop")
+        let hc = thinImport(start: 1030, end: 4580, sport: "Running", source: "health-connect")
+        let plain = WorkoutSource.dedupCrossSource([live, hc])
+        let (kept, trace) = WorkoutSource.dedupCrossSourceTrace([live, hc])
+        XCTAssertEqual(kept.map { $0.source }, plain.map { $0.source })
+        XCTAssertEqual(kept.count, 1)
+        XCTAssertEqual(kept.first?.source, "whoop")
+        // One dedup line, naming the strap row as kept and the apple/HC import as dropped.
+        XCTAssertEqual(trace.count, 1)
+        XCTAssertTrue(trace[0].contains("dedup sport=running"))
+        XCTAssertTrue(trace[0].contains("kept=strap"))
+        XCTAssertTrue(trace[0].contains("dropped=apple"))
+        XCTAssertFalse(trace.contains { $0.contains("\u{2014}") })
+    }
+
+    func testDedupTraceEmitsNothingForDistinctSessions() {
+        // No cross-source pair → no dedup line, and the kept list equals the input order.
+        let run = richRow(start: 1000, end: 4600, sport: "Running", source: "whoop")
+        let lift = richRow(start: 5000, end: 8600, sport: "Strength Training", source: "whoop")
+        let (kept, trace) = WorkoutSource.dedupCrossSourceTrace([run, lift])
+        XCTAssertEqual(kept.count, 2)
+        XCTAssertTrue(trace.isEmpty, "no collapsed pair must emit zero dedup lines, got \(trace)")
+    }
+
     func testDedupKeepsNonImportOnRichnessTie() {
         // Two equally-thin rows: a strap "manual" live row and a Health Connect import. Keep the strap one.
         let manual = thinImport(start: 1000, end: 4600, sport: "Walking", source: "manual")

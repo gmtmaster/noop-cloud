@@ -127,6 +127,22 @@ final class Repository: ObservableObject {
     /// date string within a day and would freeze e.g. the Today HR trend until the date rolls over.
     @Published private(set) var refreshSeq = 0
 
+    /// Workouts & GPS test mode (Test Centre): the tagged sink for the `.workouts` diagnostic lines
+    /// (auto-detect inputs/thresholds/why, cross-source dedup decisions). Default nil (inert) so tests +
+    /// non-prod inits get the byte-identical untraced path; AppModel wires it to `live.append(log:domain:)`.
+    /// We ALWAYS check `TestCentre.active(.workouts)` BEFORE building any line (the gate is one UserDefaults
+    /// bool read), so the read facades pay nothing when the mode is off. Diagnostic only - it never changes
+    /// the workout list the query returns.
+    var workoutsLog: ((String) -> Void)?
+
+    /// Emit one Workouts & GPS test-mode line iff the mode is on and a sink is wired. The cheap
+    /// `TestCentre.active(.workouts)` gate is checked BEFORE `build()` runs, so the string is never
+    /// constructed when the mode is off (the @autoclosure defers it).
+    private func emitWorkouts(_ build: @autoclosure () -> String) {
+        guard TestCentre.active(.workouts), let workoutsLog else { return }
+        workoutsLog(build())
+    }
+
     init(deviceId: String) { self.deviceId = deviceId }
 
     #if DEBUG
@@ -1185,8 +1201,19 @@ final class Repository: ObservableObject {
         // #687: collapse the SAME activity tracked live under the strap AND imported from Health Connect /
         // Apple Health into one richer entry — they sit under different sources so without this they show
         // as two sessions. Dedup runs on the dismissed-filtered set, before the final newest-first sort.
-        let deduped = WorkoutSource.dedupCrossSource(
-            rows.filter { !WorkoutSource.isDismissed($0, spans: spans) })
+        let filtered = rows.filter { !WorkoutSource.isDismissed($0, spans: spans) }
+        // Workouts & GPS test mode: when on, run the dedup twin which returns the BYTE-IDENTICAL kept list
+        // plus a trace line per collapsed cross-source pair, tagged `.workouts`. Zero-cost when off (the gate
+        // is one UserDefaults bool read inside emitWorkouts), and the kept list equals dedupCrossSource(...)
+        // exactly, so the workout list the screen shows is unchanged.
+        let deduped: [WorkoutRow]
+        if TestCentre.active(.workouts), workoutsLog != nil {
+            let (kept, trace) = WorkoutSource.dedupCrossSourceTrace(filtered)
+            for line in trace { emitWorkouts(line) }
+            deduped = kept
+        } else {
+            deduped = WorkoutSource.dedupCrossSource(filtered)
+        }
         let visible = deduped.sorted { $0.startTs > $1.startTs }
         return await reconcileWorkoutHrWithTrace(visible, store: store)
     }
@@ -1383,8 +1410,20 @@ final class Repository: ObservableObject {
         let saved = await workoutRows()
         let savedSpans = saved.map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
 
-        let candidates = AutoWorkoutDetector.detect(hr: hr, restingBpm: restingBpm,
+        // Workouts & GPS test mode: when on, run the diagnostic twin which returns the SAME candidates
+        // detect(...) does (it reuses detect verbatim) plus the inputs / thresholds / per-window why trace,
+        // tagged `.workouts`. Zero-cost when off: the gate is one UserDefaults bool read inside emitWorkouts,
+        // and detectTrace is only called on that branch, so the default path runs the untraced detect.
+        let candidates: [DetectedWorkout]
+        if TestCentre.active(.workouts), workoutsLog != nil {
+            let (results, trace) = AutoWorkoutDetector.detectTrace(
+                hr: hr, restingBpm: restingBpm, motion: nil, savedSpans: savedSpans, path: "autoDetect")
+            for line in trace { emitWorkouts(line) }
+            candidates = results
+        } else {
+            candidates = AutoWorkoutDetector.detect(hr: hr, restingBpm: restingBpm,
                                                     motion: nil, savedSpans: savedSpans)
+        }
         // Drop anything the user already dismissed, then take the most recent.
         let dismissed = Set(autoDetectDismissedSpans)
         return candidates
