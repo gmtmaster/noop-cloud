@@ -100,6 +100,21 @@ public final class LiveState: ObservableObject {
     public var batteryEstimate: BatteryEstimator.Estimate? {
         BatteryEstimator.estimate(samples: batterySamples, ratedHours: batteryRatedHours)
     }
+
+    /// The discharge-run / fitted-slope / gate trace for the banked SoC series (#713, Test Centre Battery
+    /// mode). Pure: delegates to BatteryEstimator.estimateTrace, which returns the SAME Estimate as
+    /// batteryEstimate plus the trace lines, so reading this never changes any displayed number.
+    public var batteryEstimateTraceLines: [String] {
+        BatteryEstimator.estimateTrace(samples: batterySamples, ratedHours: batteryRatedHours).trace
+    }
+
+    /// Emit the discharge-run / slope / gate trace once, tagged .battery, when the Battery test mode is on.
+    /// The readout / Today lane calls this on each refresh; it is a no-op (zero cost) when the mode is off.
+    public func emitBatteryTrace() {
+        guard TestCentre.active(.battery) else { return }
+        for line in batteryEstimateTraceLines { append(log: line, domain: .battery) }
+    }
+
     @Published public var lastFrameType: String? = nil
     @Published public var lastEvent: String? = nil
     /// The strap's BLE advertising name, read back from firmware via GET_ADVERTISING_NAME_HARVARD
