@@ -532,16 +532,20 @@ struct DataSourcesView: View {
                 // kind; the size is bucketed in ImportTrace so no path, name or byte-exact size leaves.
                 // The importer runs nonisolated, so the sink hops each batch to the main actor (LiveState is
                 // @MainActor) before appending, keeping the tagged log append race-free and ordered.
+                // Import & Data Ingest test mode: read the gate ONCE for this completion (the trace sink AND
+                // the post-result file-meta line below share it), so a mid-import toggle can't make the two
+                // reads disagree and the bool is read a single time.
+                let importTracing = TestCentre.active(.dataImport)
                 let result = try await WearableImporter.importExport(
                     url: url, into: store,
-                    trace: TestCentre.active(.dataImport)
+                    trace: importTracing
                         ? { @Sendable [weak live] lines in
                             Task { @MainActor [weak live] in
                                 lines.forEach { live?.append(log: $0, domain: .dataImport) }
                             }
                           }
                         : nil)
-                if TestCentre.active(.dataImport) {
+                if importTracing {
                     let ext = url.pathExtension
                     let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
                     live.append(log: ImportTrace.fileMetaLine(sourceKind: result.brand.dataSourceKind,
