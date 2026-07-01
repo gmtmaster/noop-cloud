@@ -253,6 +253,15 @@ class WhoopRepository(private val dao: WhoopDao) {
         dao.insertDismissedSleep(listOf(DismissedSleep(session.deviceId, session.startTs, session.endTs)))
     }
 
+    /** #899 dedup heal: remove ONE sleep-session row WITHOUT the #33 dismissal tombstone. The heal
+     *  deletes stale timebase-shifted duplicates of a night whose canonical copy is STAYING; a tombstone
+     *  here would overlap the surviving night's window and permanently suppress its re-detection. Only
+     *  the engine's dedup heal calls this; the user-facing delete stays [deleteSleepSession]. Mirrors
+     *  the Swift heal, which calls the tombstone-free store-level delete directly. */
+    suspend fun deleteSleepSessionRowOnly(session: SleepSession) {
+        dao.deleteSleepSession(session.deviceId, session.startTs)
+    }
+
     /**
      * #547 one-time heal: purge rows polluted by a bad-strap-clock timestamp. pikapik's WHOOP 4.0 emitted
      * records whose `unix` decoded to garbage (far-past / a 2027 spike / a future date) which entered the

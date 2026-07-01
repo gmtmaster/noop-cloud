@@ -173,9 +173,20 @@ object IntelligenceEngine {
         // non-null sink ONLY when any test mode is on, routing each line to the .universal-tagged strap log.
         universalSink: ((String) -> Unit)? = null,
     ): List<Computed> = withContext(Dispatchers.Default) {
-        analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride, nowSeconds,
-            ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch, recoveryEpoch, diag,
-            useExperimentalSleepV2, sleepTraceSink, recoveryTraceSink, stepsTraceSink, universalSink)
+        val (out, healed) = analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride,
+            nowSeconds, ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch,
+            recoveryEpoch, diag, useExperimentalSleepV2, sleepTraceSink, recoveryTraceSink, stepsTraceSink,
+            universalSink)
+        if (healed == 0) return@withContext out
+        // #899 heal re-pass: the pass above deleted overlapping duplicate sleep sessions AFTER its days
+        // were scored, and the read-side dedup those days consumed had no bank-recency witness (the fresh
+        // detections weren't banked yet), so its survivor can differ from the heal's. ONE bounded re-pass
+        // re-scores the window against the cleaned store; its own heal then finds nothing (the duplicates
+        // are gone), so this can never loop. Mirrors the Swift pendingForcedRescore re-arm.
+        analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride,
+            nowSeconds, ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch,
+            recoveryEpoch, diag, useExperimentalSleepV2, sleepTraceSink, recoveryTraceSink, stepsTraceSink,
+            universalSink).first
     }
 
     /** History span for the one-shot Effort rescore , large enough to cover any real wear history,
@@ -251,11 +262,14 @@ object IntelligenceEngine {
         // CAPTURE-B universal diagnostic sink. null = byte-identical default (no lines); when non-null each
         // scored day emits the verbatim `dayOwner …` line. See the public overload's doc.
         universalSink: ((String) -> Unit)? = null,
-    ): List<Computed> {
-        val hrvCfg = Baselines.metricCfg["hrv"] ?: return emptyList()
-        val rhrCfg = Baselines.metricCfg["resting_hr"] ?: return emptyList()
-        val skinCfg = Baselines.metricCfg["skin_temp"] ?: return emptyList()
-        val respCfg = Baselines.metricCfg["resp"] ?: return emptyList()
+        // #899 heal re-pass: the second component of the return is how many overlapping duplicate sleep
+        // sessions the heal below deleted this pass. The public wrapper re-runs ONCE when it is non-zero
+        // so the affected days re-score against the cleaned store.
+    ): Pair<List<Computed>, Int> {
+        val hrvCfg = Baselines.metricCfg["hrv"] ?: return emptyList<Computed>() to 0
+        val rhrCfg = Baselines.metricCfg["resting_hr"] ?: return emptyList<Computed>() to 0
+        val skinCfg = Baselines.metricCfg["skin_temp"] ?: return emptyList<Computed>() to 0
+        val respCfg = Baselines.metricCfg["resp"] ?: return emptyList<Computed>() to 0
 
         val computedId = importedDeviceId + "-noop"
 
@@ -947,6 +961,30 @@ object IntelligenceEngine {
         for ((start, motion) in motionByStart) {
             repo.persistSessionMotion(computedId, start, motion)
         }
+        // ── Overlap-aware banked-sleep heal (#899) ────────────────────────────────────────────────────
+        // An unstable strap clock re-banks the SAME night under a shifted timebase, so successive passes
+        // detect it at shifted bounds and the upsert above lands a SECOND row beside the stale one (the
+        // (deviceId, startTs) key differs, and sleep has no delete-reinsert reconcile like dailyMetric /
+        // workout). Collapse the window's stored sessions with the overlap rule, treating the rows THIS
+        // pass just banked as the bank-recency witness (the strap's current timebase), and delete the
+        // stale copies. Scoped to sessions whose wake day lies inside the [oldestDay, newestDay] daily
+        // reconcile window: exactly the days this pass re-scored/evicted, so a session row is never
+        // deleted out from under a daily row the pass did not refresh. Edited rows are never dropped.
+        // Mirrors the Swift analyzeRecent heal.
+        val storedSessions = repo.sleepSessions(computedId, windowStart, nowSeconds, 4000)
+        val healable = storedSessions.filter {
+            AnalyticsEngine.dayString(it.endTs, tzOffsetSeconds) in oldestDay..newestDay
+        }
+        val healDropped = SleepSessionDedup.dedupe(healable, freshStarts = keptStarts).dropped
+        // Row-only delete: the user-facing deleteSleepSession writes a #33 dismissal tombstone, which
+        // would overlap the SURVIVING night's window and permanently suppress its re-detection.
+        for (stale in healDropped) repo.deleteSleepSessionRowOnly(stale)
+        if (healDropped.isNotEmpty()) {
+            diag(
+                "Dedup(#899): removed ${healDropped.size} overlapping duplicate sleep " +
+                    "session(s) re-banked under a shifted strap timebase; re-scoring the affected days.",
+            )
+        }
         // Make re-detection idempotent across runs: clear the prior computed detected workouts
         // in the scored window (a bout's startTs can drift as more HR arrives, which would
         // otherwise orphan stale rows under the (deviceId,startTs,sport) key), then re-insert.
@@ -958,7 +996,7 @@ object IntelligenceEngine {
         // under-sampled ones from that denser data.
         rescoreManualWorkouts(repo, profile, importedDeviceId, maxHROverride, nowSeconds)
 
-        return out
+        return out to healDropped.size
     }
 
     /**
@@ -1111,7 +1149,11 @@ object IntelligenceEngine {
         to: Long,
     ): List<Pair<Long, Int>> {
         val epochS = 30L
-        val sessions = repo.sleepSessions(computedId, from, to, 4000)
+        // #899: collapse overlapping timebase-shifted duplicates BEFORE consuming band state. A stale
+        // re-banked copy of the night would otherwise feed "asleep" epochs at the OLD times into the H7
+        // re-onset guard, letting the stale block keep confirming itself. Read-side only (no bank-recency
+        // witness here); the store itself is healed post-upsert in analyzeRecentOnCpu. Mirrors Swift.
+        val sessions = SleepSessionDedup.dedupe(repo.sleepSessions(computedId, from, to, 4000)).kept
         val samples = ArrayList<Pair<Long, Int>>()
         for (s in sessions) {
             val states = repo.sessionSleepState(computedId, s.startTs) ?: continue
@@ -1133,7 +1175,14 @@ object IntelligenceEngine {
     ): Long? {
         val imported = repo.sleepSessions(importedId, windowStart, windowEnd, 4000)
         val computed = repo.sleepSessions(computedId, windowStart, windowEnd, 4000)
-        val blocks = (imported + computed).mapNotNull { s ->
+        // #899: collapse overlapping timebase-shifted duplicates BEFORE the learner sees the history.
+        // A stale re-banked copy of a night lands on a DIFFERENT day key, so the per-day longest-block
+        // de-dup below never caught it and the learned midsleep drifted toward the stale timing, which
+        // then steered the main-night pick (day assignment) to the stale block. The same collapse also
+        // covers an imported night and its computed twin (the longest capture wins, exactly what the
+        // per-day length rule chose anyway). Mirrors Swift.
+        val merged = SleepSessionDedup.dedupe(imported + computed).kept
+        val blocks = merged.mapNotNull { s ->
             val start = s.effectiveStartTs
             val end = s.endTs
             if (end <= start) {
