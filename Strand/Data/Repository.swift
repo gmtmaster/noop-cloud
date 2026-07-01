@@ -1266,9 +1266,6 @@ final class Repository: ObservableObject {
     /// stored signal). Empty when the strap offloaded nothing for the window.
     private func timelineRawMetric(metric: TimelineMetric, store: WhoopStore, source: String,
                                    from: Int, to: Int) async -> [TrendPoint] {
-        func pt(_ ts: Int, _ v: Double) -> TrendPoint {
-            TrendPoint(date: Date(timeIntervalSince1970: TimeInterval(ts)), value: v)
-        }
         switch metric {
         case .hr:
             return []   // handled by the caller's HR path
@@ -1282,23 +1279,43 @@ final class Repository: ObservableObject {
             // stride keeps a 1 Hz R-R stream from emitting a point per beat.
             let rr = (try? await store.rrIntervals(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
             let window = Self.hrvRollingWindowSec(spanSeconds: to - from)
-            return HRVAnalyzer.rollingRmssd(rr: rr, windowSec: window, stepSec: max(1, window / 8))
-                .map { pt($0.ts, $0.rmssd) }
+            // rollingRmssd + the map over its output run OFF the main actor (mirrors the HR branch's
+            // Task.detached in `timelineSeries`): only the already-read Sendable `rr` rows cross in.
+            return await Task.detached(priority: .utility) {
+                HRVAnalyzer.rollingRmssd(rr: rr, windowSec: window, stepSec: max(1, window / 8))
+                    .map { Self.timelinePoint($0.ts, $0.rmssd) }
+            }.value
         case .spo2:
             // The honest raw red/IR ratio proxy (#166: no calibrated %), shown as a unitless trend.
             let s = (try? await store.spo2Samples(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
-            return s.compactMap { $0.ir > 0 ? pt($0.ts, Double($0.red) / Double($0.ir)) : nil }
+            // The up-to-200k-row conversion runs OFF the main actor; only the Sendable `s` rows cross in.
+            return await Task.detached(priority: .utility) {
+                s.compactMap { $0.ir > 0 ? Self.timelinePoint($0.ts, Double($0.red) / Double($0.ir)) : nil }
+            }.value
         case .skinTemp:
             let s = (try? await store.skinTempSamples(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
-            return s.map { pt($0.ts, Double($0.raw) / 100.0) }   // centidegrees → °C (#156)
+            return await Task.detached(priority: .utility) {
+                s.map { Self.timelinePoint($0.ts, Double($0.raw) / 100.0) }   // centidegrees → °C (#156)
+            }.value
         case .respiration:
             let s = (try? await store.respSamples(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
-            return s.map { pt($0.ts, Double($0.raw)) }
+            return await Task.detached(priority: .utility) {
+                s.map { Self.timelinePoint($0.ts, Double($0.raw)) }
+            }.value
         case .motion:
             // Gravity vector magnitude as a coarse movement signal (1 g at rest).
             let s = (try? await store.gravitySamples(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
-            return s.map { pt($0.ts, ($0.x * $0.x + $0.y * $0.y + $0.z * $0.z).squareRoot()) }
+            // The sqrt-per-row magnitude over up to 200k gravity rows runs OFF the main actor.
+            return await Task.detached(priority: .utility) {
+                s.map { Self.timelinePoint($0.ts, ($0.x * $0.x + $0.y * $0.y + $0.z * $0.z).squareRoot()) }
+            }.value
         }
+    }
+
+    /// Build a `TrendPoint` from a unix-seconds `ts` + value. `nonisolated static` so the per-row
+    /// timeline conversions can run inside `Task.detached` off the main actor (captures no self/actor state).
+    nonisolated static func timelinePoint(_ ts: Int, _ v: Double) -> TrendPoint {
+        TrendPoint(date: Date(timeIntervalSince1970: TimeInterval(ts)), value: v)
     }
 
     /// Mean-bin an already-loaded raw point series onto a `bucketSeconds` grid (floor(ts/bucket)*bucket),
