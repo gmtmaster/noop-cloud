@@ -98,6 +98,13 @@ public enum AnalyticsEngine {
         /// session with too little gravity to grid is OMITTED (no key), so the caller never persists a
         /// fabricated zero series. (H8)
         public let sessionMotionByStart: [Int: [Double]]
+        /// Per-session per-epoch BAND sleep_state (#175), keyed by each matched session's detected start,
+        /// on the same 30 s grid as `stagesJSON` / `sessionMotionByStart`. The strap's OWN @81 code
+        /// (0 wake/1 still/2 asleep/3 up) gridded per session, for the caller to persist via
+        /// `WhoopStore.persistSessionSleepState`. A session with no band-state samples is OMITTED (no key),
+        /// so the caller persists NULL there rather than a fabricated array. Feeds the H7 re-onset CONFIRM
+        /// guard on the NEXT pass; never overrides the derived hypnogram. Empty on a WHOOP 4.0. (#175)
+        public let sessionSleepStateByStart: [Int: [Int]]
 
         public init(daily: DailyMetric, sleepSessions: [SleepSession],
                     cachedSleep: [CachedSleepSession], workouts: [ExerciseSession],
@@ -107,6 +114,7 @@ public enum AnalyticsEngine {
                     effortConfidence: ScoreConfidence = .calibrating,
                     restConfidence: ScoreConfidence = .calibrating,
                     sessionMotionByStart: [Int: [Double]] = [:],
+                    sessionSleepStateByStart: [Int: [Int]] = [:],
                     chargeDrivers: [ChargeDriver] = [],
                     skinTempRelative: SkinTempRelative? = nil) {
             self.daily = daily; self.sleepSessions = sleepSessions
@@ -120,6 +128,7 @@ public enum AnalyticsEngine {
             self.effortConfidence = effortConfidence
             self.restConfidence = restConfidence
             self.sessionMotionByStart = sessionMotionByStart
+            self.sessionSleepStateByStart = sessionSleepStateByStart
         }
     }
 
@@ -558,6 +567,22 @@ public enum AnalyticsEngine {
             if !motion.isEmpty { sessionMotionByStart[s.start] = motion }
         }
 
+        // ── Per-session per-epoch BAND sleep_state (#175) ─────────────────────
+        // Grid the strap's OWN band sleep_state (the SAME `bandSleepState` samples the H7 guard consumes)
+        // onto each matched session's 30 s epochs, for the caller to persist beside `stagesJSON`. This is
+        // the source the band-state chain lacked (persist → next pass's H7 re-onset CONFIRM). A session
+        // whose window carries no band samples is omitted (no key) → the caller persists NULL, an absent
+        // signal stays absent. Empty on a WHOOP 4.0 (no band_sleep_state stream). The band code is carried
+        // verbatim; it NEVER overrides the derived hypnogram, only confirms a borderline morning re-onset.
+        var sessionSleepStateByStart: [Int: [Int]] = [:]
+        if !bandSleepState.isEmpty {
+            for s in matched {
+                let states = SleepStager.sessionEpochSleepState(start: s.start, end: s.end,
+                                                                sleepState: bandSleepState)
+                if !states.isEmpty { sessionSleepStateByStart[s.start] = states }
+            }
+        }
+
         // ── Per-score confidence tiers ────────────────────────────────────────
         let chargeConfidence = ScoreConfidence.charge(recovery: recovery, hrvBaseline: baselines.hrv)
         let effortConfidence = ScoreConfidence.effort(strain: strain, hrSampleCount: hr.count)
@@ -577,6 +602,7 @@ public enum AnalyticsEngine {
                          effortConfidence: effortConfidence,
                          restConfidence: restConfidence,
                          sessionMotionByStart: sessionMotionByStart,
+                         sessionSleepStateByStart: sessionSleepStateByStart,
                          chargeDrivers: chargeDrivers,
                          skinTempRelative: skinTempRelative)
     }

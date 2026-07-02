@@ -308,7 +308,7 @@ struct FullDayChartView: View {
         case .skinTemp: return "°C"
         case .respiration: return ""
         case .hrv: return " ms"
-        case .spo2, .motion: return ""
+        case .spo2, .motion, .bandSleepState: return ""
         }
     }
 
@@ -317,6 +317,21 @@ struct FullDayChartView: View {
         case .hr, .respiration, .hrv: return String(Int(v.rounded()))
         case .skinTemp: return String(format: "%.1f", v)
         case .spo2, .motion: return String(format: "%.2f", v)
+        // #175: name the band's own state at the nearest code so the readout reads "asleep", not "2.0".
+        case .bandSleepState: return Self.bandStateLabel(v)
+        }
+    }
+
+    /// #175: map the band's 0-3 sleep_state code to its word. A bucket-averaged fractional value (when
+    /// zoomed out) is rounded to the nearest code — honest for a readout label; the track itself plots the
+    /// numeric code. This names the BAND's own reported state, never a stage NOOP derives.
+    static func bandStateLabel(_ v: Double) -> String {
+        switch Int(v.rounded()) {
+        case 0: return String(localized: "wake")
+        case 1: return String(localized: "still")
+        case 2: return String(localized: "asleep")
+        case 3: return String(localized: "up")
+        default: return String(Int(v.rounded()))
         }
     }
 
@@ -341,6 +356,9 @@ struct FullDayChartView: View {
             return Gradient(colors: [StrandPalette.sleepLight.opacity(0.55), StrandPalette.sleepLight])
         case .respiration, .motion:
             return Gradient(colors: [StrandPalette.textSecondary.opacity(0.5), StrandPalette.textSecondary])
+        // #175: the band-state track uses the deep-sleep hue so it reads as a distinct sleep track.
+        case .bandSleepState:
+            return Gradient(colors: [StrandPalette.sleepDeep.opacity(0.55), StrandPalette.sleepDeep])
         }
     }
 

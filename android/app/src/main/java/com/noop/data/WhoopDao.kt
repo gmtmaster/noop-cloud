@@ -61,6 +61,10 @@ interface WhoopDao : DeviceRegistryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertSteps(rows: List<StepSample>): List<Long>
 
+    /** The strap's OWN band sleep_state per record (#175). Idempotent by (deviceId, ts). */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertSleepState(rows: List<SleepStateSampleEntity>): List<Long>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertResp(rows: List<RespSample>): List<Long>
 
@@ -255,6 +259,14 @@ interface WhoopDao : DeviceRegistryDao {
             "ORDER BY ts ASC LIMIT :limit"
     )
     suspend fun stepSamples(deviceId: String, from: Long, to: Long, limit: Int): List<StepSample>
+
+    /** The strap's OWN banked band sleep_state (#175) in [from, to], ascending. Feeds the Deep Timeline
+     *  band-state track and the per-session grid the H7 re-onset confirm guard reads. */
+    @Query(
+        "SELECT * FROM sleepStateSample WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
+            "ORDER BY ts ASC LIMIT :limit"
+    )
+    suspend fun sleepStateSamples(deviceId: String, from: Long, to: Long, limit: Int): List<SleepStateSampleEntity>
 
     @Query(
         "SELECT * FROM respSample WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +

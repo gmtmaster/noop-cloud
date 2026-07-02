@@ -31,6 +31,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         Spo2Sample::class,
         SkinTempSample::class,
         StepSample::class,
+        SleepStateSampleEntity::class,
         RespSample::class,
         GravitySample::class,
         DailyMetric::class,
@@ -46,7 +47,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DayOwnershipRow::class,
         LabMarkerRow::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = false,
 )
 abstract class WhoopDatabase : RoomDatabase() {
@@ -372,6 +373,33 @@ abstract class WhoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v14 -> v15: ADDITIVE, adds the `sleepStateSample` table (#175). The strap's OWN band sleep_state
+         * (the @81 high nibble: 0 wake/1 still/2 asleep/3 up) was DECODED but DROPPED at stream extraction,
+         * so the band-state chain (the H7 morning-stillness re-onset CONFIRM guard + a Deep Timeline track)
+         * had no source and the per-session `sleepStateJSON` column was never fed. This new RAW per-sample
+         * table, keyed by (deviceId, ts) like stepSample/ppgHrSample, idempotently upserts a second's band
+         * state from the offload stream. `state` is the raw 0-3 code carried VERBATIM — never a fabricated
+         * value; a strap that never reports it simply has no rows.
+         *
+         * CREATE TABLE only (no existing data touched), so already-offloaded raw streams survive (the strap
+         * trims acked history and won't re-send it). The SQL MUST match Room's generated schema for
+         * [SleepStateSampleEntity] exactly, every column NOT NULL (Kotlin, no SQL DEFAULT), composite PRIMARY
+         * KEY (deviceId, ts) in declaration order. Twin of the Swift WhoopStore v21 migration. No destructive
+         * fallback (see the class doc). Exposed as [SLEEP_STATE_SAMPLE_MIGRATION_SQL] so a plain-JVM unit test
+         * can pin the shape without Robolectric.
+         */
+        internal val SLEEP_STATE_SAMPLE_MIGRATION_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `sleepStateSample` (`deviceId` TEXT NOT NULL, " +
+                "`ts` INTEGER NOT NULL, `state` INTEGER NOT NULL, PRIMARY KEY(`deviceId`, `ts`))",
+        )
+
+        internal val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in SLEEP_STATE_SAMPLE_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
         private fun build(appContext: Context): WhoopDatabase =
             Room.databaseBuilder(appContext, WhoopDatabase::class.java, DB_NAME)
                 // Real additive migration, NO destructive fallback (see the class doc): with
@@ -381,6 +409,7 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                     MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
+                    MIGRATION_14_15,
                 )
                 .build()
     }

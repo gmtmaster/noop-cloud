@@ -23,6 +23,12 @@ data class StreamBatch(
     val resp: List<RespRow> = emptyList(),
     val gravity: List<GravityRow> = emptyList(),
     val steps: List<StepRow> = emptyList(),
+    /**
+     * The strap's OWN band sleep_state per record (#175), carried verbatim off @81's high nibble. Optional
+     * signal (only 5/MG v18 records emit it; a WHOOP 4.0 leaves it empty), consumed by the H7 re-onset
+     * CONFIRM guard and shown as a Deep Timeline track. Never overrides the derived stage.
+     */
+    val sleepState: List<SleepStateRow> = emptyList(),
     /** HR derived from the WHOOP 5/MG v26 optical PPG waveform (autocorrelation). (#156) */
     val ppgHr: List<PpgHrRow> = emptyList(),
     /**
@@ -37,7 +43,7 @@ data class StreamBatch(
     val isEmpty: Boolean
         get() = hr.isEmpty() && rr.isEmpty() && events.isEmpty() && battery.isEmpty() &&
             spo2.isEmpty() && skinTemp.isEmpty() && resp.isEmpty() && gravity.isEmpty() &&
-            steps.isEmpty() && ppgHr.isEmpty()
+            steps.isEmpty() && sleepState.isEmpty() && ppgHr.isEmpty()
 }
 
 // Device-agnostic decoded rows (deviceId attached when inserted). Mirror Streams.swift shapes.
@@ -56,6 +62,11 @@ data class SkinTempRow(val ts: Long, val raw: Int)
  * persisted store (which carries only ts/counter today) are unchanged.
  */
 data class StepRow(val ts: Long, val counter: Int, val activityClass: Int? = null)
+/**
+ * The strap's OWN @81 high-nibble band sleep_state at [ts] (0 wake/1 still/2 asleep/3 up), decoded and
+ * streamed but dropped at storage until #175. deviceId attached on insert. Swift `SleepStateSample`.
+ */
+data class SleepStateRow(val ts: Long, val state: Int)
 data class RespRow(val ts: Long, val raw: Int)
 data class GravityRow(val ts: Long, val x: Double, val y: Double, val z: Double)
 /** HR derived from the v26 PPG waveform: [ts] window-centre sec, [bpm], [conf] in 0…1. (#156) */
@@ -175,6 +186,13 @@ class WhoopRepository(private val dao: WhoopDao) {
         // it.activityClass is null when the @63 byte was 0xFF/invalid/absent → stored as SQL NULL.
         val stepIds = if (streams.steps.isEmpty()) emptyList() else
             dao.insertSteps(streams.steps.map { StepSample(deviceId, it.ts, it.counter, it.activityClass) })
+        // Band sleep_state (#175). Persist-only, same as steps — the strap's OWN @81 high-nibble state
+        // (0 wake/1 still/2 asleep/3 up), decoded and streamed but dropped at storage until now. Idempotent
+        // by (deviceId, ts); not counted into InsertCounts (no consumer reads a count). The raw 0-3 code is
+        // stored verbatim — a strap that never reports it inserts nothing.
+        if (streams.sleepState.isNotEmpty()) {
+            dao.insertSleepState(streams.sleepState.map { SleepStateSampleEntity(deviceId, it.ts, it.state) })
+        }
         val respIds = if (streams.resp.isEmpty()) emptyList() else
             dao.insertResp(streams.resp.map { RespSample(deviceId, it.ts, it.raw) })
         val gravIds = if (streams.gravity.isEmpty()) emptyList() else
@@ -539,6 +557,15 @@ class WhoopRepository(private val dao: WhoopDao) {
 
     suspend fun stepSamples(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT) =
         dao.stepSamples(deviceId, from, to, limit)
+
+    /**
+     * The strap's OWN band sleep_state samples (#175) in [from, to] as (ts, state) pairs, ascending. Feeds
+     * the Deep Timeline band-state track and the per-session grid the H7 re-onset confirm guard reads. Empty
+     * when the strap never reported it (a WHOOP 4.0, or a not-yet-offloaded window). Swift `sleepStateSamples`.
+     */
+    suspend fun sleepStateSamples(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT):
+        List<SleepStateRow> =
+        dao.sleepStateSamples(deviceId, from, to, limit).map { SleepStateRow(it.ts, it.state) }
 
     /**
      * The latest (greatest-ts) non-null @63 activity class over [from, to], read across the active strap ∪

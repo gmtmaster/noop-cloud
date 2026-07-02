@@ -1063,6 +1063,37 @@ object SleepStager {
         return grid.counts
     }
 
+    /**
+     * #175: the strap's OWN band sleep_state (0 wake/1 still/2 asleep/3 up) gridded onto the SAME 30 s epoch
+     * grid `stagesJSON` / [sessionEpochMotion] use, so the caller can persist it via
+     * [com.noop.data.WhoopRepository.persistSessionSleepState] and the H7 re-onset CONFIRM guard can read it
+     * back as timestamped `(startTs + i*epochS, state)` samples. Returns EMPTY when the session carries no
+     * band-state samples (a WHOOP 4.0, or an unbanded window) — an absent signal stays absent, never a
+     * fabricated array. When present, each epoch takes the band's LAST reported state within its
+     * `[start + i*30, start + (i+1)*30)` window; an epoch with no sample of its own CARRIES FORWARD the
+     * previous epoch's state (band state is a step function). Leading epochs before the first sample take the
+     * first sample's state. The band code is carried VERBATIM — this never converts an unproven code into a
+     * derived stage; consumers decide meaning. Mirrors Swift `sessionEpochSleepState`. (#175)
+     */
+    fun sessionEpochSleepState(start: Long, end: Long, sleepState: List<Pair<Long, Int>>): List<Int> {
+        val seg = rowsBetween(sleepState, start, end) { it.first }.sortedBy { it.first }
+        if (seg.isEmpty() || end <= start) return emptyList()
+        val nEpochs = maxOf(1, kotlin.math.ceil((end - start).toDouble() / epochS).toInt())
+        val out = IntArray(nEpochs) { seg[0].second }   // lead-in = first sample's state
+        var last = seg[0].second
+        var si = 0
+        for (i in 0 until nEpochs) {
+            val epochEnd = start + ((i + 1) * epochS).toLong()
+            // Advance through every sample that falls in/at-or-before this epoch's window; the LAST one wins.
+            while (si < seg.size && seg[si].first < epochEnd) {
+                last = seg[si].second
+                si++
+            }
+            out[i] = last   // carry-forward when the epoch had no sample of its own
+        }
+        return out.toList()
+    }
+
     // ── Epoch grid ────────────────────────────────────────────────────────────
 
     internal class EpochGrid(

@@ -162,6 +162,21 @@ data class StepSample(
     val synced: Int = 0,
 )
 
+/**
+ * The strap's OWN per-record band sleep_state (#175). The decoder reads the v18 @81 high nibble
+ * (`(sb ushr 4) and 3`) as 0 wake / 1 still / 2 asleep / 3 up. The BYTE + offset are read off real captured
+ * frames exactly like every other v18 field; ONLY the non-zero code meanings are community/structure
+ * inference (every real capture we hold reads 0, a worn daytime wake), so this is carried VERBATIM (the
+ * strap's own byte) and surfaced/persisted as the strap's reported state, NOT trusted to override the derived
+ * hypnogram. Added by MIGRATION_14_15 (Swift WhoopStore v21 parity). PK (deviceId, ts). Swift `SleepStateSample`.
+ */
+@Entity(tableName = "sleepStateSample", primaryKeys = ["deviceId", "ts"])
+data class SleepStateSampleEntity(
+    val deviceId: String,
+    val ts: Long,
+    val state: Int,   // 0 wake / 1 still / 2 asleep / 3 up (band's own high-nibble code)
+)
+
 /** Respiration raw-ADC sample (type-47). Swift `respSample` (v3). PK (deviceId, ts). */
 @Entity(tableName = "respSample", primaryKeys = ["deviceId", "ts"])
 data class RespSample(

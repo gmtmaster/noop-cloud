@@ -93,6 +93,20 @@ public struct StepSample: Equatable, Codable {
     }
 }
 
+/// The strap's OWN per-record band sleep_state (task #175). The Interpreter reads the high nibble of the
+/// v18 @81 flag byte (`(sb>>4)&3`) as 0 wake / 1 still / 2 asleep / 3 up. The BYTE and its offset are read
+/// off real captured frames (Whoop5HistoricalTests) exactly like every other v18 field; ONLY the
+/// meaning of the non-zero codes is community/structure inference (every real capture we hold reads 0, a
+/// worn daytime wake). So this stream is carried VERBATIM (the strap's own byte, never fabricated) and is
+/// surfaced/persisted as the strap's reported state, NOT trusted to override the derived hypnogram. It
+/// feeds the existing, already-verified H7 morning-stillness re-onset CONFIRM guard (KEEP-biased, never
+/// overrides) and a Deep Timeline display track. Mirrors Android `SleepStateRow`.
+public struct SleepStateSample: Equatable, Codable {
+    public let ts: Int
+    public let state: Int       // 0 wake / 1 still / 2 asleep / 3 up (band's own high-nibble code)
+    public init(ts: Int, state: Int) { self.ts = ts; self.state = state }
+}
+
 public struct Streams: Equatable, Codable {
     public var hr: [HRSample]
     public var rr: [RRInterval]
@@ -101,6 +115,10 @@ public struct Streams: Equatable, Codable {
     public var resp: [RespSample]
     public var gravity: [GravitySample]
     public var steps: [StepSample]
+    /// The strap's own per-record band sleep_state (#175), carried verbatim off @81's high nibble. Optional
+    /// signal (only 5/MG v18 records emit it today; a WHOOP 4.0 leaves it empty), consumed by the H7
+    /// re-onset CONFIRM guard and shown as a Deep Timeline track. Never overrides the derived stage.
+    public var sleepState: [SleepStateSample]
     /// PPG-derived per-second HR from the WHOOP 5.0 v26 optical buffer (issue #156). Kept separate from
     /// `hr` (the measured stream) so consumers can COALESCE without conflating the two sources.
     public var ppgHr: [PpgHrSample]
@@ -114,11 +132,12 @@ public struct Streams: Equatable, Codable {
     public init(hr: [HRSample] = [], rr: [RRInterval] = [],
                 spo2: [SpO2Sample] = [], skinTemp: [SkinTempSample] = [],
                 resp: [RespSample] = [], gravity: [GravitySample] = [],
-                steps: [StepSample] = [], ppgHr: [PpgHrSample] = [],
+                steps: [StepSample] = [], sleepState: [SleepStateSample] = [],
+                ppgHr: [PpgHrSample] = [],
                 events: [WhoopEvent] = [], battery: [BatterySample] = []) {
         self.hr = hr; self.rr = rr
         self.spo2 = spo2; self.skinTemp = skinTemp; self.resp = resp; self.gravity = gravity
-        self.steps = steps; self.ppgHr = ppgHr
+        self.steps = steps; self.sleepState = sleepState; self.ppgHr = ppgHr
         self.events = events; self.battery = battery
     }
 
@@ -127,11 +146,13 @@ public struct Streams: Equatable, Codable {
     /// diagnostic in `Backfiller.finishChunk` (#77).
     public var isEmpty: Bool {
         hr.isEmpty && rr.isEmpty && spo2.isEmpty && skinTemp.isEmpty && resp.isEmpty
-            && gravity.isEmpty && steps.isEmpty && ppgHr.isEmpty && events.isEmpty && battery.isEmpty
+            && gravity.isEmpty && steps.isEmpty && sleepState.isEmpty && ppgHr.isEmpty
+            && events.isEmpty && battery.isEmpty
     }
 
     private enum CodingKeys: String, CodingKey {
         case hr, rr, spo2, skinTemp = "skin_temp", resp, gravity, steps
+        case sleepState = "sleep_state"
         case ppgHr = "ppg_hr"
         case events, battery
     }
@@ -147,6 +168,7 @@ public struct Streams: Equatable, Codable {
         resp = try c.decodeIfPresent([RespSample].self, forKey: .resp) ?? []
         gravity = try c.decodeIfPresent([GravitySample].self, forKey: .gravity) ?? []
         steps = try c.decodeIfPresent([StepSample].self, forKey: .steps) ?? []
+        sleepState = try c.decodeIfPresent([SleepStateSample].self, forKey: .sleepState) ?? []
         ppgHr = try c.decodeIfPresent([PpgHrSample].self, forKey: .ppgHr) ?? []
         events = try c.decodeIfPresent([WhoopEvent].self, forKey: .events) ?? []
         battery = try c.decodeIfPresent([BatterySample].self, forKey: .battery) ?? []

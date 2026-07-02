@@ -365,7 +365,8 @@ final class IntelligenceEngine: ObservableObject {
         // composite. The hr/rr/resp/gravity arrays go out of scope each iteration (memory stays bounded).
         var scoredNights: [(daily: DailyMetric, strain: Double?, cachedSleep: [CachedSleepSession],
                             workouts: [ExerciseSession], nightlySkin: Double?,
-                            sessionMotion: [Int: [Double]])] = []
+                            sessionMotion: [Int: [Double]],
+                            sessionSleepState: [Int: [Int]])] = []
         // Nightly values harvested in pass 1, keyed by day, to seed the pass-2 baseline.
         var nightlyHrvByDay: [String: Double?] = [:]
         var nightlyRhrByDay: [String: Double?] = [:]
@@ -489,14 +490,22 @@ final class IntelligenceEngine: ObservableObject {
                 // detector see the whole day, so a 5 pm run shows up on the same day.
                 let dayGrav = (try? await store.gravitySamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? []
 
-                // CONSUME (#531 / H8): the prior pass's persisted v18 BAND sleep_state for sessions overlapping
-                // the night window, expanded to timestamped (ts, state) samples on the 30 s grid, so the H7
-                // morning-stillness guard can confirm a borderline re-onset against the strap's OWN scored band.
-                // Read under `computedId` (where the prior pass banded its detected sessions); empty on the first
-                // pass (no banded sessions yet) → the guard simply falls back to the HR bar. Honest: only real
-                // banded "asleep" epochs rescue a block, never a fabricated one.
-                let bandSleepState = await Self.bandSleepStateSamples(computedId: computedId,
-                                                                      from: from, to: to, store: store)
+                // CONSUME (#531 / #175): the strap's OWN band sleep_state for the night window as timestamped
+                // (ts, state) samples, so the H7 morning-stillness guard can confirm a borderline re-onset
+                // against the strap's OWN scored band, AND analyzeDay can grid it per session for persistence.
+                // #175 wired the RAW `sleepStateSample` stream end to end: read it directly from `owner` (the
+                // strap that owns this night) so it is available THIS pass, not one pass behind, and it comes
+                // from the real offload rather than a read-its-own-write of the per-session JSON. Empty on a
+                // WHOOP 4.0 (no band_sleep_state stream) or an unbanded window → the guard falls back to the HR
+                // bar and no per-session state is persisted. Honest: only real banded epochs are ever surfaced.
+                // Fall back to the prior pass's persisted per-session state when the raw stream is absent (an
+                // older DB banded before the v21 stream landed), so a legacy install keeps the H7 confirm.
+                var bandSleepState = (try? await store.sleepStateSamples(deviceId: owner, from: from, to: to))?
+                    .map { (ts: $0.ts, state: $0.state) } ?? []
+                if bandSleepState.isEmpty {
+                    bandSleepState = await Self.bandSleepStateSamples(computedId: computedId,
+                                                                     from: from, to: to, store: store)
+                }
 
                 // #690: read the experimental-V2 toggle ONCE here (off the detached executor, matching the
                 // Repository self-heal call site) and capture the Bool, so the Settings toggle now drives the
@@ -590,7 +599,8 @@ final class IntelligenceEngine: ObservableObject {
             for line in scan.stepsTrace { diagnosticSink?(line, .steps) }
             scoredNights.append((daily: res.daily, strain: res.strain, cachedSleep: res.cachedSleep,
                                  workouts: res.workouts, nightlySkin: res.nightlySkinTempC,
-                                 sessionMotion: res.sessionMotionByStart))
+                                 sessionMotion: res.sessionMotionByStart,
+                                 sessionSleepState: res.sessionSleepStateByStart))
         }
 
         // ── Seed the baseline from the UNION of imported nightly history + the values just computed.
@@ -1076,6 +1086,21 @@ final class IntelligenceEngine: ObservableObject {
         }
         for (start, motion) in motionByStart {
             _ = try? await store.persistSessionMotion(deviceId: computedId, sessionStart: start, motionEpochs: motion)
+        }
+        // ── Persist per-epoch BAND sleep_state (#175) beside each kept session's stagesJSON ──────────────
+        // This is the source `sessionSleepStateJSON` lacked (v7.7.0 finding: the write path had no producer
+        // because the raw stream was dropped at extraction). Now analyzeDay grids the RAW `sleepStateSample`
+        // stream per session; persist it here so the NEXT pass's `bandSleepStateSamples` read (the H7 confirm)
+        // and the display can see the strap's OWN scored band. ONLY for kept (not edited/dismissed) sessions;
+        // a session with no band samples was omitted (no key) and stays NULL — an absent signal stays absent.
+        var sleepStateByStart: [Int: [Int]] = [:]
+        for night in scoredNights {
+            for (start, states) in night.sessionSleepState where keptStarts.contains(start) {
+                sleepStateByStart[start] = states
+            }
+        }
+        for (start, states) in sleepStateByStart {
+            _ = try? await store.persistSessionSleepState(deviceId: computedId, sessionStart: start, states: states)
         }
         // ── Overlap-aware banked-sleep heal (#899) ────────────────────────────────────────────────────
         // An unstable strap clock re-banks the SAME night under a shifted timebase, so successive passes

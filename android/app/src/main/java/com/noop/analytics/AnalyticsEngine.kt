@@ -507,6 +507,21 @@ object AnalyticsEngine {
             if (motion.isNotEmpty()) sessionMotionByStart[s.start] = motion
         }
 
+        // ── Per-session per-epoch BAND sleep_state (#175) ─────────────────────
+        // Grid the strap's OWN band sleep_state (the SAME [bandSleepState] samples the H7 guard consumes)
+        // onto each matched session's 30 s epochs, for the caller to persist beside `stagesJSON`. This is the
+        // source the band-state chain lacked (persist → next pass's H7 re-onset CONFIRM). A session whose
+        // window carries no band samples is omitted (no key) → the caller persists NULL, an absent signal
+        // stays absent. Empty on a WHOOP 4.0. The band code is carried verbatim; it NEVER overrides the
+        // derived hypnogram, only confirms a borderline morning re-onset. Mirrors Swift.
+        val sessionSleepStateByStart = HashMap<Long, List<Int>>()
+        if (bandSleepState.isNotEmpty()) {
+            for (s in matched) {
+                val states = SleepStager.sessionEpochSleepState(s.start, s.end, bandSleepState)
+                if (states.isNotEmpty()) sessionSleepStateByStart[s.start] = states
+            }
+        }
+
         return DayResult(
             daily = daily,
             sleepSessions = matched,
@@ -519,6 +534,7 @@ object AnalyticsEngine {
             effortConfidence = effortConfidence,
             restConfidence = restConfidence,
             sessionMotionByStart = sessionMotionByStart,
+            sessionSleepStateByStart = sessionSleepStateByStart,
         )
     }
 

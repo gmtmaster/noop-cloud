@@ -1176,7 +1176,7 @@ final class Repository: ObservableObject {
     /// A metric the Deep Timeline can plot. HR is the always-present hero (adaptively downsampled);
     /// the rest are lower-frequency raw-sample streams shown where the strap offloaded them.
     enum TimelineMetric: String, CaseIterable, Identifiable, Sendable {
-        case hr, hrv, spo2, skinTemp, respiration, motion
+        case hr, hrv, spo2, skinTemp, respiration, motion, bandSleepState
         var id: String { rawValue }
 
         /// User-facing pill label.
@@ -1191,6 +1191,11 @@ final class Repository: ObservableObject {
             case .skinTemp: return String(localized: "Skin Temp")
             case .respiration: return String(localized: "Respiration")
             case .motion: return String(localized: "Motion")
+            // #175: the strap's OWN band sleep_state track (0 wake/1 still/2 asleep/3 up), shown as a
+            // distinct stepped track alongside the derived hypnogram. This is the band's reported state,
+            // NOT a stage NOOP trusts as truth — the pill names it "Band Sleep State" so it can't be
+            // mistaken for the derived stages.
+            case .bandSleepState: return String(localized: "Band Sleep State")
             }
         }
     }
@@ -1338,6 +1343,15 @@ final class Repository: ObservableObject {
             // The sqrt-per-row magnitude over up to 200k gravity rows runs OFF the main actor.
             return await Task.detached(priority: .utility) {
                 s.map { Self.timelinePoint($0.ts, ($0.x * $0.x + $0.y * $0.y + $0.z * $0.z).squareRoot()) }
+            }.value
+        case .bandSleepState:
+            // #175: the strap's OWN band sleep_state (0 wake/1 still/2 asleep/3 up) as a stepped track. Read
+            // the raw per-record stream (far sparser than 1 Hz HR, safe to load a day) and plot the 0-3 code
+            // VERBATIM. Empty when the strap never reported it (a WHOOP 4.0, or a not-yet-offloaded window),
+            // which the view renders as its honest "nothing here" state — never a fabricated flat line.
+            let s = (try? await store.sleepStateSamples(deviceId: source, from: from, to: to)) ?? []
+            return await Task.detached(priority: .utility) {
+                s.map { Self.timelinePoint($0.ts, Double($0.state)) }
             }.value
         }
     }

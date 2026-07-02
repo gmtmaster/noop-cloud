@@ -416,13 +416,19 @@ object IntelligenceEngine {
             // whole day, so a 5 pm run shows up the same day.
             val dayGrav = repo.gravitySamples(owner, dayMidnight, dayEnd, STREAM_LIMIT)
 
-            // CONSUME (#531 / H8): the prior pass's persisted v18 BAND sleep_state for sessions overlapping
-            // the night window, expanded to timestamped (ts, state) samples on the 30 s grid, so the H7
-            // morning-stillness guard can confirm a borderline re-onset against the strap's OWN scored band.
-            // Read under [computedId] (where the prior pass banded its detected sessions); empty on the first
-            // pass → the guard falls back to the HR bar. Honest: only real banded "asleep" epochs rescue a
-            // block. Mirrors Swift.
-            val bandSleepState = bandSleepStateSamples(repo, computedId, from, to)
+            // CONSUME (#531 / #175): the strap's OWN band sleep_state for the night window as (ts, state)
+            // samples, so the H7 morning-stillness guard can confirm a borderline re-onset against the strap's
+            // OWN scored band, AND analyzeDay can grid it per session for persistence. #175 wired the RAW
+            // `sleepStateSample` stream end to end: read it directly from [owner] (the strap that owns this
+            // night) so it is available THIS pass, not one pass behind, and it comes from the real offload
+            // rather than a read-its-own-write of the per-session JSON. Empty on a WHOOP 4.0 (no band stream)
+            // or an unbanded window → the guard falls back to the HR bar and no per-session state is persisted.
+            // Fall back to the prior pass's persisted per-session state when the raw stream is absent (an older
+            // DB banded before the v15 stream landed), so a legacy install keeps the H7 confirm. Mirrors Swift.
+            var bandSleepState = repo.sleepStateSamples(owner, from, to).map { it.ts to it.state }
+            if (bandSleepState.isEmpty()) {
+                bandSleepState = bandSleepStateSamples(repo, computedId, from, to)
+            }
 
             val res = AnalyticsEngine.analyzeDay(
                 day = day,
@@ -960,6 +966,21 @@ object IntelligenceEngine {
         }
         for ((start, motion) in motionByStart) {
             repo.persistSessionMotion(computedId, start, motion)
+        }
+        // ── Persist per-epoch BAND sleep_state (#175) beside each kept session's stagesJSON ──────────────
+        // This is the source `sleepStateJSON` lacked (the write path had no producer because the raw stream
+        // was dropped at extraction). Now analyzeDay grids the RAW `sleepStateSample` stream per session;
+        // persist it here so the NEXT pass's bandSleepStateSamples read (the H7 confirm) and the display can
+        // see the strap's OWN scored band. ONLY for kept (not edited/dismissed) sessions; a session with no
+        // band samples was omitted (no key) and stays NULL — an absent signal stays absent. Mirrors Swift.
+        val sleepStateByStart = HashMap<Long, List<Int>>()
+        for (res in scoredNights) {
+            for ((start, states) in res.sessionSleepStateByStart) {
+                if (start in keptStarts) sleepStateByStart[start] = states
+            }
+        }
+        for ((start, states) in sleepStateByStart) {
+            repo.persistSessionSleepState(computedId, start, states)
         }
         // ── Overlap-aware banked-sleep heal (#899) ────────────────────────────────────────────────────
         // An unstable strap clock re-banks the SAME night under a shifted timebase, so successive passes

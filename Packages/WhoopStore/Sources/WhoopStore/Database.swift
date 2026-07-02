@@ -401,6 +401,25 @@ extension WhoopStore {
                 t.add(column: "numericValue", .double)
             }
         }
+
+        // v21 (#175 band sleep-state stream): the strap's OWN per-record band sleep_state (Interpreter's
+        // @81 `(sb>>4)&3`: 0 wake / 1 still / 2 asleep / 3 up) was DECODED but DROPPED at stream extraction —
+        // so the whole band-state chain (the H7 morning-stillness re-onset CONFIRM guard + a Deep Timeline
+        // display track) had no source, and the v18 `sleepStateJSON` per-session column was never fed. This
+        // adds the RAW per-sample table, keyed by (deviceId, ts) exactly like stepSample/ppgHrSample, so a
+        // second's band state is idempotently upserted (ON CONFLICT DO NOTHING) from the offload stream. New
+        // table only (no existing data touched); already-offloaded history the strap has trimmed can't be
+        // re-sent, so this is forward-looking for straps that emit the field (5/MG v18). `state` is the raw
+        // 0-3 code carried VERBATIM — never a fabricated value; a strap that never reports it just has no rows.
+        // Twin of Android's MIGRATION_14_15.
+        migrator.registerMigration("v21-sleep-state-sample") { db in
+            try db.create(table: "sleepStateSample") { t in
+                t.column("deviceId", .text).notNull()
+                t.column("ts", .integer).notNull()
+                t.column("state", .integer).notNull()
+                t.primaryKey(["deviceId", "ts"])
+            }
+        }
         return migrator
     }
 }
