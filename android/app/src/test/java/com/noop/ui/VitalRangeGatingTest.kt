@@ -46,7 +46,7 @@ class VitalRangeGatingTest {
     @Test fun monthUnlocksWhenSpanExceedsAWeek() {
         assertEquals(listOf(VitalDetailRange.WEEK, VitalDetailRange.ALL), unlockedVitalRanges(7L))
         assertEquals(
-            listOf(VitalDetailRange.WEEK, VitalDetailRange.MONTH),
+            listOf(VitalDetailRange.WEEK, VitalDetailRange.MONTH, VitalDetailRange.ALL),
             unlockedVitalRanges(8L),
         )
     }
@@ -54,7 +54,7 @@ class VitalRangeGatingTest {
     @Test fun threeMonthUnlocksWhenSpanExceedsAMonth() {
         assertEquals(3, unlockedVitalRanges(30L).size)
         assertEquals(
-            listOf(VitalDetailRange.WEEK, VitalDetailRange.MONTH, VitalDetailRange.THREE_MONTH),
+            listOf(VitalDetailRange.WEEK, VitalDetailRange.MONTH, VitalDetailRange.THREE_MONTH, VitalDetailRange.ALL),
             unlockedVitalRanges(31L),
         )
     }
@@ -89,7 +89,7 @@ class VitalRangeGatingTest {
         // 3M returns the identical set as M, so 3M is locked.
         val points = dailyPoints(10)
         val unlocked = unlockedVitalRanges(vitalHistorySpanDays(points))
-        assertEquals(listOf(VitalDetailRange.WEEK, VitalDetailRange.MONTH), unlocked)
+        assertEquals(listOf(VitalDetailRange.WEEK, VitalDetailRange.MONTH, VitalDetailRange.ALL), unlocked)
         assertEquals(7, filterVitalPoints(points, VitalDetailRange.WEEK).size)
         assertEquals(10, filterVitalPoints(points, VitalDetailRange.MONTH).size)
         assertEquals(
