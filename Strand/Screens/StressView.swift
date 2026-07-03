@@ -64,7 +64,11 @@ struct StressView: View {
                        // PERF (scroll): lazy column — byte-identical layout (LazyVStack == eager VStack
                        // alignment/spacing/header). The content is one inner eager VStack, so the staggered
                        // section reveal is unchanged; this only defers building that stack until it scrolls in.
-                       lazy: true) {
+                       lazy: true,
+                       // The day-of-sky liquid backdrop, matching Today / Health / Live / Sleep / Trends: a
+                       // fixed, full-bleed time-of-day sky behind the scroll content (does not scroll), so the
+                       // Stress screen sits in the same liquid atmosphere as every other tab.
+                       topBackground: liquidScaffoldSky()) {
             if let model {
                 content(model)
             } else if !loaded {
@@ -134,7 +138,7 @@ struct StressView: View {
     private func content(_ model: StressModel) -> some View {
         VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
 
-            // 1. HERO — the count-up PipBar + band + one plain-English line, all in one card.
+            // 1. HERO — the liquid stress-level vessel + band + one plain-English line, all in one card.
             heroCard(model)
                 .staggeredAppear(index: 0)
 
@@ -281,13 +285,12 @@ struct StressView: View {
         return date.formatted(.dateTime.hour())
     }
 
-    // MARK: 1 · Hero — the NOOP count-up PipBar (the needle/speedometer is gone).
+    // MARK: 1 · Hero — the liquid stress-level vessel.
     //
-    // Design call: "remove the needle, it's not needed" + "straight horizontal bars that
-    // almost count up separated by pips". So the hero reads as one clean WHOOP-style block —
-    // a big white CountUpText value with "of 3" + the band word beside it, over a PipBar on the
-    // 0…3 scale tinted by the live stress band (calm blue → steady green → tense amber). Flat,
-    // crisp, no needle, no gauge, no glow.
+    // The 0–3 stress score reads as the signature liquid gauge: a LiquidVessel that fills to score/3
+    // and is tinted by the live band (calm blue → steady green → tense amber), with the count-up value +
+    // "of 3" over it (the Today HeroScoreCell / Live BPM-gauge idiom). The band pill sits top-trailing and
+    // one plain-English line explains the number below. Frosted card, liquid finish.
 
     private func heroCard(_ model: StressModel) -> some View {
         NoopCard(tint: StressRamp.calm) {
@@ -298,43 +301,24 @@ struct StressView: View {
                     StatePill("\(model.band.title)", tone: model.band.tone, showsDot: true)
                 }
 
-                // Big count-up value + "of 3", with the band word beside it (no needle).
-                HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space3) {
-                    HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space2) {
-                        CountUpText(
-                            value: model.score,
-                            format: { String(format: "%.1f", $0) },
-                            font: StrandFont.rounded(52, weight: .bold),
-                            color: StrandPalette.textPrimary
-                        )
-                        Text("of 3")
-                            .font(StrandFont.rounded(15, weight: .medium))
-                            .foregroundStyle(StrandPalette.textTertiary)
+                HStack(alignment: .center, spacing: NoopMetrics.space5) {
+                    // The stress-level vessel: fills to score/3, tinted to the live band, the value
+                    // counting up over it. Taps splash the gauge (the numeral is hit-transparent).
+                    StressHeroGauge(score: model.score, tint: StressRamp.color(model.score))
+
+                    VStack(alignment: .leading, spacing: NoopMetrics.space1) {
+                        Text(model.band.title)
+                            .font(StrandFont.overline)
+                            .tracking(StrandFont.overlineTracking)
+                            .foregroundStyle(StressRamp.color(model.score))
+                        // One plain-English line beside the gauge.
+                        Text(model.explanation)
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
-                    Text(model.band.title)
-                        .font(StrandFont.overline)
-                        .tracking(StrandFont.overlineTracking)
-                        .foregroundStyle(StressRamp.color(model.score))
                 }
-
-                // The NOOP signature: a count-up PipBar on the 0…3 scale, band-tinted.
-                PipBar(
-                    value: model.score,
-                    range: 0...3,
-                    segments: 21,
-                    tint: StressRamp.color(model.score),
-                    height: 12
-                )
-                .accessibilityLabel("Stress \(String(format: "%.1f", model.score)) of 3, \(model.band.title)")
-
-                // One plain-English line, full width under the bar.
-                Text(model.explanation)
-                    .font(StrandFont.subhead)
-                    .foregroundStyle(StrandPalette.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, NoopMetrics.space1)
             }
         }
     }
@@ -582,6 +566,43 @@ struct StressView: View {
 
     private var emptyState: some View {
         ComingSoon(what: "No stress history yet. Import your WHOOP export in Data Sources to see it.")
+    }
+}
+
+// MARK: - Stress hero gauge (liquid vessel + count-up score)
+
+/// The stress-level vessel: a LiquidVessel filled to `score`/3 and tinted to the live band, with the
+/// 0–3 value counting up over it and "of 3" beneath (the Today HeroScoreCell / Live BPM-gauge idiom).
+/// CountUpText self-animates the number roll; the numeral is hit-transparent so a tap reaches the
+/// vessel and splashes it.
+private struct StressHeroGauge: View {
+    let score: Double        // 0–3
+    let tint: Color
+
+    private var frac: Double { max(0, min(1, score / 3.0)) }
+
+    var body: some View {
+        ZStack {
+            LiquidVessel(value: frac, tint: tint, animated: true)
+                .frame(width: 104, height: 104)
+            VStack(spacing: 0) {
+                // CountUpText self-animates (counts up from 0 on appear, re-rolls on value change),
+                // so the score is passed straight through — no external roll state needed.
+                CountUpText(
+                    value: score,
+                    format: { String(format: "%.1f", $0) },
+                    font: StrandFont.rounded(34, weight: .bold),
+                    color: .white
+                )
+                .shadow(color: .black.opacity(0.5), radius: 6, y: 1)
+                Text("of 3")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            }
+            .allowsHitTesting(false)   // taps fall through to the vessel → splash
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Stress \(String(format: "%.1f", score)) of 3")
     }
 }
 
@@ -1002,16 +1023,16 @@ struct StressTotals {
     }
 }
 
-// MARK: - Stress totals bar (README screen-9)
+// MARK: - Stress totals bar (README screen-9, liquid finish)
 //
-// One stacked horizontal bar split Calm (blue) / Moderate (green) / High (amber)
-// by how much of the scored day sat in each band, with a legend of durations below. Empty
-// segments collapse; an all-empty day shows a faint placeholder track.
+// The Calm / Moderate / High split of the scored day, rendered as three labelled liquid tubes (the
+// signature LiquidTube, matching Health's recovery contributors and Today's Key-Metrics tubes). Each
+// tube fills to that band's SHARE of the scored day and is tinted to the band's WHOOP colour (calm blue /
+// steady green / tense amber), with the band name + its duration above it. A day with no scored hours
+// leaves all three tubes empty (no fabricated fill).
 
 struct StressTotalsBar: View {
     let totals: StressTotals
-
-    private let barHeight: CGFloat = 12
 
     private struct Band: Identifiable {
         let id = UUID()
@@ -1029,47 +1050,21 @@ struct StressTotalsBar: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // The split bar.
-            GeometryReader { geo in
-                let w = geo.size.width
-                // Visible segments share the gaps between them, so subtract those from the
-                // width pool before splitting proportionally — the segments always sum to ≤ w.
-                let visible = bands.filter { totals.fraction($0.band) > 0 }
-                let gaps = CGFloat(max(visible.count - 1, 0)) * 2
-                let usable = max(0, w - gaps)
-                HStack(spacing: totals.total > 0 ? 2 : 0) {
-                    if totals.total > 0 {
-                        ForEach(visible) { b in
-                            Capsule(style: .continuous)
-                                .fill(b.color)
-                                .frame(width: max(barHeight, usable * CGFloat(totals.fraction(b.band))))
-                        }
-                    } else {
-                        Capsule(style: .continuous)
-                            .fill(StrandPalette.surfaceInset)
-                            .frame(width: w)
+        VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+            ForEach(bands) { b in
+                VStack(alignment: .leading, spacing: NoopMetrics.space1) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(b.label)
+                            .font(StrandFont.captionNumber)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Spacer()
+                        Text(durationLabel(totals.hours(b.band)))
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary)
                     }
-                }
-                .frame(width: w, alignment: .leading)
-            }
-            .frame(height: barHeight)
-
-            // Legend: a dot, the band name, and its duration.
-            HStack(spacing: 0) {
-                ForEach(bands) { b in
-                    HStack(spacing: 7) {
-                        Circle().fill(b.color).frame(width: 8, height: 8)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(b.label)
-                                .font(StrandFont.captionNumber)
-                                .foregroundStyle(StrandPalette.textPrimary)
-                            Text(durationLabel(totals.hours(b.band)))
-                                .font(StrandFont.footnote)
-                                .foregroundStyle(StrandPalette.textTertiary)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // The signature liquid tube: fills to the band's share of the scored day, tinted to the
+                    // band colour. Static (posed) — a row of small bars shouldn't each run a live Canvas.
+                    LiquidTube(frac: totals.fraction(b.band), tint: b.color, height: 10, animated: false)
                 }
             }
         }
@@ -1121,7 +1116,7 @@ private struct StressPreviewHarness: View {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 Text("Stress").font(StrandFont.title1).foregroundStyle(StrandPalette.textPrimary)
 
-                // Clean hero — the count-up PipBar (no needle, no gauge, no glow).
+                // Liquid hero — the stress-level vessel + band + one plain-English line.
                 NoopCard(tint: StressRamp.calm) {
                     VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                         HStack {
@@ -1129,26 +1124,19 @@ private struct StressPreviewHarness: View {
                             Spacer()
                             StatePill("\(band.title)", tone: band.tone)
                         }
-                        HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space3) {
-                            HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space2) {
-                                CountUpText(value: score, format: { String(format: "%.1f", $0) },
-                                            font: StrandFont.rounded(52, weight: .bold),
-                                            color: StrandPalette.textPrimary)
-                                Text("of 3").font(StrandFont.rounded(15, weight: .medium))
-                                    .foregroundStyle(StrandPalette.textTertiary)
+                        HStack(alignment: .center, spacing: NoopMetrics.space5) {
+                            StressHeroGauge(score: score, tint: StressRamp.color(score))
+                            VStack(alignment: .leading, spacing: NoopMetrics.space1) {
+                                Text(band.title).font(StrandFont.overline)
+                                    .tracking(StrandFont.overlineTracking)
+                                    .foregroundStyle(StressRamp.color(score))
+                                Text(StressMath.explanation(band: band, rhrDelta: 3, hrvDelta: -8, usingStored: false))
+                                    .font(StrandFont.subhead)
+                                    .foregroundStyle(StrandPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer(minLength: 0)
-                            Text(band.title).font(StrandFont.overline)
-                                .tracking(StrandFont.overlineTracking)
-                                .foregroundStyle(StressRamp.color(score))
                         }
-                        PipBar(value: score, range: 0...3, segments: 21,
-                               tint: StressRamp.color(score), height: 12)
-                        Text(StressMath.explanation(band: band, rhrDelta: 3, hrvDelta: -8, usingStored: false))
-                            .font(StrandFont.subhead)
-                            .foregroundStyle(StrandPalette.textSecondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, NoopMetrics.space1)
                     }
                 }
 
