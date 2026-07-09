@@ -231,6 +231,12 @@ struct TodayView: View {
             .filter { hydrationEnabled || $0 != .hydration }
     }
 
+    private var visibleDashboardCards: [DashboardCard] {
+        enabledDashboardCards.filter { !Self.primaryTodayDashboardCards.contains($0) }
+    }
+
+    private static let primaryTodayDashboardCards: Set<DashboardCard> = [.stress, .hrv, .restingHr, .respiratory, .sleep]
+
     // #755: a mirror of `LiveState.backfilling` (strap mid history-offload). TodayView must NOT observe
     // LiveState directly (the 1 Hz flood, see the top-of-type note), so a tiny leaf `BackfillFlagBridge`
     // owns the observation and pushes only the boolean EDGE into this @State. loadAll reads it to DEFER the
@@ -419,9 +425,9 @@ struct TodayView: View {
     // expander, collapsing OVERFLOW only (never dropping or reordering a user-selected tile, #251). @State
     // (not persisted) so the home screen reopens compact.
     @State private var metricsExpanded = false
-    /// The number of Key-Metric tiles shown before the "Show all metrics" expander (S5). Two columns, so
-    /// six fills three clean rows; the rest fold behind the expander. Static so the cap is unit-testable.
-    static let metricsCollapsedCap = 6
+    /// The number of supporting Key-Metric tiles shown before the "Show all metrics" expander. Two columns,
+    /// two rows: enough context without repeating the three hero scores directly under the rings.
+    static let metricsCollapsedCap = 4
 
     // S5: the Data Sources footer collapses to a single "Synced from: …" summary line that expands inline
     // to the full per-source rows + strap battery/sync on tap. Default collapsed so the home screen ends
@@ -1273,17 +1279,19 @@ struct TodayView: View {
                     )
                     .staggeredAppear(index: 0)
                 #endif
-                heartRateTrendSection.staggeredAppear(index: 1)
-                // Design Reset: rings -> Heart rate -> Your cards (the flat mockup order); the greeting +
-                // Synthesis read-out + vitals now sit below the pinned cards instead of crowding the hero.
-                yourCardsSection.staggeredAppear(index: 2)
-                synthesisSection.staggeredAppear(index: 3)
+                // Phase 1 WHOOP-like hierarchy: rings first, then a coaching brief, then compact supporting
+                // signals. The 5-minute HR chart remains on Today, lower between workouts and sources.
+                synthesisSection.staggeredAppear(index: 1)
+                stressSection.staggeredAppear(index: 2)
+                recoveryVitalsSection.staggeredAppear(index: 3)
                 // S4: the SEPARATE Readiness block is no longer a home-screen card, it folded into the
                 // Charge-ring tap (chargeBreakdownSheet). A one-word readiness read (Push / Maintain / Rest,
                 // #205) stays on the hero via the Synthesis section's pill row, so the home screen keeps a
                 // glanceable verdict without the full card. Readiness is NOT deleted, only moved behind a tap.
                 metricsSection.staggeredAppear(index: 4)
-                workoutsSection.staggeredAppear(index: 5)
+                yourCardsSection.staggeredAppear(index: 5)
+                workoutsSection.staggeredAppear(index: 6)
+                heartRateTrendSection.staggeredAppear(index: 7)
                 // Opt-in "looks like a workout?" suggestion (default OFF). Renders only when the
                 // Settings toggle is on AND the detector finds a recent unsaved, un-dismissed window.
                 AutoWorkoutCard()
@@ -1833,10 +1841,9 @@ struct TodayView: View {
             }
             .accessibilityElement(children: .combine)
 
-            // S4: the Synthesis card collapses to a single one-liner that EXPANDS on tap. Default collapsed
-            // so the home screen stays tight; the live content (#506) is unchanged, only the chrome folds.
-            // The headline (synthesisCardStatus / the calibration status / the DEBUG frame) stays visible in
-            // both states, so a glance still reads today's verdict; the detail body reveals on tap.
+            // Phase 1 UI rethink: Morning Brief is now the primary coach card under the rings, with
+            // deterministic drivers from the same already-loaded Today values. No metrics are recomputed or
+            // persisted differently; this is presentation-only.
             synthesisCollapsible(d: d, score: score)
 
             if let note = effortZeroNote {
@@ -1852,9 +1859,6 @@ struct TodayView: View {
                 .padding(.horizontal, 2)
                 .accessibilityElement(children: .combine)
             }
-
-            // HRV / Resting HR / Respiratory, the vitals that drive recovery.
-            recoveryVitalsCard(d)
         }
     }
 
@@ -1879,53 +1883,44 @@ struct TodayView: View {
     private func synthesisCollapsible(d: DailyMetric?, score: Double?) -> some View {
         // Resolve the headline + detail once so the collapsed line and the expanded card never disagree.
         let copy = synthesisCopy(d: d, score: score)
-        let status = copy.status
-        let detail = copy.detail
+        let readDay = lastScoredRecoveryDay ?? d
+        let readScore = lastScoredRecoveryDay?.recovery ?? score
+        DailyInsightCard(
+            title: "Morning Brief",
+            overline: "Daily Insight",
+            status: copy.status,
+            detail: copy.detail,
+            tint: synthesisCardColor(score: readScore),
+            drivers: dailyInsightDrivers(d: readDay, score: readScore)
+        )
+    }
 
-        if synthesisExpanded {
-            // Expanded: the full locked InsightCard, then a tap target to collapse it again.
-            Button {
-                withAnimation(StrandMotion.interactive) { synthesisExpanded = false }
-            } label: {
-                InsightCard(
-                    category: "Synthesis",
-                    status: status,
-                    detail: detail,
-                    statusColor: StrandPalette.textPrimary,
-                    tint: StrandPalette.chargeColor
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Synthesis. \(status)")
-            .accessibilityHint("Collapse")
-        } else {
-            // Collapsed: a one-liner with the category overline, the status headline and a down-chevron.
-            Button {
-                withAnimation(StrandMotion.interactive) { synthesisExpanded = true }
-            } label: {
-                NoopCard(tint: StrandPalette.chargeColor) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Synthesis").strandOverline()
-                            Text(status)
-                                .font(StrandFont.headline)
-                                .foregroundStyle(StrandPalette.textPrimary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.85)
-                        }
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(StrandPalette.textTertiary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+    @ViewBuilder
+    private var stressSection: some View {
+        if selectedDayOffset == 0 || stressToday != nil {
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                SectionHeader("Stress", overline: selectedDayOffset == 0 ? "Today" : "\(selectedDayOverline)")
+                NavigationLink {
+                    StressView()
+                } label: {
+                    MetricMiniStat(
+                        title: "Stress",
+                        value: stressToday.map { "\(Int($0.rounded()))" } ?? Self.calibratingPlaceholder,
+                        caption: stressToday == nil ? "Building from recent signals" : "Autonomic load",
+                        tint: StrandPalette.stressColor,
+                        systemImage: "bolt.heart.fill"
+                    )
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Open stress details")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Synthesis. \(status)")
-            .accessibilityHint("Expand for the full read")
+        }
+    }
+
+    private var recoveryVitalsSection: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Recovery vitals", overline: "\(selectedDayOverline)")
+            recoveryVitalsCard(displayDay)
         }
     }
 
@@ -1961,7 +1956,7 @@ struct TodayView: View {
     /// than vanishing, so the section is stable; it's hidden only when the user has no cards selected at all.
     @ViewBuilder
     private var yourCardsSection: some View {
-        if selectedDayOffset == 0 && !enabledDashboardCards.isEmpty {
+        if selectedDayOffset == 0 && !visibleDashboardCards.isEmpty {
             VStack(alignment: .leading, spacing: NoopMetrics.gap) {
                 // Section header: the "Your cards" label + a right-aligned BLUE "CUSTOMISE" action link (the
                 // WHOOP "My Dashboard" ✎ affordance). Opens a local sheet, no new nav destination.
@@ -1980,7 +1975,7 @@ struct TodayView: View {
                     .accessibilityLabel("Customise your cards")
                     .help("Choose which cards show and reorder them")
                 }
-                ForEach(enabledDashboardCards) { card in
+                ForEach(visibleDashboardCards) { card in
                     dashboardCardRow(card)
                 }
             }
@@ -2261,8 +2256,8 @@ struct TodayView: View {
         let carriedFromRhr = d?.restingHr == nil && vd?.restingHr != nil
         let carriedFromResp = d?.respRateBpm == nil && vd?.respRateBpm != nil
         let provenance: DailyMetric? = (carriedFromHrv || carriedFromRhr || carriedFromResp) ? vd : nil
-        NoopCard(tint: StrandPalette.chargeColor) {
-            VStack(spacing: 0) {
+        NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
+            VStack(alignment: .leading, spacing: 10) {
                 // DEBUG promo harness: pin HRV / Resting HR to the active frame's values. No-op otherwise.
                 #if DEBUG
                 let demoHrv = DemoDayHarness.active.map { "\($0.hrvMs)" }
@@ -2271,21 +2266,35 @@ struct TodayView: View {
                 let demoHrv: String? = nil
                 let demoRhr: String? = nil
                 #endif
-                metricRow(icon: "waveform.path.ecg", label: "HRV",
-                          value: demoHrv ?? (hrv.map { "\(Int($0.rounded()))" } ?? "—"), unit: "ms",
-                          tint: StrandPalette.metricCyan)
-                Divider().overlay(StrandPalette.hairline)
-                metricRow(icon: "heart.fill", label: "Resting HR",
-                          value: demoRhr ?? (rhr.map { "\($0)" } ?? "—"), unit: "bpm",
-                          tint: StrandPalette.metricRose)
-                Divider().overlay(StrandPalette.hairline)
-                metricRow(icon: "lungs.fill", label: "Respiratory",
-                          // Today's own respiratory, else the carried night's; a non-carrying today keeps the
-                          // sparkline-tail fallback so a sparse-but-recent value still reads.
-                          value: resp.map { String(format: "%.1f", $0) }
-                              ?? (vd == nil ? latestString("resp_rate", decimals: 1) : "—"),
-                          unit: "rpm",
-                          tint: StrandPalette.accent)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], alignment: .leading, spacing: 8) {
+                    RecoveryVitalCell(
+                        title: "HRV",
+                        value: demoHrv ?? (hrv.map { "\(Int($0.rounded()))" } ?? "—"),
+                        unit: "ms",
+                        caption: hrvBaselineDeltaPct(d).map { Self.signedPercent($0) + " baseline" } ?? "Overnight",
+                        tint: StrandPalette.metricCyan,
+                        systemImage: "waveform.path.ecg"
+                    )
+                    RecoveryVitalCell(
+                        title: "RHR",
+                        value: demoRhr ?? (rhr.map { "\($0)" } ?? "—"),
+                        unit: "bpm",
+                        caption: "Resting",
+                        tint: StrandPalette.metricRose,
+                        systemImage: "heart.fill"
+                    )
+                    RecoveryVitalCell(
+                        title: "Resp",
+                        // Today's own respiratory, else the carried night's; a non-carrying today keeps the
+                        // sparkline-tail fallback so a sparse-but-recent value still reads.
+                        value: resp.map { String(format: "%.1f", $0) }
+                            ?? (vd == nil ? latestString("resp_rate", decimals: 1) : "—"),
+                        unit: "rpm",
+                        caption: "Breathing",
+                        tint: StrandPalette.accent,
+                        systemImage: "lungs.fill"
+                    )
+                }
                 // ONE provenance footnote when a shown vital is a carried prior-day read (not today's),
                 // stamped with THAT row's date via the shared caption (which relabels a weeks-old carry to
                 // "Latest sleep", #779), so a prior read is never silently passed off as today.
@@ -2347,19 +2356,235 @@ struct TodayView: View {
     /// post-rollover state), so the card mirrors the carried Charge ring instead of reading "No Data".
     /// When today IS scored (or there's nothing to carry) it's today's own `hrvInsightStatus`.
     private func synthesisCardStatus(_ d: DailyMetric?, score: Double?) -> String {
-        if let prior = lastScoredRecoveryDay {
-            return hrvInsightStatus(prior, score: prior.recovery)
-        }
-        return hrvInsightStatus(d, score: score)
+        let readDay = lastScoredRecoveryDay ?? d
+        let readScore = lastScoredRecoveryDay?.recovery ?? score
+        if let status = dailyCoachStatus(readDay, score: readScore) { return status }
+        return hrvInsightStatus(readDay, score: readScore)
     }
 
     /// The Synthesis detail line. When carrying a prior scored day it summarises THAT day and appends a
     /// "Last night · <date>" provenance, so the prior read is never silently passed off as today's.
     private func synthesisCardDetail(_ d: DailyMetric?, score: Double?) -> String {
+        let readDay = lastScoredRecoveryDay ?? d
+        let readScore = lastScoredRecoveryDay?.recovery ?? score
+        let detail = dailyCoachDetail(readDay, score: readScore) ?? hrvInsightDetail(readDay, score: readScore)
         if let prior = lastScoredRecoveryDay {
-            return hrvInsightDetail(prior, score: prior.recovery) + " " + carriedCaption(prior) + "."
+            return detail + " " + carriedCaption(prior) + "."
         }
-        return hrvInsightDetail(d, score: score)
+        return detail
+    }
+
+    private func dailyCoachStatus(_ d: DailyMetric?, score: Double?) -> String? {
+        guard let d else { return nil }
+        let previous = previousMetric(before: d.day)
+        let debtDelta = sleepDebtDelta(for: d, previous: previous)
+        let rhrDelta = vitalDelta(for: d, previous: previous) { $0.restingHr.map(Double.init) }
+        let recoveryDelta = vitalDelta(for: d, previous: previous, \.recovery)
+        let remDelta = baselineDelta(for: d, field: \.remMin)
+        let deepDelta = baselineDelta(for: d, field: \.deepMin)
+        let respDelta = baselineDelta(for: d, field: \.respRateBpm)
+        let strain = d.strain
+
+        if let recoveryDelta, recoveryDelta >= 5, let rhrDelta, rhrDelta <= -1 {
+            return String(localized: "Recovery improved as resting HR dropped")
+        }
+        if let debtDelta, debtDelta >= 30 {
+            return String(localized: "You added \(Self.durationPhrase(debtDelta)) of sleep debt")
+        }
+        if let remDelta, remDelta >= 20 {
+            return String(localized: "REM recovered versus your 30-day average")
+        }
+        if let deepDelta, deepDelta <= -20 {
+            return String(localized: "Deep sleep was below your normal")
+        }
+        if let respDelta, abs(respDelta) <= 0.4 {
+            return String(localized: "Respiratory rate stayed stable")
+        }
+        if let score, score >= 75, (strain ?? 0) < 55 {
+            return String(localized: "A good day for higher strain")
+        }
+        if let score, score < 45 {
+            return String(localized: "Prioritize recovery today")
+        }
+        return nil
+    }
+
+    private func dailyCoachDetail(_ d: DailyMetric?, score: Double?) -> String? {
+        guard let d else { return nil }
+        let previous = previousMetric(before: d.day)
+        var notes: [String] = []
+
+        if let debtDelta = sleepDebtDelta(for: d, previous: previous), abs(debtDelta) >= 20 {
+            notes.append(debtDelta > 0
+                         ? String(localized: "Sleep debt increased by \(Self.durationPhrase(debtDelta)).")
+                         : String(localized: "You paid back \(Self.durationPhrase(abs(debtDelta))) of sleep debt."))
+        }
+        if let recDelta = vitalDelta(for: d, previous: previous, \.recovery), let rhrDelta = vitalDelta(for: d, previous: previous, { $0.restingHr.map(Double.init) }), recDelta >= 5, rhrDelta <= -1 {
+            notes.append(String(localized: "Recovery rose while resting HR fell by \(Int(abs(rhrDelta).rounded())) bpm."))
+        }
+        if let remDelta = baselineDelta(for: d, field: \.remMin), abs(remDelta) >= 20 {
+            notes.append(remDelta > 0
+                         ? String(localized: "REM is \(Self.durationPhrase(remDelta)) above your 30-day average.")
+                         : String(localized: "REM is \(Self.durationPhrase(abs(remDelta))) below your 30-day average."))
+        }
+        if let deepDelta = baselineDelta(for: d, field: \.deepMin), deepDelta <= -20 {
+            notes.append(String(localized: "Deep sleep ran \(Self.durationPhrase(abs(deepDelta))) below normal."))
+        }
+        if let respDelta = baselineDelta(for: d, field: \.respRateBpm), abs(respDelta) <= 0.4 {
+            notes.append(String(localized: "Respiratory rate remained stable."))
+        }
+        if let score, let strain = d.strain {
+            if score >= 70 && strain <= 45 {
+                notes.append(String(localized: "Yesterday's effort matched your recovery, so you have room to push."))
+            } else if score < 50 && strain >= 60 {
+                notes.append(String(localized: "Yesterday's effort was high for this recovery, so keep today easy."))
+            }
+        }
+        if notes.isEmpty { return nil }
+        return notes.prefix(3).joined(separator: " ")
+    }
+
+    private func dailyInsightDrivers(d: DailyMetric?, score: Double?) -> [InsightDriver] {
+        guard let d else { return [] }
+        let previous = previousMetric(before: d.day)
+        var drivers: [InsightDriver] = []
+
+        if let pct = hrvBaselineDeltaPct(d) {
+            drivers.append(InsightDriver(
+                title: "HRV",
+                value: Self.signedPercent(pct),
+                caption: "baseline",
+                tint: pct >= 0 ? StrandPalette.chargeColor : StrandPalette.statusWarning,
+                systemImage: "waveform.path.ecg"
+            ))
+        }
+
+        if let rhrDelta = vitalDelta(for: d, previous: previous, { $0.restingHr.map(Double.init) }),
+           abs(rhrDelta) >= 1 {
+            drivers.append(InsightDriver(
+                title: "RHR",
+                value: Self.signedWhole(rhrDelta),
+                caption: "bpm",
+                tint: rhrDelta <= 0 ? StrandPalette.chargeColor : StrandPalette.stressColor,
+                systemImage: "heart.fill"
+            ))
+        }
+
+        if let debtDelta = sleepDebtDelta(for: d, previous: previous), abs(debtDelta) >= 15 {
+            drivers.append(InsightDriver(
+                title: "Debt",
+                value: Self.signedDuration(debtDelta),
+                caption: "sleep",
+                tint: debtDelta <= 0 ? StrandPalette.restColor : StrandPalette.statusWarning,
+                systemImage: "bed.double.fill"
+            ))
+        }
+
+        if let remDelta = baselineDelta(for: d, field: \.remMin), abs(remDelta) >= 20 {
+            drivers.append(InsightDriver(
+                title: "REM",
+                value: Self.signedDuration(remDelta),
+                caption: "baseline",
+                tint: StrandPalette.restColor,
+                systemImage: "moon.zzz.fill"
+            ))
+        }
+
+        if let deepDelta = baselineDelta(for: d, field: \.deepMin), deepDelta <= -20 {
+            drivers.append(InsightDriver(
+                title: "Deep",
+                value: Self.signedDuration(deepDelta),
+                caption: "baseline",
+                tint: StrandPalette.restColor,
+                systemImage: "bed.double.fill"
+            ))
+        }
+
+        if let respDelta = baselineDelta(for: d, field: \.respRateBpm), abs(respDelta) <= 0.4 {
+            drivers.append(InsightDriver(
+                title: "Resp",
+                value: "Stable",
+                caption: "rate",
+                tint: StrandPalette.metricCyan,
+                systemImage: "lungs.fill"
+            ))
+        }
+
+        if let score, let strain = d.strain {
+            if score >= 70 && strain <= 45 {
+                drivers.append(InsightDriver(
+                    title: "Effort",
+                    value: "Matched",
+                    caption: "recovery",
+                    tint: StrandPalette.effortColor,
+                    systemImage: "figure.run"
+                ))
+            } else if score < 50 && strain >= 60 {
+                drivers.append(InsightDriver(
+                    title: "Today",
+                    value: "Recover",
+                    caption: "priority",
+                    tint: StrandPalette.statusWarning,
+                    systemImage: "arrow.down.heart.fill"
+                ))
+            }
+        }
+
+        return Array(drivers.prefix(4))
+    }
+
+    private func previousMetric(before day: String) -> DailyMetric? {
+        repo.days.last { $0.day < day }
+    }
+
+    private func vitalDelta(for d: DailyMetric, previous: DailyMetric?, _ value: (DailyMetric) -> Double?) -> Double? {
+        guard let now = value(d), let then = previous.flatMap(value) else { return nil }
+        return now - then
+    }
+
+    private func baselineDelta(for d: DailyMetric, field: (DailyMetric) -> Double?) -> Double? {
+        guard let today = field(d) else { return nil }
+        let prior = repo.days
+            .filter { $0.day < d.day }
+            .suffix(30)
+            .compactMap(field)
+        guard !prior.isEmpty else { return nil }
+        return today - prior.reduce(0, +) / Double(prior.count)
+    }
+
+    private func sleepDebtDelta(for d: DailyMetric, previous: DailyMetric?) -> Double? {
+        guard let current = sleepDebtMinutes(for: d), let previous, let prior = sleepDebtMinutes(for: previous) else { return nil }
+        return current - prior
+    }
+
+    private func sleepDebtMinutes(for d: DailyMetric) -> Double? {
+        if let debt = repo.importedSleep[d.day]?.debtMin { return debt }
+        guard let asleep = d.totalSleepMin, asleep > 0 else { return nil }
+        let priorSleep = repo.days.filter { $0.day < d.day }.suffix(30).compactMap(\.totalSleepMin)
+        let need = max(450, priorSleep.isEmpty ? 450 : priorSleep.reduce(0, +) / Double(priorSleep.count))
+        return max(0, need - asleep)
+    }
+
+    private static func durationPhrase(_ minutes: Double) -> String {
+        let mins = Int(abs(minutes).rounded())
+        if mins < 60 { return String(localized: "\(mins) min") }
+        let h = mins / 60
+        let m = mins % 60
+        return m == 0 ? String(localized: "\(h) hr") : String(localized: "\(h) hr \(m) min")
+    }
+
+    private static func signedPercent(_ value: Int) -> String {
+        value >= 0 ? "+\(value)%" : "\(value)%"
+    }
+
+    private static func signedWhole(_ value: Double) -> String {
+        let rounded = Int(value.rounded())
+        return rounded >= 0 ? "+\(rounded)" : "\(rounded)"
+    }
+
+    private static func signedDuration(_ minutes: Double) -> String {
+        let sign = minutes >= 0 ? "+" : "-"
+        return sign + durationPhrase(minutes)
     }
 
     /// The Synthesis status colour, keyed on the carried prior recovery when carrying, else today's.
@@ -2975,11 +3200,12 @@ struct TodayView: View {
 
     @ViewBuilder
     private var metricsSection: some View {
-        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+        if !supportingKeyMetrics.isEmpty {
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             // The section header keeps its "14-day trend" trailing label; an Edit control sits beside it
             // to open the local layout editor (#251). No new nav destination, a sheet over Today.
             HStack(alignment: .firstTextBaseline) {
-                SectionHeader("Key Metrics", overline: "\(selectedDayOverline)", trailing: String(localized: "14-day trend"))
+                SectionHeader("Supporting Signals", overline: "\(selectedDayOverline)", trailing: String(localized: "14-day trend"))
                 Button {
                     showingMetricsEditor = true
                 } label: {
@@ -3010,9 +3236,10 @@ struct TodayView: View {
             if metricsHasOverflow {
                 metricsExpander
             }
-        }
-        .sheet(isPresented: $showingMetricsEditor) {
-            KeyMetricsEditorSheet(layoutRaw: $keyMetricsRaw)
+            }
+            .sheet(isPresented: $showingMetricsEditor) {
+                KeyMetricsEditorSheet(layoutRaw: $keyMetricsRaw)
+            }
         }
     }
 
@@ -3020,18 +3247,18 @@ struct TodayView: View {
     /// `metricsCollapsedCap` (overflow folds behind the expander). Order is the user's saved order, sliced
     /// from the front, so a pinned tile is never dropped or reordered (#251); only the tail collapses.
     private var visibleKeyMetrics: [KeyMetric] {
-        let all = enabledKeyMetrics
+        let all = supportingKeyMetrics
         if metricsExpanded || all.count <= Self.metricsCollapsedCap { return all }
         return Array(all.prefix(Self.metricsCollapsedCap))
     }
 
     /// True when there are more enabled tiles than the collapsed cap, so the expander is worth showing.
-    private var metricsHasOverflow: Bool { enabledKeyMetrics.count > Self.metricsCollapsedCap }
+    private var metricsHasOverflow: Bool { supportingKeyMetrics.count > Self.metricsCollapsedCap }
 
     /// S5: the "Show all metrics" / "Show fewer" expander under the capped grid. Toggles `metricsExpanded`
     /// only; it never changes WHICH tiles are enabled or their order (that stays the #251 editor's job).
     private var metricsExpander: some View {
-        let hidden = max(0, enabledKeyMetrics.count - Self.metricsCollapsedCap)
+        let hidden = max(0, supportingKeyMetrics.count - Self.metricsCollapsedCap)
         return Button {
             withAnimation(StrandMotion.interactive) { metricsExpanded.toggle() }
         } label: {
@@ -3054,6 +3281,12 @@ struct TodayView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(metricsExpanded ? "Show fewer metrics" : "Show all metrics, \(hidden) more")
     }
+
+    private var supportingKeyMetrics: [KeyMetric] {
+        enabledKeyMetrics.filter { !Self.primaryTodayKeyMetrics.contains($0) }
+    }
+
+    private static let primaryTodayKeyMetrics: Set<KeyMetric> = [.charge, .effort, .rest, .hrv, .restingHr, .respiratory]
 
     /// A carried recovery-vital tile's (value, caption): today's own value wins (with the metric's
     /// static unit caption); otherwise, when we're carrying the last scored day (#543), the PRIOR row's

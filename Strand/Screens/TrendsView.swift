@@ -191,7 +191,7 @@ struct TrendsView: View {
                 guard let better = higherIsBetter else { return StrandPalette.textTertiary }
                 return (d > 0) == better ? StrandPalette.statusPositive : StrandPalette.metricRose
             }()
-            TrendChip(text: "\(sign)\(fmt(abs(d)))", color: color)
+            TrendChip(text: "\(sign)\(fmt(abs(d))) vs prev", color: color)
         }
     }
 
@@ -245,10 +245,13 @@ struct TrendsView: View {
                 let recovery = resolve { $0.recovery }
                 let hrv = resolve { $0.avgHrv }
                 let rhr = resolve { $0.restingHr.map(Double.init) }
+                let respiratory = resolve { $0.respRateBpm }
+                let skinTemp = resolve { $0.skinTempDevC }
                 let strain = resolve { $0.strain }
                 // Rest = the sleep_performance composite — the same number the Today Rest score shows
                 // (#732); see sleepPerfByDay. resolve() still does the windowing/widening.
                 let rest = resolve { sleepPerfByDay[$0.day] }
+                let sleepDebt = resolve { repo.importedSleep[$0.day]?.debtMin }
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                     // The main card list ripples in once on appear (Reduce-Motion safe).
                     Group {
@@ -263,7 +266,8 @@ struct TrendsView: View {
                             .staggeredAppear(index: 2)
                         heroRecovery(recovery: recovery)
                             .staggeredAppear(index: 3)
-                        smallMultiples(hrv: hrv, rhr: rhr, strain: strain)
+                        smallMultiples(hrv: hrv, rhr: rhr, respiratory: respiratory, skinTemp: skinTemp,
+                                       strain: strain, rest: rest, sleepDebt: sleepDebt)
                             .staggeredAppear(index: 4)
                         yearStrip
                             .staggeredAppear(index: 5)
@@ -526,8 +530,8 @@ struct TrendsView: View {
     private func heroRecovery(recovery: ResolvedMetric) -> some View {
         let pts = recovery.points
         let avg = mean(pts)
-        // Charge world — the WHOOP recovery value scale (red→yellow→green) drawn as a crisp flat line
-        // with a bright "now" cap. No glow.
+        // Charge world — recovery percentage over time, rendered as rounded native bars so the
+        // longitudinal hierarchy reads closer to the score-card language.
         let card = ChartCard(
             title: "Charge",
             // The range bar above already prints the authoritative reading-count caption;
@@ -538,14 +542,10 @@ struct TrendsView: View {
             tint: StrandPalette.chargeColor,
             chart: {
                 if pts.count >= 2 {
-                    glowChart(points: pts,
-                              gradient: StrandPalette.recoveryGradient,
-                              // Lift the ceiling ~6% so a near-100 peak and the now-cap halo
-                              // clear the top gridline, matching the padded small multiples.
-                              valueRange: 0...106,
-                              tip: StrandPalette.chargeBright,
-                              valueFormat: { "\(Int($0.rounded()))" },
-                              accessibilityLabel: String(localized: "Charge trend"))
+                    RoundedBarTrendChart(points: pts, valueRange: 0...100,
+                                         tint: StrandPalette.chargeColor,
+                                         valueFormat: { "\(Int($0.rounded()))" },
+                                         accessibilityLabel: String(localized: "Charge trend"))
                 } else {
                     sparsePlaceholder
                 }
@@ -584,13 +584,25 @@ struct TrendsView: View {
         }
     }
 
-    // MARK: Small multiples — HRV / Resting HR / Day Strain
+    // MARK: Small multiples — physiologic lines + score bars
 
-    private func smallMultiples(hrv: ResolvedMetric, rhr: ResolvedMetric, strain: ResolvedMetric) -> some View {
+    private func smallMultiples(
+        hrv: ResolvedMetric,
+        rhr: ResolvedMetric,
+        respiratory: ResolvedMetric,
+        skinTemp: ResolvedMetric,
+        strain: ResolvedMetric,
+        rest: ResolvedMetric,
+        sleepDebt: ResolvedMetric
+    ) -> some View {
         let cols = [GridItem(.adaptive(minimum: 320), spacing: NoopMetrics.gap)]
         let hrvPts = hrv.points
         let rhrPts = rhr.points
+        let respPts = respiratory.points
+        let skinPts = skinTemp.points
         let strainPts = strain.points
+        let restPts = rest.points
+        let debtPts = sleepDebt.points
 
         return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             // No trailing window label — the range bar's overline already states it.
@@ -623,19 +635,60 @@ struct TrendsView: View {
                     fmt: { "\(Int($0.rounded()))" }
                 )
                 metricChart(
-                    // Plotted points + range stay on the stored 0–100 scale (line shape unchanged); only the
-                    // displayed numbers + unit follow the Effort-scale toggle, converted inside `fmt`. (#268)
+                    title: "Respiratory rate", unit: "rpm",
+                    accessibilityTitle: String(localized: "Respiratory rate"),
+                    metricKey: "resp_rate",
+                    points: respPts,
+                    gradient: gradient(StrandPalette.metricCyan),
+                    tip: StrandPalette.metricCyan,
+                    tint: StrandPalette.chargeColor,
+                    higherIsBetter: nil,
+                    range: valueRange(respPts, fallback: 10...22, pad: 0.18),
+                    fmt: { String(format: "%.1f", $0) }
+                )
+                metricChart(
+                    title: "Skin temperature", unit: "°C",
+                    accessibilityTitle: String(localized: "Skin temperature"),
+                    metricKey: "skin_temp",
+                    points: skinPts,
+                    gradient: gradient(StrandPalette.metricAmber),
+                    tip: StrandPalette.metricAmber,
+                    tint: StrandPalette.chargeColor,
+                    higherIsBetter: nil,
+                    range: valueRange(skinPts, fallback: -2...2, pad: 0.22),
+                    fmt: { String(format: "%.1f", $0) }
+                )
+                metricBarChart(
+                    // Plotted points stay on the stored 0–100 scale; only the displayed numbers + unit follow
+                    // the Effort-scale toggle, converted inside `fmt`. (#268)
                     title: "Effort", unit: "/ \(UnitFormatter.effortScaleMax(effortScale))",
                     accessibilityTitle: String(localized: "Effort"),
                     metricKey: "strain",
                     points: strainPts,
-                    // WHOOP: Effort/Strain is always BLUE — a deep→bright blue line, not the amber ramp.
-                    gradient: gradient(StrandPalette.effortColor),
-                    tip: StrandPalette.effortColor,
                     tint: StrandPalette.effortColor,
                     higherIsBetter: nil,
-                    range: valueRange(strainPts, fallback: 0...100),
+                    range: 0...100,
                     fmt: { UnitFormatter.effortDisplay($0, scale: effortScale) }
+                )
+                metricBarChart(
+                    title: "Rest", unit: "%",
+                    accessibilityTitle: String(localized: "Rest"),
+                    metricKey: "sleep_performance",
+                    points: restPts,
+                    tint: StrandPalette.restColor,
+                    higherIsBetter: true,
+                    range: 0...100,
+                    fmt: { "\(Int($0.rounded()))" }
+                )
+                metricBarChart(
+                    title: "Sleep debt", unit: "min",
+                    accessibilityTitle: String(localized: "Sleep debt"),
+                    metricKey: "sleep_debt_min",
+                    points: debtPts,
+                    tint: StrandPalette.statusWarning,
+                    higherIsBetter: false,
+                    range: valueRange(debtPts, fallback: 0...120),
+                    fmt: { "\(Int($0.rounded()))" }
                 )
             }
         }
@@ -676,13 +729,7 @@ struct TrendsView: View {
             },
             footer: {
                 HStack {
-                    ChartFooter([
-                        // Plain "MEAN" to match the bare MIN/MAX columns; the unit moves into
-                        // the value (e.g. "58 ms") so uppercasing can't render a shouty "MEAN MS".
-                        ("Mean", avg.map { "\(fmt($0)) \(unit)" } ?? "—"),
-                        ("Min", pts.map(\.value).min().map(fmt) ?? "—"),
-                        ("Max", pts.map(\.value).max().map(fmt) ?? "—"),
-                    ])
+                    trendStatsFooter(pts, avg: avg, unit: unit, higherIsBetter: higherIsBetter, fmt: fmt)
                     changeChip(pts, higherIsBetter: higherIsBetter, fmt: fmt)
                 }
             }
@@ -692,6 +739,88 @@ struct TrendsView: View {
         NavigationLink { metricDetail(metricKey) } label: { card }
             .buttonStyle(LiquidPressStyle())
             .accessibilityHint(Text(String(localized: "Opens the full \(accessibilityTitle) metric.")))
+    }
+
+    @ViewBuilder
+    private func metricBarChart(
+        title: LocalizedStringKey, unit: String,
+        accessibilityTitle: String,
+        metricKey: String,
+        points pts: [TrendPoint],
+        tint: Color,
+        higherIsBetter: Bool?,
+        range: ClosedRange<Double>,
+        fmt: @escaping (Double) -> String
+    ) -> some View {
+        let avg = mean(pts)
+        let card = ChartCard(
+            title: title,
+            trailing: avg.map(fmt),
+            height: NoopMetrics.chartHeight,
+            tint: tint,
+            chart: {
+                if pts.count >= 2 {
+                    RoundedBarTrendChart(points: pts, valueRange: range, tint: tint,
+                                         valueFormat: { "\(fmt($0)) \(unit)" },
+                                         accessibilityLabel: String(localized: "\(accessibilityTitle) trend"))
+                } else {
+                    sparsePlaceholder
+                }
+            },
+            footer: {
+                HStack {
+                    trendStatsFooter(pts, avg: avg, unit: unit, higherIsBetter: higherIsBetter, fmt: fmt)
+                    changeChip(pts, higherIsBetter: higherIsBetter, fmt: fmt)
+                }
+            }
+        )
+        NavigationLink { metricDetail(metricKey) } label: { card }
+            .buttonStyle(LiquidPressStyle())
+            .accessibilityHint(Text(String(localized: "Opens the full \(accessibilityTitle) metric.")))
+    }
+
+    private func trendStatsFooter(
+        _ pts: [TrendPoint],
+        avg: Double?,
+        unit: String,
+        higherIsBetter: Bool?,
+        fmt: @escaping (Double) -> String
+    ) -> ChartFooter {
+        let values = pts.map(\.value)
+        let low = values.min()
+        let high = values.max()
+        let best: Double?
+        let worst: Double?
+        let bestLabel: LocalizedStringKey
+        let worstLabel: LocalizedStringKey
+        switch higherIsBetter {
+        case .some(true):
+            best = high
+            worst = low
+            bestLabel = "Best"
+            worstLabel = "Worst"
+        case .some(false):
+            best = low
+            worst = high
+            bestLabel = "Best"
+            worstLabel = "Worst"
+        case .none:
+            best = high
+            worst = low
+            bestLabel = "High"
+            worstLabel = "Low"
+        }
+
+        return ChartFooter([
+            ("Avg", avg.map { formattedStat($0, unit: unit, fmt: fmt) } ?? "—"),
+            (bestLabel, best.map { formattedStat($0, unit: unit, fmt: fmt) } ?? "—"),
+            (worstLabel, worst.map { formattedStat($0, unit: unit, fmt: fmt) } ?? "—"),
+        ])
+    }
+
+    private func formattedStat(_ value: Double, unit: String, fmt: (Double) -> String) -> String {
+        let number = fmt(value)
+        return unit.isEmpty ? number : "\(number) \(unit)"
     }
 
     // MARK: Year heat-strip
@@ -765,6 +894,61 @@ struct TrendsView: View {
             .foregroundStyle(StrandPalette.textTertiary)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct RoundedBarTrendChart: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+
+    let points: [TrendPoint]
+    let valueRange: ClosedRange<Double>
+    let tint: Color
+    let valueFormat: (Double) -> String
+    let accessibilityLabel: String
+
+    var body: some View {
+        GeometryReader { proxy in
+            let plotHeight = max(1, proxy.size.height)
+            let span = max(1, valueRange.upperBound - valueRange.lowerBound)
+            let spacing = spacing(for: points.count)
+            let animation: Animation? = reduceMotion ? nil : .easeOut(duration: 0.42)
+
+            HStack(alignment: .bottom, spacing: spacing) {
+                ForEach(Array(points.enumerated()), id: \.element.date) { idx, point in
+                    let normalized = min(1, max(0, (point.value - valueRange.lowerBound) / span))
+                    let height = max(3, plotHeight * normalized)
+                    let opacity = barOpacity(index: idx, total: points.count)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(tint.opacity(opacity))
+                        .frame(maxWidth: .infinity,
+                               maxHeight: appeared || reduceMotion ? height : 3,
+                               alignment: .bottom)
+                        .accessibilityLabel(Text(accessibilityLabel))
+                        .accessibilityValue(Text(valueFormat(point.value)))
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottom)
+            .padding(.top, 2)
+            .animation(animation, value: appeared)
+        }
+        .onAppear { appeared = true }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func spacing(for count: Int) -> CGFloat {
+        switch count {
+        case 0...14: return 5
+        case 15...45: return 3
+        case 46...120: return 2
+        default: return 1
+        }
+    }
+
+    private func barOpacity(index: Int, total: Int) -> Double {
+        guard total > 1 else { return 1 }
+        let progress = Double(index) / Double(total - 1)
+        return 0.35 + progress * 0.65
     }
 }
 
