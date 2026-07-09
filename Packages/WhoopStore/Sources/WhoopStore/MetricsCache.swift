@@ -39,6 +39,76 @@ public struct CachedSleepSession: Equatable, Codable {
     }
 }
 
+fileprivate struct SleepStageSummary {
+    var awake: Double = 0
+    var light: Double = 0
+    var deep: Double = 0
+    var rem: Double = 0
+
+    var total: Double { awake + light + deep + rem }
+    var asleep: Double { light + deep + rem }
+    var restorative: Double { deep + rem }
+
+    static func decode(_ json: String?) -> SleepStageSummary? {
+        guard let json, let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) else { return nil }
+
+        if let dict = root as? [String: Any] {
+            func value(_ key: String) -> Double {
+                if let d = dict[key] as? Double { return d }
+                if let i = dict[key] as? Int { return Double(i) }
+                if let n = dict[key] as? NSNumber { return n.doubleValue }
+                return 0
+            }
+            let out = SleepStageSummary(awake: value("awake"), light: value("light"),
+                                        deep: value("deep"), rem: value("rem"))
+            return out.total > 0 ? out : nil
+        }
+
+        guard let segments = root as? [[String: Any]] else { return nil }
+        var out = SleepStageSummary()
+        for seg in segments {
+            guard let stage = seg["stage"] as? String else { continue }
+            let start = (seg["start"] as? Double)
+                ?? (seg["start"] as? Int).map(Double.init)
+                ?? (seg["start"] as? NSNumber)?.doubleValue
+            let end = (seg["end"] as? Double)
+                ?? (seg["end"] as? Int).map(Double.init)
+                ?? (seg["end"] as? NSNumber)?.doubleValue
+            guard let start, let end, end > start else { continue }
+            let minutes = (end - start) / 60.0
+            switch stage.lowercased() {
+            case "wake", "awake": out.awake += minutes
+            case "light": out.light += minutes
+            case "deep": out.deep += minutes
+            case "rem": out.rem += minutes
+            default: continue
+            }
+        }
+        return out.total > 0 ? out : nil
+    }
+}
+
+enum SleepStageOverwriteGuard {
+    static func shouldPreserveExisting(existing: String?, incoming: String?) -> Bool {
+        guard let old = SleepStageSummary.decode(existing) else { return false }
+        guard let new = SleepStageSummary.decode(incoming) else { return true }
+        guard old.asleep >= 60, old.restorative >= 20 else { return false }
+
+        let restorativeCollapsed = new.restorative < old.restorative * 0.55
+        let lightInflated = new.light > max(old.light + 45, old.light * 1.25)
+        let asleepCollapsed = new.asleep < old.asleep * 0.75
+        return restorativeCollapsed && (lightInflated || asleepCollapsed)
+    }
+
+    static func debugSummary(_ json: String?) -> String {
+        guard let s = SleepStageSummary.decode(json) else { return "nil" }
+        func min(_ value: Double) -> String { String(Int(value.rounded())) }
+        return "asleep=\(min(s.asleep)) restorative=\(min(s.restorative)) "
+            + "light=\(min(s.light)) deep=\(min(s.deep)) rem=\(min(s.rem)) awake=\(min(s.awake))"
+    }
+}
+
 /// One cached daily-metrics row pulled from the server's /v1/daily. Natural key (deviceId, day).
 public struct DailyMetric: Equatable, Codable {
     public let day: String           // YYYY-MM-DD
@@ -100,6 +170,26 @@ extension WhoopStore {
         try syncWrite { db in
             var n = 0
             for s in sessions {
+                let existing = try Row.fetchOne(db, sql: """
+                    SELECT endTs, efficiency, stagesJSON, userEdited, startTsAdjusted
+                    FROM sleepSession
+                    WHERE deviceId = ? AND startTs = ?
+                    """, arguments: [deviceId, s.startTs])
+                let existingStages: String? = existing?["stagesJSON"]
+                let preserveExistingStages = !(existing?["userEdited"] ?? false)
+                    && SleepStageOverwriteGuard.shouldPreserveExisting(existing: existingStages,
+                                                                       incoming: s.stagesJSON)
+                let endTs = preserveExistingStages ? (existing?["endTs"] ?? s.endTs) : s.endTs
+                let efficiency = preserveExistingStages ? (existing?["efficiency"] ?? s.efficiency) : s.efficiency
+                let stagesJSON = preserveExistingStages ? existingStages : s.stagesJSON
+#if DEBUG
+                if preserveExistingStages {
+                    NSLog("SleepRecompute: preserved existing stages deviceId=%@ startTs=%ld old=(%@) incoming=(%@)",
+                          deviceId, s.startTs,
+                          SleepStageOverwriteGuard.debugSummary(existingStages),
+                          SleepStageOverwriteGuard.debugSummary(s.stagesJSON))
+                }
+#endif
                 try db.execute(sql: """
                     INSERT INTO sleepSession
                         (deviceId, startTs, endTs, efficiency, restingHr, avgHrv, stagesJSON,
@@ -117,8 +207,8 @@ extension WhoopStore {
                         stagesJSON = CASE WHEN sleepSession.userEdited THEN sleepSession.stagesJSON ELSE excluded.stagesJSON END,
                         startTsAdjusted = CASE WHEN sleepSession.userEdited THEN sleepSession.startTsAdjusted ELSE excluded.startTsAdjusted END,
                         userEdited = sleepSession.userEdited
-                    """, arguments: [deviceId, s.startTs, s.endTs, s.efficiency,
-                                     s.restingHr, s.avgHrv, s.stagesJSON, s.userEdited, s.startTsAdjusted])
+                    """, arguments: [deviceId, s.startTs, endTs, efficiency,
+                                     s.restingHr, s.avgHrv, stagesJSON, s.userEdited, s.startTsAdjusted])
                 n += db.changesCount
             }
             return n

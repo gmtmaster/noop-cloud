@@ -102,6 +102,9 @@ final class IntelligenceEngine: ObservableObject {
         /// provenance sets, which are resolved on the main actor).
         let readOwner: String
         let hrRows: Int
+        let gravityRows: Int
+        let respRows: Int
+        let sleepStateRows: Int
         /// Sleep & Rest test-mode gate-trace + Rest sub-score lines for this day, collected off the main
         /// actor and replayed through `diagnosticSink` tagged `.sleep` in per-day order. Empty unless the
         /// Sleep mode is active (the gate is read once before the loop), so the default path is unchanged.
@@ -601,6 +604,8 @@ final class IntelligenceEngine: ObservableObject {
                 }
                 out.append(DayScan(result: res, rhrLine: rhrLine,
                                    readOwner: owner, hrRows: hr.count,
+                                   gravityRows: grav.count, respRows: resp.count,
+                                   sleepStateRows: bandSleepState.count,
                                    sleepTrace: sleepTrace, stepsTrace: stepsTrace))
             }
             return out
@@ -619,6 +624,15 @@ final class IntelligenceEngine: ObservableObject {
         for scan in scanned {
             let res = scan.result
             readOwnerByDay[res.daily.day] = (scan.readOwner, scan.hrRows)
+            if !res.cachedSleep.isEmpty {
+                let sessions = res.cachedSleep
+                    .map { "\($0.startTs)-\($0.endTs)" }
+                    .joined(separator: ",")
+                diagnosticSink?("SleepRecompute: day=\(res.daily.day) trigger=analyzeRecent "
+                                + "owner=\(scan.readOwner) sessions=[\(sessions)] "
+                                + "hrRows=\(scan.hrRows) gravityRows=\(scan.gravityRows) "
+                                + "respRows=\(scan.respRows) sleepStateRows=\(scan.sleepStateRows)", .sleep)
+            }
             nightlyHrvByDay[res.daily.day] = res.daily.avgHrv
             nightlyRhrByDay[res.daily.day] = res.daily.restingHr.map(Double.init)
             nightlyRespByDay[res.daily.day] = res.daily.respRateBpm
@@ -1125,7 +1139,26 @@ final class IntelligenceEngine: ObservableObject {
         let cachedSleepKept = cachedSleep.filter { s in
             !skipWindows.contains { s.startTs < $0.end && $0.start < s.endTs }   // time-overlap test
         }
-        if !cachedSleepKept.isEmpty { _ = try? await store.upsertSleepSessions(cachedSleepKept, deviceId: computedId) }
+        if !cachedSleepKept.isEmpty {
+            let existingComputed = (try? await store.sleepSessions(deviceId: computedId, from: windowStart,
+                                                                   to: now, limit: 4000)) ?? []
+            let existingByStart = Dictionary(existingComputed.map { ($0.startTs, $0) },
+                                             uniquingKeysWith: { a, _ in a })
+            for row in cachedSleepKept {
+                if let old = existingByStart[row.startTs] {
+                    diagnosticSink?("SleepRecompute: write deviceId=\(computedId) startTs=\(row.startTs) "
+                                    + "oldEndTs=\(old.endTs) newEndTs=\(row.endTs) "
+                                    + "oldStages=\(old.stagesJSON == nil ? "nil" : "present") "
+                                    + "newStages=\(row.stagesJSON == nil ? "nil" : "present") "
+                                    + "userEdited=\(old.userEdited)", .sleep)
+                } else {
+                    diagnosticSink?("SleepRecompute: insert deviceId=\(computedId) startTs=\(row.startTs) "
+                                    + "endTs=\(row.endTs) stages=\(row.stagesJSON == nil ? "nil" : "present")",
+                                    .sleep)
+                }
+            }
+            _ = try? await store.upsertSleepSessions(cachedSleepKept, deviceId: computedId)
+        }
         // ── Persist per-epoch motion (H8) beside each kept session's stagesJSON ──────────────────────────
         // The sleepSession rows exist now (just upserted), so the targeted motion UPDATE lands. Persist ONLY
         // for the sessions actually kept (not edited/dismissed), keyed by the detected start `analyzeDay`

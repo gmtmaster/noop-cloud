@@ -1,6 +1,7 @@
 #if os(iOS)
 import SwiftUI
 import StrandDesign
+import NoopCloudSync
 
 /// iOS entry point. Unlike the macOS app (which adds a `MenuBarExtra` scene), iOS uses a single
 /// `WindowGroup`; the glanceable menu-bar role is filled by the Home/Lock-Screen widget instead.
@@ -15,9 +16,6 @@ import StrandDesign
 struct StrandiOSApp: App {
     @StateObject private var model: AppModel
     @StateObject private var health: HealthKitBridge
-    /// The phone→watch link. Built + activated here so the watch app actually receives snapshots on a
-    /// real device; without an owner that pushes it, the watch only ever shows placeholder data.
-    @StateObject private var watch = WatchSessionBridge()
     /// Shared cross-screen navigation hook (e.g. Live → Devices). The iOS shell (`RootTabView`)
     /// observes it and presents the Devices manager.
     @StateObject private var router = NavRouter()
@@ -78,9 +76,9 @@ struct StrandiOSApp: App {
                 .dynamicTypeSize(...DynamicTypeSize.accessibility1)
                 .onReceive(model.live.$heartRate) { _ in
                     // #911: anchor the Live Activity on the SAME shared `Repository.widgetAnchor` the
-                    // Home/Lock widget and the watch snapshot use, so this fourth surface can't drift to a
-                    // different day at the rollover (it previously read `days.last(where: recovery != nil)`,
-                    // which kept pointing at yesterday's scored row after Today had moved on).
+                    // Home/Lock widget uses, so this surface can't drift to a different day at the rollover
+                    // (it previously read `days.last(where: recovery != nil)`, which kept pointing at
+                    // yesterday's scored row after Today had moved on).
                     let day = Repository.widgetAnchor(days: model.repo.days)
                     liveActivity.update(
                         bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
@@ -92,7 +90,7 @@ struct StrandiOSApp: App {
                 // End the Live Activity the moment the link drops, even if no further HR tick arrives.
                 .onReceive(model.live.$connected) { isConnected in
                     // #911: same shared anchor as the heartRate site above, so the Live Activity, the
-                    // widget, the watch and Today never disagree about which day they describe.
+                    // widget and Today never disagree about which day they describe.
                     let day = Repository.widgetAnchor(days: model.repo.days)
                     liveActivity.update(
                         bpm: isConnected ? (model.bpm ?? model.live.heartRate) : nil,
@@ -117,10 +115,6 @@ struct StrandiOSApp: App {
                 .onReceive(model.repo.$refreshSeq.dropFirst()) { _ in
                     guard scenePhase == .active else { return }
                     Task { await WidgetSnapshot.publish(from: model) }
-                    // The watch rides the same active-only hook because the bridge now SELF-THROTTLES
-                    // (30-minute spacing + headline-change dedup, both must pass, see WatchSessionBridge),
-                    // so a refresh storm can't burn the ~50/day complication transfer budget.
-                    Task { await watch.pushLatest(from: model) }
                 }
                 // #581: the `noop://import-health` deep link the iOS Shortcut opens after building the
                 // HealthKit-free payload. Filter on the host so other future schemes don't trip the
@@ -129,14 +123,6 @@ struct StrandiOSApp: App {
                     if url.host == "import-health" {
                         model.handleHealthImportURL(url)
                     }
-                }
-                // Bring the watch link up once at launch (WCSession ignores a redundant activate), then
-                // push the first snapshot so a watch that's already on-wrist gets current scores without
-                // waiting for the next foreground. activate() is idempotent + a no-op where WC isn't
-                // supported, so this is safe on every device/simulator combination.
-                .task {
-                    watch.activate()
-                    await watch.pushLatest(from: model)
                 }
         }
         // HealthKit authorization is intentionally NOT requested on launch. The system permission
@@ -150,6 +136,8 @@ struct StrandiOSApp: App {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 model.drainPendingIntents()
+                NoopCloudSyncService.shared.appDidBecomeActive()
+                Task { await CloudSyncForegroundCoordinator.shared.appDidBecomeActive() }
                 // Re-arm the strap's smart alarm on foreground: the firmware alarm is a single instant
                 // and iOS can't re-arm it while suspended, so it would otherwise fire once and stop.
                 model.applySmartAlarm()
@@ -157,10 +145,6 @@ struct StrandiOSApp: App {
                     health.refreshAuthIfPreviouslyGranted()
                     await health.sync()
                     await WidgetSnapshot.publish(from: model)
-                    // Push the wrist on the SAME refresh as the Home-screen widget so the watch, the
-                    // widget and Today never disagree about which day they describe. Without this the
-                    // watch only ever holds placeholder data on a real device.
-                    await watch.pushLatest(from: model)
                 }
             } else if phase == .background {
                 // #155: refresh the Documents/noop_sync.txt drop file the user's Siri Shortcut logs

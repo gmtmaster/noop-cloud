@@ -33,14 +33,52 @@ final class MetricsCacheTests: XCTestCase {
         XCTAssertEqual(rows[0], s)
 
         // Re-upsert the same natural key with updated values → no duplicate, value updated.
+        // A nil incoming stages payload is a lower-fidelity refresh and must not erase an existing
+        // staged night restored from backup.
         let s2 = CachedSleepSession(startTs: 1000, endTs: 6000, efficiency: 0.95,
                                     restingHr: 50, avgHrv: 70.0, stagesJSON: nil)
         try await store.upsertSleepSessions([s2], deviceId: "devA")
         rows = try await store.sleepSessions(deviceId: "devA", from: 0, to: 100_000, limit: 100)
         XCTAssertEqual(rows.count, 1, "same (deviceId,startTs) must not duplicate")
-        XCTAssertEqual(rows[0].endTs, 6000)
-        XCTAssertEqual(rows[0].efficiency, 0.95)
-        XCTAssertNil(rows[0].stagesJSON)
+        XCTAssertEqual(rows[0].endTs, 5000)
+        XCTAssertEqual(rows[0].efficiency, 0.92)
+        XCTAssertEqual(rows[0].restingHr, 50)
+        XCTAssertEqual(rows[0].avgHrv, 70.0)
+        XCTAssertEqual(rows[0].stagesJSON, s.stagesJSON)
+    }
+
+    func testSleepSessionUpsertPreservesExistingStagesWhenRecomputeCollapsesRestorativeSleep() async throws {
+        let store = try await WhoopStore.inMemory()
+        let trusted = CachedSleepSession(
+            startTs: 1000, endTs: 29_800, efficiency: 0.94,
+            restingHr: 50, avgHrv: 70,
+            stagesJSON: """
+            [{"start":1000,"end":8200,"stage":"light"},
+             {"start":8200,"end":13600,"stage":"deep"},
+             {"start":13600,"end":20800,"stage":"light"},
+             {"start":20800,"end":26200,"stage":"rem"},
+             {"start":26200,"end":29800,"stage":"wake"}]
+            """)
+        try await store.upsertSleepSessions([trusted], deviceId: "my-whoop-noop")
+
+        let degraded = CachedSleepSession(
+            startTs: 1000, endTs: 29_800, efficiency: 0.91,
+            restingHr: 48, avgHrv: 72,
+            stagesJSON: """
+            [{"start":1000,"end":28000,"stage":"light"},
+             {"start":28000,"end":28600,"stage":"deep"},
+             {"start":28600,"end":29200,"stage":"rem"},
+             {"start":29200,"end":29800,"stage":"wake"}]
+            """)
+        try await store.upsertSleepSessions([degraded], deviceId: "my-whoop-noop")
+
+        let rows = try await store.sleepSessions(deviceId: "my-whoop-noop", from: 0, to: 100_000, limit: 100)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].stagesJSON, trusted.stagesJSON,
+                       "a degraded recompute must not overwrite trusted/restored stage detail")
+        XCTAssertEqual(rows[0].efficiency, trusted.efficiency)
+        XCTAssertEqual(rows[0].restingHr, degraded.restingHr, "vitals can still refresh")
+        XCTAssertEqual(rows[0].avgHrv, degraded.avgHrv)
     }
 
     func testSleepSessionRangeFilter() async throws {

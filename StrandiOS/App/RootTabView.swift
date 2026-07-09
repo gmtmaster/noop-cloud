@@ -64,7 +64,8 @@ struct RootTabView: View {
                 tab(todayTabRoot, "Today", "square.grid.2x2").tag(0)
                 tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis").tag(1)
                 tab(SleepView(), "Sleep", "bed.double").tag(2)
-                moreTab.tag(3)
+                tab(FriendsView(), "Friends", "person.2.fill").tag(3)
+                moreTab.tag(4)
             }
             .tint(StrandPalette.accent)
             .toolbar(.hidden, for: .tabBar)
@@ -80,7 +81,7 @@ struct RootTabView: View {
                         guard selectedTab != 0 else { return }
                         let dx = v.translation.width, dy = v.translation.height
                         guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
-                        let next = min(3, max(0, selectedTab + (dx < 0 ? 1 : -1)))
+                        let next = min(4, max(0, selectedTab + (dx < 0 ? 1 : -1)))
                         if next != selectedTab {
                             withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = next }
                         }
@@ -94,6 +95,7 @@ struct RootTabView: View {
         }
         .task {
             await repo.refresh()
+            _ = await CloudUserSession.restoreIfPossible()
             // Backup & Sync: on-launch catch-up (see RootView). Detached + utility priority so a
             // 100MB+ whole-DB ZIP never blocks startup; gated on the auto toggle (default OFF). (Must-fix #4.)
             let backupRepo = repo
@@ -315,6 +317,7 @@ struct RootTabView: View {
                     MoreRow("Mi Band", "figure.walk.motion") { XiaomiBandView() }
                     MoreRow("Data Sources", "externaldrive.fill") { DataSourcesView() }
                     MoreRow("Backup & Sync", "externaldrive.fill.badge.icloud") { BackupSyncView() }
+                    MoreRow("Cloud Sync", "icloud.and.arrow.up.fill") { CloudSyncSettingsView() }
                     // #155: HealthKit-free Apple Health path for sideloaded installs (Siri Shortcut
                     // reads the opt-in Documents/noop_sync.txt drop file).
                     MoreRow("Shortcuts Export", "square.and.arrow.up.fill") { ShortcutExportSettingsView() }
@@ -554,7 +557,8 @@ private struct FloatingTabBar: View {
     private let nav = [Item(title: "Today", icon: "square.grid.2x2", tag: 0),
                        Item(title: "Trends", icon: "chart.line.uptrend.xyaxis", tag: 1),
                        Item(title: "Sleep", icon: "bed.double", tag: 2),
-                       Item(title: "More", icon: "ellipsis", tag: 3)]
+                       Item(title: "Friends", icon: "person.2.fill", tag: 3),
+                       Item(title: "More", icon: "ellipsis", tag: 4)]
 
     var body: some View {
         // One frosted glass bar, four evenly-spaced tabs. The quick-action "+" now lives in the
@@ -564,6 +568,7 @@ private struct FloatingTabBar: View {
             tabButton(nav[1])
             tabButton(nav[2])
             tabButton(nav[3])
+            tabButton(nav[4])
         }
         .padding(.vertical, 7)
         .padding(.horizontal, 8)

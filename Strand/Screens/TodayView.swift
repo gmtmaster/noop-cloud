@@ -329,9 +329,9 @@ struct TodayView: View {
     // width then). Only changes on a genuine width change (rotation / size class), never on the ~1 Hz
     // live-HR re-render, so this @State doesn't add to the body-eval flood the type note warns about.
     @State private var heroRingRowWidth: CGFloat = 0
-    // iOS top-bar state: the date-jump popover and the profile/settings sheet.
+    // iOS top-bar state: the date-jump popover and the Cloud profile sheet.
     @State private var showDayPicker = false
-    @State private var showSettings = false
+    @State private var showProfile = false
     /// The Updates inbox sheet (opened by the header bell). Shared across both platforms.
     @State private var showUpdatesInbox = false
 
@@ -1100,13 +1100,13 @@ struct TodayView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Quick actions")
                 .accessibilityHint("Start a workout, log your journal, or breathe")
-                // Menu (Settings), the avatar, same 36 size.
-                Button { showSettings = true } label: {
+                // Profile, the avatar, same 36 size.
+                Button { showProfile = true } label: {
                     ProfileAvatarView(imageData: profile.avatarImageData, size: 36)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Menu and settings")
+                .accessibilityLabel("Profile")
             }
         }
         .frame(height: 46)
@@ -1125,16 +1125,15 @@ struct TodayView: View {
         }
     }
 
-    /// Settings presented as a sheet from the top-bar profile button (sheets inherit the app
-    /// environment on iOS, so SettingsView gets the same objects it has under the More tab).
-    private var settingsSheet: some View {
+    /// Cloud Profile presented as a sheet from the top-bar profile button.
+    private var profileSheet: some View {
         NavigationStack {
-            SettingsView()
+            CloudProfileView()
                 .background(StrandPalette.surfaceBase.ignoresSafeArea())
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done") { showSettings = false }.foregroundStyle(StrandPalette.accent)
+                        Button("Done") { showProfile = false }.foregroundStyle(StrandPalette.accent)
                     }
                 }
         }
@@ -1351,8 +1350,8 @@ struct TodayView: View {
             }
         }
         #else
-        // Profile/settings from the top-bar button.
-        .sheet(isPresented: $showSettings) { settingsSheet }
+        // Cloud Profile from the top-bar button.
+        .sheet(isPresented: $showProfile) { profileSheet }
         #endif
         // The scoring guide, opened at a specific score from its ⓘ.
         .sheet(item: $guideSection) { section in
