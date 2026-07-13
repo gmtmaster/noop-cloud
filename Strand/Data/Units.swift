@@ -40,6 +40,15 @@ enum EffortScale: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Which sleep window nightly HRV is measured over. The raw values are persisted in UserDefaults, so
+/// they are deliberately stable: `.whole` preserves NOOP's historical whole-night calculation while
+/// `.deep` averages usable five-minute windows staged as deep sleep.
+enum HrvWindow: String, CaseIterable, Identifiable, Codable {
+    case whole
+    case deep
+    var id: String { rawValue }
+}
+
 /// UserDefaults keys for the two unit preferences. Public-ish (internal) so `SettingsView`'s
 /// `@AppStorage(UnitPrefs.systemKey)` and the formatter read the SAME key — no drift.
 enum UnitPrefs {
@@ -49,6 +58,10 @@ enum UnitPrefs {
     /// Effort display scale (#268). Stored raw is an `EffortScale` rawValue; an unset/unknown value
     /// resolves to `.hundred` (NOOP's native axis). Mirrored on Android by NoopPrefs("effort.scale").
     static let effortScaleKey = "effort.scale"
+
+    /// Nightly HRV observation window. Keep this key and the `HrvWindow` raw values stable so preferences
+    /// saved by earlier builds reconnect automatically. Unset or unknown values resolve to whole-night.
+    static let hrvWindowKey = "hrv.window"
 
     /// Display factor for the #268 Effort scale: the stored 0-100 value multiplied by this renders on
     /// the user's chosen axis (1.0 for the native 0-100, 0.21 for the WHOOP-style 0-21). Display-only,
@@ -77,6 +90,10 @@ enum UnitPrefs {
     /// Resolve the stored Effort-scale raw value, defaulting to NOOP's native 0–100 axis.
     static func resolveEffortScale(_ raw: String) -> EffortScale {
         EffortScale(rawValue: raw) ?? .hundred
+    }
+
+    static func resolveHrvWindow(_ raw: String?) -> HrvWindow {
+        raw.flatMap(HrvWindow.init(rawValue:)) ?? .whole
     }
 }
 

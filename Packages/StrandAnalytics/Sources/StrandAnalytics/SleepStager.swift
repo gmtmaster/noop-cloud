@@ -1900,13 +1900,24 @@ public enum SleepStager {
         return Int(all.rounded())
     }
 
-    /// Mean RMSSD over 5-min tumbling windows across the session (ms), or nil.
-    /// Uses the same range-filter + ≥2-valid-interval rule as hrv.rmssd().
-    static func sessionAvgHRV(start: Int, end: Int, rr: [RRInterval]) -> Double? {
+    /// One five-minute HRV observation, tagged with the sleep stage at the window centre.
+    struct HrvWindow: Equatable, Sendable {
+        let startTs: Int
+        let stage: String
+        let cleanBeats: Int
+        let rmssd: Double?
+    }
+
+    /// Per-five-minute RMSSD across a session, with each window tagged by its centre's sleep stage.
+    /// The current gap-aware cleaner and RMSSD implementation are shared with `sessionAvgHRV`, ensuring
+    /// rejected intervals never splice their neighbours and the selectable deep path cannot drift from
+    /// the rolling whole-night calculation. Passing no stages tags windows as unknown.
+    static func sessionHrvWindows(start: Int, end: Int, rr: [RRInterval],
+                                  stages: [StageSegment] = []) -> [HrvWindow] {
         let seg = rr.filter { $0.ts >= start && $0.ts <= end }
-        guard !seg.isEmpty else { return nil }
+        guard !seg.isEmpty else { return [] }
         let windowS = 5 * 60
-        var vals: [Double] = []
+        var windows: [HrvWindow] = []
         var t = start
         while t < end {
             let bucket = seg.filter { $0.ts >= t && $0.ts < t + windowS }.map { Double($0.rrMs) }
@@ -1915,10 +1926,22 @@ public enum SleepStager {
             // than a 4.0's; rMSSD is built from SUCCESSIVE differences, so an un-rejected
             // jitter spike inflates the session HRV. Ectopic rejection drops those (#262/#235).
             let cleaned = HRVAnalyzer.cleanRRGapAware(bucket)
-            if cleaned.nn.count >= 2,
-               let r = HRVAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous) { vals.append(r) }
+            let rmssd = cleaned.nn.count >= 2
+                ? HRVAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous)
+                : nil
+            let centre = t + windowS / 2
+            let stage = stages.first { centre >= $0.start && centre < $0.end }?.stage ?? "?"
+            windows.append(HrvWindow(startTs: t, stage: stage,
+                                     cleanBeats: cleaned.nn.count, rmssd: rmssd))
             t += windowS
         }
+        return windows
+    }
+
+    /// Mean RMSSD over 5-min tumbling windows across the session (ms), or nil.
+    /// Uses the same gap-aware range/ectopic cleaning and ≥2-valid-interval rule as before.
+    static func sessionAvgHRV(start: Int, end: Int, rr: [RRInterval]) -> Double? {
+        let vals = sessionHrvWindows(start: start, end: end, rr: rr).compactMap(\.rmssd)
         guard !vals.isEmpty else { return nil }
         return vals.reduce(0, +) / Double(vals.count)
     }

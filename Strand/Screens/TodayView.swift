@@ -2347,7 +2347,7 @@ struct TodayView: View {
         }
         .padding(.vertical, 13)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label): \(value) \(unit)")
+        .accessibilityLabel(Text(label) + Text(verbatim: ": \(value) \(unit)"))
     }
 
     // MARK: Synthesis card, today's read, or the carried last-scored read (#543)

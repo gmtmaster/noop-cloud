@@ -27,6 +27,12 @@ final class IntelligenceEngine: ObservableObject {
     @Published var computing = false
     @Published var note: String?
 
+    /// Pure preference seam used by the analysis run and app-level tests. Unknown/unset values deliberately
+    /// resolve to whole-night; the historical "deep" raw value reconnects without migration.
+    nonisolated static func deepHrvWindow(rawPreference: String?) -> Bool {
+        UnitPrefs.resolveHrvWindow(rawPreference) == .deep
+    }
+
     /// #899-A re-arm: a `force: true` recompute (a post-backfill rescore AppModel kicks off after a sync)
     /// that arrives while an idle-tick pass already holds the `computing` lock would otherwise be SILENTLY
     /// dropped, so a freshly-synced night intermittently never gets re-scored until the next cycle and Today
@@ -428,6 +434,10 @@ final class IntelligenceEngine: ObservableObject {
         // runs its byte-identical default path. When true, each day collects its gate-trace + Rest line,
         // replayed below through `diagnosticSink` tagged `.sleep` in per-day order.
         let sleepTraceActive = TestCentre.active(.sleep)
+        // Read once per analysis run, before entering the detached per-day loop. Existing installations may
+        // already have this historical key; preserving it reconnects their selection automatically.
+        let deepHrvWindow = Self.deepHrvWindow(
+            rawPreference: UserDefaults.standard.string(forKey: UnitPrefs.hrvWindowKey))
         // Steps test mode: read the zero-cost gate ONCE here (a single Bool) and capture it into the detached
         // loop. When false (the default), no raw-counter trace is built per day. When true, each day collects
         // the 5/MG cumulative @57 series + wrap-aware deltas + dropped deltas, replayed below tagged `.steps`.
@@ -571,7 +581,8 @@ final class IntelligenceEngine: ObservableObject {
                                                      // #690: thread the V2 toggle into the NORMAL staging path so
                                                      // it affects detected nights, not just the self-heal restage.
                                                      useSleepStagerV2: useSleepStagerV2,
-                                                     traceSink: traceSink)
+                                                     traceSink: traceSink,
+                                                     deepHrvWindow: deepHrvWindow)
                 // ── Steps test mode: 5/MG raw-counter trace ──────────────────────────────────────────────
                 // Only built when the Steps mode is on (the gate was read once before the loop). Recomputes
                 // the SAME wrap-aware @57 sum analyzeDay just ran, over the SAME `daySteps` calendar-day

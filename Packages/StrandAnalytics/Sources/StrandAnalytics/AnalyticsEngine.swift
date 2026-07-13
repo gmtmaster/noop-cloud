@@ -320,7 +320,10 @@ public enum AnalyticsEngine {
                                   // Sleep & Rest test-mode trace sink (zero-cost default nil = byte-identical).
                                   // When non-nil, the gate trace from detectSleep and the Rest sub-score line
                                   // are forwarded line-by-line. Side-effect-only; never alters the DayResult.
-                                  traceSink: ((String) -> Void)? = nil) -> DayResult {
+                                  traceSink: ((String) -> Void)? = nil,
+                                  // Opt-in WHOOP-comparable HRV observation: average usable five-minute
+                                  // deep-stage windows instead of the historical whole-night result.
+                                  deepHrvWindow: Bool = false) -> DayResult {
 
         // Precompute the day's UTC bounds ONCE (#996). `dayString(ts, offsetSec:)` formats the UTC
         // calendar day of (ts + offset) with a FIXED offset, so "== day" is exactly membership in
@@ -440,16 +443,11 @@ public enum AnalyticsEngine {
         // day-best-resting, night-dominated. Keep these two definitions distinct on purpose.
         // Daily resting HR = lowest per-session resting HR across matched sessions.
         let restingHRDaily = matched.compactMap { $0.restingHR }.min()
-        // Daily avg HRV = in-bed-weighted mean of per-session avg HRV.
-        let avgHRVDaily: Double? = {
-            let pairs = matched.compactMap { s -> (Double, Double)? in
-                s.avgHRV.map { ($0, Double(s.end - s.start)) }
-            }
-            guard !pairs.isEmpty else { return nil }
-            let total = pairs.reduce(0.0) { $0 + $1.0 * $1.1 }
-            let weight = pairs.reduce(0.0) { $0 + $1.1 }
-            return weight > 0 ? total / weight : nil
-        }()
+        // Daily avg HRV = either the historical in-bed-weighted session mean or, when explicitly
+        // selected, the mean of every usable five-minute window staged as deep sleep. Historical deep
+        // mode returned nil when no usable deep window existed, so preserve that honest/calibrating result
+        // rather than silently changing the user's selected observation mode.
+        let avgHRVDaily = nightlyHRV(sessions: matched, rr: rr, deepHrvWindow: deepHrvWindow)
 
         // Nightly APPROXIMATE respiratory rate (breaths/min) from the R-R stream via
         // RSA. WHOOP5 v18 carries no raw resp ADC, so this is an on-device estimate,
@@ -664,6 +662,30 @@ public enum AnalyticsEngine {
                          sessionSleepStateByStart: sessionSleepStateByStart,
                          chargeDrivers: chargeDrivers,
                          skinTempRelative: skinTempRelative)
+    }
+
+    /// Nightly HRV selection seam, kept internal so the two observation modes can be tested without
+    /// depending on sleep detection. Default false preserves every existing `analyzeDay` caller.
+    static func nightlyHRV(sessions: [SleepSession], rr: [RRInterval],
+                           deepHrvWindow: Bool = false) -> Double? {
+        if deepHrvWindow {
+            let rrSorted = rr.sorted { $0.ts < $1.ts }
+            let deepValues = sessions.flatMap { session in
+                SleepStager.sessionHrvWindows(start: session.start, end: session.end,
+                                               rr: rrSorted, stages: session.stages)
+                    .filter { $0.stage == "deep" }
+                    .compactMap(\.rmssd)
+            }
+            return deepValues.isEmpty ? nil : deepValues.reduce(0, +) / Double(deepValues.count)
+        }
+
+        let pairs = sessions.compactMap { session -> (Double, Double)? in
+            session.avgHRV.map { ($0, Double(session.end - session.start)) }
+        }
+        guard !pairs.isEmpty else { return nil }
+        let total = pairs.reduce(0.0) { $0 + $1.0 * $1.1 }
+        let weight = pairs.reduce(0.0) { $0 + $1.1 }
+        return weight > 0 ? total / weight : nil
     }
 
     // MARK: - Rest composite (Charge/Effort/Rest)

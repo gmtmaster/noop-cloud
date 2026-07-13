@@ -112,6 +112,46 @@ final class AnalyticsEngineTests: XCTestCase {
         XCTAssertEqual(result.cachedSleep[0].restingHr, 50)
     }
 
+    func testNightlyHrvDefaultsToWholeNightAndDeepExcludesOtherStages() throws {
+        let start = 30_000
+        let windowS = 5 * 60
+        let stages = [
+            StageSegment(start: start, end: start + windowS, stage: "wake"),
+            StageSegment(start: start + windowS, end: start + 2 * windowS, stage: "light"),
+            StageSegment(start: start + 2 * windowS, end: start + 3 * windowS, stage: "rem"),
+            StageSegment(start: start + 3 * windowS, end: start + 4 * windowS, stage: "deep"),
+        ]
+        let session = SleepSession(start: start, end: start + 4 * windowS, efficiency: 0.9,
+                                   stages: stages, restingHR: 50, avgHRV: 25)
+        let amplitudes = [10, 20, 30, 40]
+        var rr: [RRInterval] = []
+        for (window, amplitude) in amplitudes.enumerated() {
+            for second in 0..<windowS {
+                rr.append(RRInterval(ts: start + window * windowS + second,
+                                     rrMs: 1_000 + (second.isMultiple(of: 2) ? -amplitude : amplitude)))
+            }
+        }
+
+        XCTAssertEqual(try XCTUnwrap(AnalyticsEngine.nightlyHRV(sessions: [session], rr: rr)),
+                       25, accuracy: 0.001, "default must remain the stored whole-night session value")
+        XCTAssertEqual(try XCTUnwrap(AnalyticsEngine.nightlyHRV(
+            sessions: [session], rr: rr, deepHrvWindow: true)),
+            80, accuracy: 0.001, "deep mode must exclude wake, light, and REM windows")
+    }
+
+    func testDeepNightlyHrvWithoutUsableDeepWindowIsNil() {
+        let start = 40_000
+        let end = start + 600
+        let session = SleepSession(
+            start: start, end: end, efficiency: 0.9,
+            stages: [StageSegment(start: start, end: end, stage: "light")],
+            restingHR: 50, avgHRV: 25)
+        let rr = (0..<600).map { RRInterval(ts: start + $0, rrMs: $0.isMultiple(of: 2) ? 990 : 1_010) }
+
+        XCTAssertNil(AnalyticsEngine.nightlyHRV(sessions: [session], rr: rr, deepHrvWindow: true),
+                     "historical deep mode deterministically reports no value when no deep window is usable")
+    }
+
     func testAnalyzeDayColdStartRecoveryNil() {
         // No baselines supplied → recovery is nil (cold-start gate).
         let day = "2021-06-16"

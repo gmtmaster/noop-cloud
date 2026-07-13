@@ -112,6 +112,34 @@ final class UnitFormatterTests: XCTestCase {
         XCTAssertEqual(UnitPrefs.resolveTemperature(system: .metric, override: "fahrenheit"), .fahrenheit)
     }
 
+    func testHrvWindowStableValuesAndDefault() throws {
+        XCTAssertEqual(HrvWindow.whole.rawValue, "whole")
+        XCTAssertEqual(HrvWindow.deep.rawValue, "deep")
+        XCTAssertEqual(UnitPrefs.hrvWindowKey, "hrv.window")
+        XCTAssertEqual(UnitPrefs.resolveHrvWindow(nil), .whole)
+        XCTAssertEqual(UnitPrefs.resolveHrvWindow("unknown"), .whole)
+        XCTAssertEqual(UnitPrefs.resolveHrvWindow("whole"), .whole)
+        XCTAssertEqual(UnitPrefs.resolveHrvWindow("deep"), .deep)
+
+        let encoded = try JSONEncoder().encode(HrvWindow.deep)
+        XCTAssertEqual(try JSONDecoder().decode(HrvWindow.self, from: encoded), .deep)
+    }
+
+    func testStoredDeepHrvWindowReachesIntelligenceSelection() throws {
+        let suite = "UnitFormatterTests.hrvWindow.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        XCTAssertFalse(IntelligenceEngine.deepHrvWindow(
+            rawPreference: defaults.string(forKey: UnitPrefs.hrvWindowKey)))
+        defaults.set("deep", forKey: UnitPrefs.hrvWindowKey)
+        XCTAssertTrue(IntelligenceEngine.deepHrvWindow(
+            rawPreference: defaults.string(forKey: UnitPrefs.hrvWindowKey)))
+        defaults.set("whole", forKey: UnitPrefs.hrvWindowKey)
+        XCTAssertFalse(IntelligenceEngine.deepHrvWindow(
+            rawPreference: defaults.string(forKey: UnitPrefs.hrvWindowKey)))
+    }
+
     // MARK: - Unit labels
 
     func testUnitLabels() {

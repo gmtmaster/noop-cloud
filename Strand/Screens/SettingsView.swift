@@ -65,6 +65,8 @@ struct SettingsView: View {
     // Effort display scale (#268). Display-only — Effort stays stored 0–100, this only chooses whether
     // it's shown on NOOP's 0–100 axis or WHOOP's 0–21 Day Strain axis.
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.hundred.rawValue
+    // Nightly HRV observation window. The historical key/raw values reconnect existing device choices.
+    @AppStorage(UnitPrefs.hrvWindowKey) private var hrvWindowRaw = HrvWindow.whole.rawValue
     // Live-HR Live Activity (Lock Screen + Dynamic Island), iOS only (#336). Default on.
     @AppStorage(UnitPrefs.liveActivityKey) private var liveActivityEnabled = true
     // Alternate app icon (iOS only) — false = Titanium (primary AppIcon), true = Blue Titanium
@@ -583,13 +585,12 @@ struct SettingsView: View {
 
     // MARK: - Units
 
-    /// Imperial/Metric display toggle + a separate temperature override. Display-only — nothing stored
-    /// changes, NOOP keeps everything in SI and converts at the point of display.
+    /// Measurement/display preferences plus the focused nightly HRV observation-window selector.
     private var unitsCard: some View {
         SettingsSection(
             icon: "ruler",
             title: "Units",
-            blurb: "Choose how distances, weights, heights, temperatures and Effort are shown. Your data is always stored the same way. This only changes the display."
+            blurb: "Choose how measurements and Effort are shown, and how nightly HRV is observed. Your source data is always stored the same way."
         ) {
             VStack(spacing: 0) {
                 FormRow(label: "Measurement system") {
@@ -628,6 +629,23 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     .fixedSize()
                     .accessibilityLabel("Effort scale")
+                }
+                rowDivider
+                FormRow(label: "HRV window") {
+                    Picker("HRV window", selection: $hrvWindowRaw) {
+                        Text("Whole night").tag(HrvWindow.whole.rawValue)
+                        Text("Deep sleep").tag(HrvWindow.deep.rawValue)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                    .accessibilityLabel("HRV window")
+                    .onChangeCompat(of: hrvWindowRaw) { _ in
+                        Task {
+                            await model.intelligence.analyzeRecent()
+                            await model.repo.refresh()
+                        }
+                    }
                 }
             }
         }

@@ -818,6 +818,46 @@ final class SleepStagerTests: XCTestCase {
         XCTAssertLessThan(hrv!, 50, "ectopic spikes must be rejected before rMSSD")
     }
 
+    func testSessionHrvWindowsTagStagesAndUseGapAwareRmssd() throws {
+        let start = 10_000
+        let windowS = 5 * 60
+        let stages = [
+            StageSegment(start: start, end: start + windowS, stage: "wake"),
+            StageSegment(start: start + windowS, end: start + 2 * windowS, stage: "light"),
+            StageSegment(start: start + 2 * windowS, end: start + 3 * windowS, stage: "rem"),
+            StageSegment(start: start + 3 * windowS, end: start + 4 * windowS, stage: "deep"),
+        ]
+        let amplitudes = [10, 20, 30, 40]
+        var rr: [RRInterval] = []
+        for (window, amplitude) in amplitudes.enumerated() {
+            for second in 0..<windowS {
+                rr.append(RRInterval(ts: start + window * windowS + second,
+                                     rrMs: 1_000 + (second.isMultiple(of: 2) ? -amplitude : amplitude)))
+            }
+        }
+
+        let windows = SleepStager.sessionHrvWindows(
+            start: start, end: start + 4 * windowS, rr: rr, stages: stages)
+
+        XCTAssertEqual(windows.map(\.stage), ["wake", "light", "rem", "deep"])
+        XCTAssertEqual(try XCTUnwrap(windows.last?.rmssd), 80, accuracy: 0.001)
+    }
+
+    func testSessionHrvWindowsPreserveEqualRRAndMissingGapHandling() throws {
+        let start = 20_000
+        let equal = (0..<20).map { RRInterval(ts: start + $0, rrMs: 800) }
+        let equalWindow = try XCTUnwrap(SleepStager.sessionHrvWindows(
+            start: start, end: start + 300, rr: equal).first)
+        XCTAssertEqual(try XCTUnwrap(equalWindow.rmssd), 0, accuracy: 0.0001)
+
+        let raw = Array(repeating: 800, count: 10) + [3_000, 1_000] + Array(repeating: 800, count: 10)
+        let gapped = raw.enumerated().map { RRInterval(ts: start + $0.offset, rrMs: $0.element) }
+        let gapWindow = try XCTUnwrap(SleepStager.sessionHrvWindows(
+            start: start, end: start + 300, rr: gapped).first)
+        XCTAssertEqual(try XCTUnwrap(gapWindow.rmssd), 0, accuracy: 0.0001,
+                       "a rejected interval must break continuity instead of splicing its neighbours")
+    }
+
     // MARK: - Helper robustness
 
     func testConvolveReflectShortInputDoesNotCrash() {
