@@ -606,6 +606,8 @@ public final class BLEManager: NSObject, ObservableObject {
     /// this guard those re-entries re-blasted hello/SET_CLOCK at the strap mid-offload and stopped it
     /// from streaming type-47 — THE iOS "won't serve" root cause. Reset on disconnect.
     private var connectHandshakeDone = false
+    private var cmdNotifyConfirmedActive = false
+    private var connectSettledSignaled = false
     /// Re-entrancy guard for captureRawAccel: true while a bounded on-demand window is running.
     /// A second tap is a no-op until the active capture's asyncAfter block fires and clears this.
     private var rawCaptureInFlight = false
@@ -2247,8 +2249,11 @@ public final class BLEManager: NSObject, ObservableObject {
             connected: state.connected, bonded: state.bonded, backfilling: backfilling) else { return }
         let now = Date().timeIntervalSince1970
         let last = UserDefaults.standard.object(forKey: BLEManager.backfillLastAtKey) as? Double
+        let clockUntrusted = BackfillContinuation.isFutureDatedNewest(strapNewestTs,
+                                                                      wallNowUnix: Int(now))
         guard BackfillPolicy.shouldRun(trigger: trigger, now: now, lastBackfillAt: last,
-                                       emptyStreak: emptySyncTracker.consecutiveEmptySyncs) else {
+                                       emptyStreak: emptySyncTracker.consecutiveEmptySyncs,
+                                       clockUntrusted: clockUntrusted) else {
             log("Backfill: \(trigger) skipped (rate-limited; last \(last.map { Int(now - $0) } ?? -1)s ago)")
             return
         }
@@ -2814,6 +2819,8 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         whoop5SessionStarted = false
         clockRequested = false
         connectHandshakeDone = false
+        cmdNotifyConfirmedActive = false
+        connectSettledSignaled = false
         realtimeArmedAt = nil   // cleared after the marginal-radio detector above read it (#80)
         // Reset backfill state so the next connect starts a fresh offload (incl. the syncing pill —
         // a dropped link mid-offload must not leave "Syncing strap history…" stuck on, #77).
@@ -3228,6 +3235,10 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 // connectHandshakeDone, so a racing foreground/restore trigger can't fire it early.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.requestSync(.connect) }
                 startBackfillTimer()            // re-offload the type-47 store every backfillIntervalSeconds
+                if !connectSettledSignaled {
+                    connectSettledSignaled = true
+                    state.connectSettled &+= 1
+                }
             }
             return
         }
@@ -3310,6 +3321,14 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 realtimeArmedAt = Date()   // start the arm→drop stopwatch for the marginal-radio detector
             }
         }
+        maybeSignalConnectSettled()
+    }
+
+    private func maybeSignalConnectSettled() {
+        guard connectHandshakeDone, cmdNotifyConfirmedActive, !connectSettledSignaled else { return }
+        connectSettledSignaled = true
+        state.connectSettled &+= 1
+        log("Connect settled: handshake done + cmd-notify confirmed")
     }
 
     /// SET_CLOCK(10) payload — the 8-byte form `[seconds u32 LE][subseconds u32 LE]`, subseconds in
@@ -3353,15 +3372,10 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
     /// Newest plausible-unix marker in a GET_DATA_RANGE COMMAND_RESPONSE = the strap's newest stored
     /// record. Mirrors re/diagnose_biometrics.py: scan u32 LE words in the response body (data starts at
     /// frame[7], after [type,seq,cmd]), keep those in the unix range, return the max. nil if none.
-    static func dataRangeNewestUnix(from frame: [UInt8]) -> Int? {
-        guard frame.count > 7 else { return nil }
-        let body = Array(frame[7...]); var newest: Int? = nil; var i = 0
-        while i + 4 <= body.count {
-            let w = Int(body[i]) | Int(body[i+1]) << 8 | Int(body[i+2]) << 16 | Int(body[i+3]) << 24
-            if w >= 1_700_000_000 && w <= 1_900_000_000 { newest = max(newest ?? 0, w) }
-            i += 4
-        }
-        return newest
+    static func dataRangeNewestUnix(from frame: [UInt8],
+                                    wallNowUnix: Int = Int(Date().timeIntervalSince1970)) -> Int? {
+        DataRange.newestUnix(from: frame, wallNowUnix: wallNowUnix,
+                             futureSkewSeconds: BackfillContinuation.defaultFutureSkewSeconds)
     }
 
     /// The OLDEST plausible record timestamp in a GET_DATA_RANGE frame — the start of the strap's stored
@@ -3370,14 +3384,7 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
     /// span is the backlog DEPTH at a glance: a strap that banked weeks of un-synced history has a wide
     /// span and simply needs time to drain oldest-first, vs. a narrow span that should clear quickly.
     static func dataRangeOldestUnix(from frame: [UInt8]) -> Int? {
-        guard frame.count > 7 else { return nil }
-        let body = Array(frame[7...]); var oldest: Int? = nil; var i = 0
-        while i + 4 <= body.count {
-            let w = Int(body[i]) | Int(body[i+1]) << 8 | Int(body[i+2]) << 16 | Int(body[i+3]) << 24
-            if w >= 1_700_000_000 && w <= 1_900_000_000 { oldest = min(oldest ?? .max, w) }
-            i += 4
-        }
-        return oldest
+        DataRange.oldestUnix(from: frame)
     }
 
     public func peripheral(_ peripheral: CBPeripheral,
@@ -3557,6 +3564,10 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             log("Notify enable failed for \(characteristic.uuid): \(error.localizedDescription)")
         } else {
             log("Notify \(characteristic.isNotifying ? "active" : "off") \(characteristic.uuid)")
+            if characteristic === cmdNotifyCharacteristic, characteristic.isNotifying {
+                cmdNotifyConfirmedActive = true
+                maybeSignalConnectSettled()
+            }
         }
     }
 }

@@ -45,6 +45,25 @@ public enum SleepStageTotals {
         return nil
     }
 
+    /// Trim computed stage segments to the effective onset. Imported minute dictionaries and malformed
+    /// payloads are returned unchanged because they do not carry timestamps that can be clamped safely.
+    public static func clampStagesToOnset(_ stagesJSON: String?, onsetSec: Int) -> String? {
+        guard let stagesJSON, let data = stagesJSON.data(using: .utf8),
+              let segments = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+            return stagesJSON
+        }
+        var clamped: [[String: Any]] = []
+        for segment in segments {
+            guard let rawStart = (segment["start"] as? NSNumber)?.intValue,
+                  let end = (segment["end"] as? NSNumber)?.intValue else { return stagesJSON }
+            let start = max(rawStart, onsetSec)
+            guard end > start else { continue }
+            clamped.append(["start": start, "end": end, "stage": segment["stage"] as? String ?? ""])
+        }
+        guard let output = try? JSONSerialization.data(withJSONObject: clamped) else { return stagesJSON }
+        return String(data: output, encoding: .utf8) ?? stagesJSON
+    }
+
     /// The sleep-derived daily fields for a night made of these blocks' `stagesJSON`, or nil if none
     /// decode. `efficiency` is asleep / in-bed (TST / Σ stage minutes) in [0,1]. For the segment stages
     /// noop stores (which TILE the window, last segment clamped to the wake), Σ stage minutes equals the
@@ -511,15 +530,19 @@ public enum SleepStageTotals {
             // effective span is `[onset, onset + decoded in-bed]`; the gap between consecutive fragments is
             // awake the fragments' own stages don't cover.
             if let group {
-                let spans: [(start: Int, end: Int)] = group.map { i in
-                    let b = blocks[i]
-                    let onset = onsetByStart[b.startTs] ?? b.startTs
-                    let inBedSec = Int((minutes(fromStagesJSON: b.stagesJSON)?.inBed ?? 0) * 60.0)
+                let clampedStages: [String?] = group.map { i in
+                    let block = blocks[i]
+                    guard let onset = onsetByStart[block.startTs] else { return block.stagesJSON }
+                    return clampStagesToOnset(block.stagesJSON, onsetSec: onset)
+                }
+                let spans: [(start: Int, end: Int)] = group.enumerated().map { groupIndex, blockIndex in
+                    let block = blocks[blockIndex]
+                    let onset = onsetByStart[block.startTs] ?? block.startTs
+                    let inBedSec = Int((minutes(fromStagesJSON: clampedStages[groupIndex])?.inBed ?? 0) * 60.0)
                     return (start: onset, end: onset + inBedSec)
                 }
                 let gapAwakeS = interFragmentAwakeSeconds(spans)
-                if let agg = dailyAggregate(group.map { blocks[$0].stagesJSON },
-                                            interFragmentAwakeSeconds: gapAwakeS) {
+                if let agg = dailyAggregate(clampedStages, interFragmentAwakeSeconds: gapAwakeS) {
                     return (agg, applied)
                 }
             }

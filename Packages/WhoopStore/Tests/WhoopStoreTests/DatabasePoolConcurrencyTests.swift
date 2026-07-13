@@ -137,5 +137,23 @@ final class DatabasePoolConcurrencyTests: XCTestCase {
         XCTAssertEqual(journalMode.lowercased(), "wal", "DatabasePool must put the file in WAL mode")
     }
 
+    func testConcurrentOpensOfSameFreshFileAllSucceed() async throws {
+        let path = tempPath()
+        defer { removeDB(path) }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<16 {
+                group.addTask {
+                    let store = try await WhoopStore(path: path)
+                    let applied = try await store.registryWriter.read { db in
+                        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM grdb_migrations") ?? 0
+                    }
+                    XCTAssertGreaterThan(applied, 0)
+                }
+            }
+            try await group.waitForAll()
+        }
+    }
+
     private enum ConcurrencyTimeout: Error { case readBlockedOnWriter }
 }

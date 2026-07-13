@@ -446,6 +446,24 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "startTs"])
             }
         }
+        migrator.registerMigration("v24-rr-seq") { db in
+            // Equal successive R-R intervals can share the same one-second timestamp and value. The old
+            // value-only key dropped the second beat, removing a zero-difference pair and biasing RMSSD.
+            try db.create(table: "rrInterval_new") { t in
+                t.column("deviceId", .text).notNull()
+                t.column("ts", .integer).notNull()
+                t.column("rrMs", .integer).notNull()
+                t.column("seq", .integer).notNull().defaults(to: 0)
+                t.column("synced", .integer).notNull().defaults(to: 0)
+                t.primaryKey(["deviceId", "ts", "rrMs", "seq"])
+            }
+            try db.execute(sql: """
+                INSERT INTO rrInterval_new (deviceId, ts, rrMs, seq, synced)
+                SELECT deviceId, ts, rrMs, 0, synced FROM rrInterval
+                """)
+            try db.execute(sql: "DROP TABLE rrInterval")
+            try db.execute(sql: "ALTER TABLE rrInterval_new RENAME TO rrInterval")
+        }
         return migrator
     }
 }

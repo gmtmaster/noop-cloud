@@ -262,12 +262,9 @@ final class AppModel: ObservableObject {
         $bpm.sink { [weak self] hr in self?.coachZone(hr) }.store(in: &hrCancellables)
         // Illness/strain early-warning recomputes when the daily history changes.
         repo.$days.sink { [weak self] days in self?.evaluateIllness(days) }.store(in: &hrCancellables)
-        // Re-arm the strap's firmware alarm whenever it (re)bonds. A smart-alarm time changed while the
-        // strap was away never reached it , the send is gated on bond , so the strap kept the OLD time
-        // and fired at it (#59). removeDuplicates() fires once per bond; gated on enabled so a disabled
-        // alarm doesn't disarm on every reconnect.
-        live.$bonded.removeDuplicates().sink { [weak self] bonded in
-            guard let self, bonded, self.behavior.smartAlarmEnabled else { return }
+        // Re-arm only after the connection handshake and command-response notification channel settle.
+        live.$connectSettled.dropFirst().sink { [weak self] _ in
+            guard let self, self.behavior.smartAlarmEnabled else { return }
             self.applySmartAlarm()
         }.store(in: &hrCancellables)
         // The firmware alarm is a single absolute instant with no recurrence, and was re-armed ONLY on

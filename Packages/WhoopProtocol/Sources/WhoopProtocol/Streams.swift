@@ -83,7 +83,8 @@ public struct SkinTempSample: Equatable, Codable {
 ///   point at a markedly different ambient (the reporter offered a colder + a warmer room) pins the
 ///   ADC→°C transfer — including whether it is linear at all. Until then this is a defensible
 ///   worn-range mapping, NOT a claimed-accurate absolute thermometer.
-public func skinTempCelsius(raw: Int, family: DeviceFamily) -> Double {
+public func skinTempCelsius(raw: Int, family: DeviceFamily,
+                            anchorRaw: Double = Whoop4SkinTemp.anchorRaw) -> Double {
     switch family {
     case .whoop5:
         return Double(raw) / 100.0
@@ -91,7 +92,7 @@ public func skinTempCelsius(raw: Int, family: DeviceFamily) -> Double {
         // Anchor: worn resting raw 826 → 33.0 °C. Provisional slope 0.05 °C per raw unit (a ~35-unit
         // worn-steady spread ≈ ~1.75 °C of nocturnal variation, within the plausible band). See TODO above.
         return Whoop4SkinTemp.anchorCelsius
-            + (Double(raw) - Whoop4SkinTemp.anchorRaw) * Whoop4SkinTemp.provisionalSlopeCPerRaw
+            + (Double(raw) - anchorRaw) * Whoop4SkinTemp.provisionalSlopeCPerRaw
     }
 }
 
@@ -105,6 +106,18 @@ public enum Whoop4SkinTemp {
     public static let anchorCelsius: Double = 33.0
     /// PROVISIONAL °C-per-raw-unit slope. TODO(#938): replace with the two-point anchor slope.
     public static let provisionalSlopeCPerRaw: Double = 0.05
+    public static let wornMinRaw: Int = 550
+    public static let wornMaxRaw: Int = 2040
+    public static let minAnchorSamples: Int = 100
+
+    public static func deviceAnchorRaw(_ raws: [Int]) -> Double? {
+        let inBand = raws.filter { $0 >= wornMinRaw && $0 <= wornMaxRaw }.sorted()
+        guard inBand.count >= minAnchorSamples else { return nil }
+        let count = inBand.count
+        return count.isMultiple(of: 2)
+            ? Double(inBand[count / 2 - 1] + inBand[count / 2]) / 2
+            : Double(inBand[count / 2])
+    }
 }
 
 public struct RespSample: Equatable, Codable {

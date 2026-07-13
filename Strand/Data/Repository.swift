@@ -1449,8 +1449,7 @@ final class Repository: ObservableObject {
         let devices = (try? DeviceRegistryStore(dbQueue: store.registryWriter).all()) ?? []
         var out: [String: DeviceFamily] = [:]
         for id in ids {
-            let isW4 = devices.first(where: { $0.id == id }).map { WhoopModel(rawValue: $0.model) == .whoop4 } ?? false
-            out[id] = isW4 ? .whoop4 : .whoop5
+            out[id] = DeviceFamily.forRegistryModel(devices.first(where: { $0.id == id })?.model)
         }
         return out
     }
@@ -1659,8 +1658,8 @@ final class Repository: ObservableObject {
             // canonical), so that path is byte-identical. Apple is the final cross-source fallback.
             var candidates = [
                 MetricSourceCandidate(source: actualWhoopSource, key: key),
-                MetricSourceCandidate(source: computedSource, key: key),
                 MetricSourceCandidate(source: whoopSource, key: key),
+                MetricSourceCandidate(source: computedSource, key: key),
                 MetricSourceCandidate(source: whoopSource + "-noop", key: key),
             ]
             if let appleKey = appleCompatibleKey(forWhoopKey: key) {

@@ -30,7 +30,8 @@ enum BackfillPolicy {
     /// `.manual`/`.connect`/`.foreground` never back off, and the first real record resets the streak,
     /// so baseline cadence resumes instantly — a user- or connection-driven sync is never delayed.
     static func shouldRun(trigger: BackfillTrigger, now: TimeInterval,
-                          lastBackfillAt: TimeInterval?, emptyStreak: Int = 0) -> Bool {
+                          lastBackfillAt: TimeInterval?, emptyStreak: Int = 0,
+                          clockUntrusted: Bool = false) -> Bool {
         guard let last = lastBackfillAt else { return true }
         let elapsed = now - last
         let backoff: Double = emptyStreak >= emptyBackoffThreshold
@@ -41,8 +42,8 @@ enum BackfillPolicy {
         // deliberately un-floored; .autoContinue's runaway protection lives in BLEManager's cap, not here.
         case .manual, .autoContinue: return true
         case .connect, .foreground:  return elapsed >= eventFloorSeconds
-        case .strap:                 return elapsed >= eventFloorSeconds * backoff
-        case .periodic:              return elapsed >= periodicFloorSeconds * backoff
+        case .strap:                 return !clockUntrusted && elapsed >= eventFloorSeconds * backoff
+        case .periodic:              return !clockUntrusted && elapsed >= periodicFloorSeconds * backoff
         }
     }
 }

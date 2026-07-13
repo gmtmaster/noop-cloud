@@ -52,4 +52,13 @@ final class BackfillPolicyTests: XCTestCase {
         XCTAssertTrue(BackfillPolicy.shouldRun(trigger: .connect, now: 1000, lastBackfillAt: last, emptyStreak: 99))
         XCTAssertTrue(BackfillPolicy.shouldRun(trigger: .foreground, now: 1000, lastBackfillAt: last, emptyStreak: 99))
     }
+
+    func testUntrustedClockSkipsAutomaticTriggers() {
+        XCTAssertFalse(BackfillPolicy.shouldRun(trigger: .strap, now: 1_000_000,
+                                                lastBackfillAt: 0, clockUntrusted: true))
+        XCTAssertFalse(BackfillPolicy.shouldRun(trigger: .periodic, now: 1_000_000,
+                                                lastBackfillAt: 0, clockUntrusted: true))
+        XCTAssertTrue(BackfillPolicy.shouldRun(trigger: .manual, now: 1_000_000,
+                                               lastBackfillAt: 999_999, clockUntrusted: true))
+    }
 }

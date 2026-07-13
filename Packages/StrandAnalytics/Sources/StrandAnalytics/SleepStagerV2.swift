@@ -143,7 +143,7 @@ public enum SleepStagerV2 {
         "light": log(0.50), "deep": log(0.18), "rem": log(0.22), "awake": log(0.10)]
 
     /// Deep is eligible only in the night's lowest ~20 % HR-flatness epochs (≈ deep base rate + margin).
-    static let deepGateThresh = 0.20
+    static let deepGateThresh = 0.25
     static let deepGateSlope = 5.0
 
     /// Motion thresholds are RELATIVE to each night's own quiescent jerk floor (the median per-second
@@ -159,7 +159,7 @@ public enum SleepStagerV2 {
     /// Transition matrix (rows = from, cols = to). Self-transitions dominate; deep↔rem rare; wake mostly
     /// to/from light. A priori, not fit.
     static let transition: [String: [String: Double]] = [
-        "deep":  ["deep": 0.90, "rem": 0.005, "light": 0.09, "awake": 0.005],
+        "deep":  ["deep": 0.86, "rem": 0.007, "light": 0.126, "awake": 0.007],
         "rem":   ["deep": 0.005, "rem": 0.88, "light": 0.10, "awake": 0.015],
         "light": ["deep": 0.06, "rem": 0.06, "light": 0.85, "awake": 0.03],
         "awake": ["deep": 0.01, "rem": 0.02, "light": 0.27, "awake": 0.70]]
@@ -433,7 +433,7 @@ public enum SleepStagerV2 {
             let zhrv = zhr(f.hr), zhvv = zhv(f.hrVar), zmvv = zmv(f.moveFrac)
             let gate = deepGateSlope * max(0.0, fpct(f.hrFlat11) - deepGateThresh)
             var em: [String: Double] = [
-                "deep": -1.4 * zhvv - 0.2 * zhrv - 0.3 * zmvv - gate + baseLogPrior["deep"]!,
+                "deep": -1.1 * zhvv - 0.5 * zmvv - gate + baseLogPrior["deep"]!,
                 "rem": 0.6 * zhvv - 0.6 * zmvv + 0.4 * zhrv + baseLogPrior["rem"]!,
                 "light": baseLogPrior["light"]!,
                 "awake": 1.0 * zmvv + 0.8 * zhvv + 0.4 * zhrv + baseLogPrior["awake"]!,

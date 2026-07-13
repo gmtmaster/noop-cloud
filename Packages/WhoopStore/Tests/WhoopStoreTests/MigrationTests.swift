@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import WhoopProtocol
 @testable import WhoopStore
 
 final class MigrationTests: XCTestCase {
@@ -26,10 +27,21 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(cols, ["deviceId", "ts"])
     }
 
-    func testRrIntervalPrimaryKeyIncludesRrMs() async throws {
+    func testRrIntervalPrimaryKeyIncludesSeq() async throws {
         let store = try await WhoopStore.inMemory()
         let cols = try await store.primaryKeyColumns("rrInterval")
-        XCTAssertEqual(cols, ["deviceId", "ts", "rrMs"])
+        XCTAssertEqual(cols, ["deviceId", "ts", "rrMs", "seq"])
+    }
+
+    func testEqualSameSecondRrIntervalsSurvive() async throws {
+        let store = try await WhoopStore.inMemory()
+        try await store.upsertDevice(id: "dev1", mac: nil, name: nil)
+        let inserted = try await store.insert(
+            Streams(rr: [RRInterval(ts: 100, rrMs: 812), RRInterval(ts: 100, rrMs: 812)]),
+            deviceId: "dev1")
+        XCTAssertEqual(inserted.rr, 2)
+        let read = try await store.rrIntervals(deviceId: "dev1", from: 0, to: 1_000, limit: 100)
+        XCTAssertEqual(read, [RRInterval(ts: 100, rrMs: 812), RRInterval(ts: 100, rrMs: 812)])
     }
 
     /// v5 adds a `synced` column to all 8 decoded tables.

@@ -264,6 +264,7 @@ public enum AnalyticsEngine {
                                   // keeps every 5/MG + pure-function caller byte-identical;
                                   // IntelligenceEngine passes the day owner's real family.
                                   skinTempFamily: DeviceFamily = .whoop5,
+                                  skinTempAnchorRaw: Double? = nil,
                                   profile: UserProfile,
                                   baselines: ProfileBaselines = ProfileBaselines(),
                                   maxHROverride: Double? = nil,
@@ -471,7 +472,8 @@ public enum AnalyticsEngine {
         // personal baseline. In pass 1 baselines.skinTemp is nil so the deviation is nil
         // and the mean is harvested; IntelligenceEngine seeds the baseline from those means
         // and re-derives the deviation in pass 2 (mirrors avgHrv→recovery). APPROXIMATE.
-        let nightlySkinTempC = wornNightlySkinTempC(matched, hr: hr, skinTemp: skinTemp, family: skinTempFamily)
+        let nightlySkinTempC = wornNightlySkinTempC(matched, hr: hr, skinTemp: skinTemp,
+                                                    family: skinTempFamily, anchorRaw: skinTempAnchorRaw)
         let skinTempDevC: Double? = nightlySkinTempC.flatMap { (v: Double) -> Double? in
             guard let b = baselines.skinTemp, b.usable else { return nil }
             return round2(Baselines.deviation(v, state: b).delta)
@@ -785,8 +787,10 @@ public enum AnalyticsEngine {
                                      hr: [HRSample],
                                      skinTemp: [SkinTempSample],
                                      family: DeviceFamily = .whoop5,
+                                     anchorRaw: Double? = nil,
                                      minSamples: Int = minSkinTempSamples) -> Double? {
-        skinTempFunnel(sessions, hr: hr, skinTemp: skinTemp, family: family, minSamples: minSamples).mean
+        skinTempFunnel(sessions, hr: hr, skinTemp: skinTemp, family: family,
+                       anchorRaw: anchorRaw, minSamples: minSamples).mean
     }
 
     // MARK: - Skin-temp funnel diagnostic (#752)
@@ -849,6 +853,7 @@ public enum AnalyticsEngine {
                                       hr: [HRSample],
                                       skinTemp: [SkinTempSample],
                                       family: DeviceFamily = .whoop5,
+                                      anchorRaw: Double? = nil,
                                       minSamples: Int = minSkinTempSamples) -> SkinTempFunnelDiagnostic {
         let total = skinTemp.count
         // No sessions ⇒ every sample is out of window; no samples ⇒ an empty funnel. Either way the mean is
@@ -866,7 +871,13 @@ public enum AnalyticsEngine {
         for t in skinTemp {
             if !wornSeconds.contains(t.ts) { notWorn += 1; continue }
             if !sessions.contains(where: { t.ts >= $0.start && t.ts <= $0.end }) { outOfWindow += 1; continue }
-            let c = skinTempCelsius(raw: t.raw, family: family)   // #938: family-aware (5/MG=raw/100, 4.0=raw ADC map)
+            if family == .whoop4,
+               t.raw < Whoop4SkinTemp.wornMinRaw || t.raw > Whoop4SkinTemp.wornMaxRaw {
+                outOfRange += 1
+                continue
+            }
+            let c = skinTempCelsius(raw: t.raw, family: family,
+                                    anchorRaw: anchorRaw ?? Whoop4SkinTemp.anchorRaw)
             if c < skinTempMinC || c > skinTempMaxC { outOfRange += 1; continue }
             sum += c
             kept += 1

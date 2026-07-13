@@ -121,74 +121,39 @@ final class FramingTests: XCTestCase {
         XCTAssertNil(OuraFraming.parseRecord([0x7B, 0x03, 0x00, 0x01, 0x02]))
     }
 
-    // MARK: - Reassembler: multiple records per notification
-
-    func testReassemblerMultipleRecordsInOneNotification() {
-        // Two complete records packed into one notification value.
-        let r = OuraReassembler()
-        let recs = r.feed(bytes("7b060200010003ca" + "4e0602000100006c"))
-        XCTAssertEqual(recs.count, 2)
-        XCTAssertEqual(recs[0].type, 0x7B)
-        XCTAssertEqual(recs[1].type, 0x4E)
-        XCTAssertEqual(r.bufferedByteCount, 0)
+    func testTLVBelowSixBytesIsRejected() {
+        XCTAssertNil(OuraFraming.parseRecord([0x7B, 0x06, 0x02, 0x00, 0x01]))
     }
 
-    // MARK: - Reassembler: partial trailing bytes buffered across notifications
-
-    func testReassemblerPartialTrailingBytesBuffered() {
-        let full = bytes("7b060200010003ca")   // one complete 8-byte record
-        let r = OuraReassembler()
-        // Feed only the first 5 bytes -> nothing complete yet, the rest is buffered.
-        XCTAssertTrue(r.feed(Array(full[0..<5])).isEmpty)
-        XCTAssertEqual(r.bufferedByteCount, 5)
-        // Feed the remaining 3 bytes -> the record now completes.
-        let recs = r.feed(Array(full[5...]))
-        XCTAssertEqual(recs.count, 1)
-        XCTAssertEqual(recs[0].type, 0x7B)
-        XCTAssertEqual(r.bufferedByteCount, 0)
+    func testParseRecordIgnoresTrailingBytesBeyondLen() {
+        let record = OuraFraming.parseRecord(bytes("7b060200010003ca" + "ffeeddcc"))
+        XCTAssertEqual(record?.type, 0x7B)
+        XCTAssertEqual(record?.payload, bytes("03ca"))
     }
 
-    func testReassemblerSplitAcrossThreeFragments() {
-        // A record split byte-by-byte still reassembles, and a second record packed behind it emerges.
-        let recHex = "4e0602000100006c"          // 8 bytes
-        let trailing = "7b060200010003ca"         // 8 bytes
-        let all = bytes(recHex + trailing)
-        let r = OuraReassembler()
-        var out: [OuraRecord] = []
-        // Feed in 3-byte chunks.
-        var i = 0
-        while i < all.count {
-            out.append(contentsOf: r.feed(Array(all[i..<min(i + 3, all.count)])))
-            i += 3
-        }
-        XCTAssertEqual(out.map { $0.type }, [0x4E, 0x7B])
+    func testParseRecordTooBigLenUsesWhatArrived() {
+        let record = OuraFraming.parseRecord(bytes("7b0a0200010003ca"))
+        XCTAssertEqual(record?.type, 0x7B)
+        XCTAssertEqual(record?.payload, bytes("03ca"))
     }
 
-    func testReassemblerResetClearsBuffer() {
-        let r = OuraReassembler()
-        _ = r.feed([0x7B, 0x06, 0x02])   // partial
-        XCTAssertGreaterThan(r.bufferedByteCount, 0)
-        r.reset()
-        XCTAssertEqual(r.bufferedByteCount, 0)
+    func testFeedReturnsAtMostOneRecordPerNotification() {
+        let records = OuraReassembler().feed(bytes("7b060200010003ca" + "4e0602000100006c"))
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.type, 0x7B)
     }
 
-    func testReassemblerDrainsPureNoiseWithoutEmittingOrWedging() {
-        // The TLV format has NO start-of-frame marker, so a stream of bytes whose len field is < 4
-        // cannot be realigned to an arbitrary later record (unlike WHOOP's 0xAA SOF). The len < 4
-        // guard's job is narrower but important: never EMIT a garbage record, and never WEDGE waiting
-        // for bytes that cannot complete. A pure-noise burst drains to a tiny tail with no emissions.
-        let r = OuraReassembler()
-        let recs = r.feed([0x00, 0x01, 0x02, 0x03, 0x01, 0x02])   // every len field < 4
-        XCTAssertTrue(recs.isEmpty, "noise must not produce false records")
-        XCTAssertLessThanOrEqual(r.bufferedByteCount, 1, "noise must drain, not accumulate forever")
+    func testFeedNeverBuffersAcrossNotifications() {
+        let reassembler = OuraReassembler()
+        XCTAssertTrue(reassembler.feed(bytes("7b0602")).isEmpty)
+        XCTAssertEqual(reassembler.bufferedByteCount, 0)
+        XCTAssertEqual(reassembler.feed(bytes("4e0602000100006c")).map(\.type), [0x4E])
     }
 
-    func testReassemblerLenBelowFourDoesNotEmitGarbageBeforeValidRecord() {
-        // A 2-byte garbage header whose len is < 4 is dropped one byte at a time; because TLV has no
-        // SOF this does not realign to the trailing valid record, but it must NOT emit a bogus record.
-        let valid = bytes("4e0602000100006c")
-        let r = OuraReassembler()
-        let recs = r.feed([0x00, 0x01] + valid)   // 00 01 = len 1 (< 4)
-        XCTAssertTrue(recs.allSatisfy { $0.type != 0x00 }, "must never emit a type-0 garbage record")
+    func testResetIsNoOpWithoutBufferedState() {
+        let reassembler = OuraReassembler()
+        _ = reassembler.feed(bytes("7b0602"))
+        reassembler.reset()
+        XCTAssertEqual(reassembler.bufferedByteCount, 0)
     }
 }

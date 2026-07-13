@@ -23,6 +23,9 @@ public final class LiveState: ObservableObject {
     /// connect/disconnect. Drives the Live pill's two-state distinction; the encrypted channel (buzz,
     /// alarm, double-tap, history offload) only works when this is true.
     @Published public var encryptedBond: Bool = false
+    /// Monotonic per-connection signal bumped after the command handshake and response notification
+    /// subscription are both ready. Alarm re-arming waits for this instead of raw bond publication.
+    @Published public var connectSettled: Int = 0
     /// True ONLY when a non-WHOOP live source (currently the Oura ring) is actively streaming live HR.
     /// This is the green "STREAMING" signal for sources that have no WHOOP-style encrypted bond: it is
     /// DELIBERATELY separate from `bonded`, which carries WHOOP encrypted-bond + buzz semantics (it gates

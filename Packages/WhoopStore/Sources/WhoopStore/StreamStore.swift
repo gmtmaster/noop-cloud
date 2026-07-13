@@ -57,11 +57,14 @@ extension WhoopStore {
             }
             if !streams.rr.isEmpty {
                 let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO rrInterval (deviceId, ts, rrMs) VALUES (?, ?, ?)
-                    ON CONFLICT(deviceId, ts, rrMs) DO NOTHING
+                    INSERT INTO rrInterval (deviceId, ts, rrMs, seq) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(deviceId, ts, rrMs, seq) DO NOTHING
                     """)
+                var seqByTsRr: [Int: [Int: Int]] = [:]
                 for r in streams.rr {
-                    try stmt.execute(arguments: [deviceId, r.ts, r.rrMs])
+                    let seq = seqByTsRr[r.ts]?[r.rrMs] ?? 0
+                    seqByTsRr[r.ts, default: [:]][r.rrMs] = seq + 1
+                    try stmt.execute(arguments: [deviceId, r.ts, r.rrMs, seq])
                     rr += db.changesCount
                 }
             }

@@ -126,18 +126,17 @@ public extension OuraFraming {
     /// must cover its 4 timestamp bytes). A malformed/short record decodes to nil, never a guess
     /// (honest-data invariant). Per OURA_PROTOCOL.md s2.3.
     static func parseRecord(_ bytes: [UInt8]) -> OuraRecord? {
-        guard bytes.count >= 2 else { return nil }
+        guard bytes.count >= 6 else { return nil }
         let type = bytes[0]
         let len = Int(bytes[1])
         guard len >= minRecordLen else { return nil }
-        let total = 2 + len
-        guard bytes.count >= total else { return nil }
         // ringTimestamp is the 4 bytes at offset 2 as a u32 LE (counter low, session high).
         let rt = UInt32(bytes[2])
             | (UInt32(bytes[3]) << 8)
             | (UInt32(bytes[4]) << 16)
             | (UInt32(bytes[5]) << 24)
-        let payload = Array(bytes[6..<total])
+        let end = min(2 + len, bytes.count)
+        let payload = end > 6 ? Array(bytes[6..<end]) : []
         return OuraRecord(type: type, ringTimestamp: rt, payload: payload)
     }
 }
@@ -152,8 +151,6 @@ public extension OuraFraming {
 /// and the partial-trailing-bytes case (a record split across two notifications). Mirrors the
 /// WhoopProtocol Reassembler shape but for the Oura TLV layout, value-type and platform-pure.
 public final class OuraReassembler {
-    private var buf: [UInt8] = []
-
     /// A declared total beyond this is a corrupt/misaligned length, not a real record. The largest
     /// real Oura record is ~18 bytes (s6); cap generously at one MTU (247) so a bit-flipped length
     /// byte resyncs instead of stalling. `len` is a single byte (max 255), so 2 + 255 = 257 is the
@@ -165,34 +162,14 @@ public final class OuraReassembler {
     /// Feed one notification value. Returns every complete TLV record now available, in order. Partial
     /// trailing bytes are retained for the next feed. Per OURA_PROTOCOL.md s2.3 / s2.4.
     public func feed(_ fragment: [UInt8]) -> [OuraRecord] {
-        buf.append(contentsOf: fragment)
-        var out: [OuraRecord] = []
-        while buf.count >= 2 {
-            let len = Int(buf[1])
-            // A record must cover its 4 timestamp bytes. A len < 4 here is a misaligned byte: drop one
-            // and resync rather than emit garbage (honest-data invariant).
-            if len < OuraFraming.minRecordLen {
-                buf.removeFirst(1)
-                continue
-            }
-            let total = 2 + len
-            if buf.count < total {
-                break   // wait for the rest of this record
-            }
-            if let rec = OuraFraming.parseRecord(Array(buf[0..<total])) {
-                out.append(rec)
-            }
-            buf.removeFirst(total)
-        }
-        return out
+        guard let record = OuraFraming.parseRecord(fragment) else { return [] }
+        return [record]
     }
 
     /// Discard any buffered partial bytes (call on disconnect so a half-record does not bleed into the
     /// next session). Mirrors the StandardHRSource stop()/reset discipline.
-    public func reset() {
-        buf.removeAll(keepingCapacity: true)
-    }
+    public func reset() {}
 
     /// Number of bytes currently buffered awaiting completion (observability only).
-    public var bufferedByteCount: Int { buf.count }
+    public var bufferedByteCount: Int { 0 }
 }

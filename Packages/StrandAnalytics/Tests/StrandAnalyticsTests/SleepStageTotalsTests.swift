@@ -69,6 +69,13 @@ final class SleepStageTotalsTests: XCTestCase {
         XCTAssertEqual(r.sleep.efficiency, 296.0 / 296.0, accuracy: 0.001) // awake 0 → 100% efficient
     }
 
+    func testHonoringEditsClampsStagesToEffectiveOnset() throws {
+        let json = #"[{"start":0,"end":31740,"stage":"light"}]"#
+        let result = try XCTUnwrap(SleepStageTotals.dailyAggregateHonoringEdits(
+            detected: [detected(0, json)], edited: [0: json], onsetByStart: [0: 15300]))
+        XCTAssertEqual(result.sleep.totalSleepMin, Double(31740 - 15300) / 60, accuracy: 0.001)
+    }
+
     func testHonoringEditsKeepsDetectedWhenEditMapsToNil() throws {
         // An edit whose reshaped stages came out nil must FALL BACK to the detected block, never drop it
         // (which would collapse the night's sleep total). (#318 review #4)

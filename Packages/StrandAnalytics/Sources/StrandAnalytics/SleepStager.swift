@@ -154,7 +154,7 @@ public enum SleepStager {
     static let secondsPerDay: Int = 86_400
     /// Floor on the rolling-window size in samples.
     public static let minWindowSamples: Int = 3
-    /// A run is HR-confirmed only if mean HR ≤ baseline × this.
+    /// A run is HR-confirmed only if median HR ≤ baseline × this.
     public static let hrSleepBaselineMult: Double = 1.05
     /// Skip HR refinement (trust gravity) when fewer than this many HR samples.
     public static let hrRefineMinSamples: Int = 30
@@ -504,8 +504,8 @@ public enum SleepStager {
         guard let baseline = baseline else { return true }
         let seg = rowsBetween(hr, start: p.start, end: p.end) { $0.ts }
         if seg.count < hrRefineMinSamples { return true }
-        let meanHR = Double(seg.reduce(0) { $0 + $1.bpm }) / Double(seg.count)
-        return meanHR <= baseline * hrSleepBaselineMult
+        let medianHR = HRVAnalyzer.median(seg.map { Double($0.bpm) })
+        return medianHR <= baseline * hrSleepBaselineMult
     }
 
     /// True when the run's CENTER, shifted to LOCAL time by tzOffsetSeconds, lands in the
@@ -1914,8 +1914,9 @@ public enum SleepStager {
             // analyze() pipeline. The 0x2A37 RR on a WHOOP 5/MG is PPG-derived and noisier
             // than a 4.0's; rMSSD is built from SUCCESSIVE differences, so an un-rejected
             // jitter spike inflates the session HRV. Ectopic rejection drops those (#262/#235).
-            let cleaned = HRVAnalyzer.cleanRR(bucket)
-            if cleaned.count >= 2, let r = HRVAnalyzer.rmssdRaw(cleaned) { vals.append(r) }
+            let cleaned = HRVAnalyzer.cleanRRGapAware(bucket)
+            if cleaned.nn.count >= 2,
+               let r = HRVAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous) { vals.append(r) }
             t += windowS
         }
         guard !vals.isEmpty else { return nil }

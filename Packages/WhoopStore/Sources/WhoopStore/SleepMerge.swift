@@ -15,11 +15,32 @@ public enum SleepMerge {
     public static func merge(imported: [CachedSleepSession],
                              computed: [CachedSleepSession],
                              endDay: (CachedSleepSession) -> String) -> [CachedSleepSession] {
-        var importedDays = Set<String>()
+        var importedByDay: [String: [CachedSleepSession]] = [:]
+        for session in imported { importedByDay[endDay(session), default: []].append(session) }
+        var computedByDay: [String: [CachedSleepSession]] = [:]
+        for session in computed { computedByDay[endDay(session), default: []].append(session) }
+
         var out: [CachedSleepSession] = []
         out.reserveCapacity(imported.count + computed.count)
-        for s in imported { importedDays.insert(endDay(s)); out.append(s) }
-        for s in computed where !importedDays.contains(endDay(s)) { out.append(s) }
+        for (day, importedSessions) in importedByDay {
+            if let computedSessions = computedByDay[day],
+               !importedSessions.contains(where: hasStages),
+               computedSessions.contains(where: hasStages) {
+                out.append(contentsOf: computedSessions)
+            } else {
+                out.append(contentsOf: importedSessions)
+            }
+        }
+        for (day, computedSessions) in computedByDay where importedByDay[day] == nil {
+            out.append(contentsOf: computedSessions)
+        }
         return out.sorted { $0.startTs < $1.startTs }
+    }
+
+    static func hasStages(_ session: CachedSleepSession) -> Bool {
+        guard let stages = session.stagesJSON?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+        return !stages.isEmpty && stages != "[]"
     }
 }

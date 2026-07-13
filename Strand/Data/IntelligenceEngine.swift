@@ -469,6 +469,9 @@ final class IntelligenceEngine: ObservableObject {
                 // registry knows each device's model; unknown/non-WHOOP owners fall back to `.whoop5` (the prior
                 // /100 behaviour), so this only changes the mapping for a device positively identified as a 4.0.
                 let skinFamily = Self.skinTempFamily(forOwner: owner, devices: regDevices)
+                let skinAnchorRaw = skinFamily == .whoop4
+                    ? Whoop4SkinTemp.deviceAnchorRaw(skin.map(\.raw))
+                    : nil
                 // Wrist-wear events in the night window, paired into off-wrist [start, end) intervals for the
                 // off-wrist sleep backstop (#500). The HR-gap proxy in the stager is the always-on guard;
                 // these explicit intervals sharpen it under the FRACTIONAL rule (#504) , a session is dropped
@@ -545,7 +548,8 @@ final class IntelligenceEngine: ObservableObject {
                 // #690: read the experimental-V2 toggle ONCE here (off the detached executor, matching the
                 // Repository self-heal call site) and capture the Bool, so the Settings toggle now drives the
                 // NORMAL detected-night staging path , not only the userEdited self-heal restage.
-                let useSleepStagerV2 = PuffinExperiment.experimentalSleepV2Enabled
+                let useSleepStagerV2 = Self.sleepStagerV2(
+                    enabled: PuffinExperiment.experimentalSleepV2Enabled, family: skinFamily)
 
                 // Already OFF the main actor , score directly (the prior nested `Task.detached` here only
                 // existed to hop off the main actor; the whole loop now runs off it, so the score is computed
@@ -559,6 +563,7 @@ final class IntelligenceEngine: ObservableObject {
                                                      dayGravity: dayGrav,
                                                      skinTemp: skin,
                                                      skinTempFamily: skinFamily,   // #938
+                                                     skinTempAnchorRaw: skinAnchorRaw,
                                                      profile: up, baselines: baselines1, maxHROverride: maxHR,
                                                      tzOffsetSeconds: tzOffset, wristOff: wristOff,
                                                      habitualMidsleepSec: habitualMidsleepSec,
@@ -733,7 +738,6 @@ final class IntelligenceEngine: ObservableObject {
         // already staged from raw (idempotent) and for imported nights (raw never dense). This MUST run
         // before the scoring loop so the healed stages flow into Rest/recovery this same pass.
         let editedRows = await repo.selfHealEditedStages(from: windowStart, to: now)
-        let editsByStart = Dictionary(editedRows.map { ($0.startTs, $0) }, uniquingKeysWith: { a, _ in a })
 
         // Provenance sets for the honest By-Day badge + the per-day diagnostic source token. `hist` is the
         // imported daily rows under `deviceId` (the WHOLE imported history, read above for the baseline) ,
@@ -766,6 +770,10 @@ final class IntelligenceEngine: ObservableObject {
         // "auto workout appeared then vanished" could not be explained from an export. Diagnostic only.
         let workoutsTraceActive = TestCentre.active(.workouts)
         for night in scoredNights {
+            let dayEditedRows = Self.editedRowsForDay(editedRows, day: night.daily.day,
+                                                      tzOffsetSeconds: tzOffset)
+            let editsByStart = Dictionary(dayEditedRows.map { ($0.startTs, $0) },
+                                          uniquingKeysWith: { first, _ in first })
             let daily = sleepEditedDaily(night.daily, detected: night.cachedSleep, editsByStart: editsByStart,
                                          habitualMidsleepSec: habitualMidsleepSec)
             let recovery = recomputeRecovery(daily, baselines2)
@@ -1331,10 +1339,12 @@ final class IntelligenceEngine: ObservableObject {
     /// (Oura/Apple Watch/etc. whose imported skin temp is already °C, not a strap register), or an unknown
     /// owner not in the snapshot — falls back to `.whoop5`, the prior /100 behaviour. So this only changes
     /// the mapping for a device we KNOW is a 4.0, never risking a wrong scale on anything else.
+    nonisolated static func sleepStagerV2(enabled: Bool, family: DeviceFamily) -> Bool {
+        enabled && family != .whoop4
+    }
+
     nonisolated static func skinTempFamily(forOwner owner: String, devices: [PairedDevice]) -> DeviceFamily {
-        guard let model = devices.first(where: { $0.id == owner })?.model,
-              WhoopModel(rawValue: model) == .whoop4 else { return .whoop5 }
-        return .whoop4
+        DeviceFamily.forRegistryModel(devices.first(where: { $0.id == owner })?.model)
     }
 
     /// #137: re-score under-sampled manual workouts. A `manual` workout is scored from the live HR
@@ -1478,6 +1488,11 @@ final class IntelligenceEngine: ObservableObject {
     /// detected twin and recomputes totalSleep / efficiency / stage minutes from the reshaped stages, so
     /// the Rest composite and recovery score the corrected sleep , not the auto-detected window. No edit
     /// touching the night → the detected daily is returned unchanged. (#318)
+    static func editedRowsForDay(_ editedRows: [CachedSleepSession], day: String,
+                                 tzOffsetSeconds: Int) -> [CachedSleepSession] {
+        editedRows.filter { AnalyticsEngine.dayString($0.endTs, offsetSec: tzOffsetSeconds) == day }
+    }
+
     private func sleepEditedDaily(_ daily: DailyMetric, detected: [CachedSleepSession],
                                  editsByStart: [Int: CachedSleepSession],
                                  habitualMidsleepSec: Int?) -> DailyMetric {

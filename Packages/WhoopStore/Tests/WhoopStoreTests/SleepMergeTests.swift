@@ -6,9 +6,9 @@ import WhoopStore
 /// and a nap, or two nights) silently lost one in both the app and the CSV export.
 final class SleepMergeTests: XCTestCase {
 
-    private func session(start: Int, end: Int) -> CachedSleepSession {
+    private func session(start: Int, end: Int, stages: String? = nil) -> CachedSleepSession {
         CachedSleepSession(startTs: start, endTs: end, efficiency: nil,
-                           restingHr: nil, avgHrv: nil, stagesJSON: nil)
+                           restingHr: nil, avgHrv: nil, stagesJSON: stages)
     }
     // Deterministic "local day" keyer for the tests (real callers pass their tz-aware keyer).
     private let dayKey: (CachedSleepSession) -> String = { String($0.endTs / 86_400) }
@@ -41,5 +41,21 @@ final class SleepMergeTests: XCTestCase {
 
     func testEmptyInputsReturnEmpty() {
         XCTAssertTrue(SleepMerge.merge(imported: [], computed: [], endDay: dayKey).isEmpty)
+    }
+
+    func testComputedStagesSurviveStageLessImport() {
+        let computed = session(start: 0, end: 8 * 3600,
+                               stages: #"[{"start":0,"end":100,"stage":"light"}]"#)
+        let imported = session(start: 3600, end: 8 * 3600 + 1800)
+        let merged = SleepMerge.merge(imported: [imported], computed: [computed], endDay: dayKey)
+        XCTAssertEqual(merged.map(\.startTs), [0])
+    }
+
+    func testImportedStagesStillWin() {
+        let stages = #"[{"start":0,"end":100,"stage":"light"}]"#
+        let computed = session(start: 0, end: 8 * 3600, stages: stages)
+        let imported = session(start: 3600, end: 8 * 3600 + 1800, stages: stages)
+        let merged = SleepMerge.merge(imported: [imported], computed: [computed], endDay: dayKey)
+        XCTAssertEqual(merged.map(\.startTs), [3600])
     }
 }

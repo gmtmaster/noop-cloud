@@ -441,13 +441,12 @@ final class OuraDriverTests: XCTestCase {
     func testIngestNotificationReassemblesAndDecodes() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         let reassembler = OuraReassembler()
-        // Two records packed together: 0x7B SpO2 then 0x46 temp.
+        // Notifications are one packet. Trailing bytes are not decoded as
+        // additional records because they may be payload data for this event.
         let value = bytes("7b060200010003ca" + "460802000100420e470e")
         let events = d.ingest(notification: value, reassembler: reassembler)
         XCTAssertEqual(events, [
             .spo2(OuraSpO2(ringTimestamp: rt, value: 970)),
-            .temp(OuraTemp(ringTimestamp: rt, celsius: 36.50)),
-            .temp(OuraTemp(ringTimestamp: rt, celsius: 36.55)),
         ])
     }
 

@@ -270,8 +270,16 @@ final class HealthXMLDelegate: NSObject, XMLParserDelegate {
     // Correlation are skipped (they also appear top-level).
     private var correlationDepth = 0
 
-    // Dedupe set over HealthSample dedupeKeys.
-    private var seenSampleKeys: Set<String> = []
+    // Retain fixed-width hashes instead of every full key string; large exports otherwise consume GBs.
+    private var seenSampleKeys: Set<Int> = []
+
+    static func hash64(_ string: String) -> Int {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for unit in string.utf16 {
+            hash = (hash ^ UInt64(unit)) &* 0x100000001b3
+        }
+        return Int(bitPattern: UInt(hash))
+    }
 
     /// True once at least one usable record/workout/sleep row was parsed. Drives the tolerant-parse
     /// decision: a hard error AFTER real data was seen keeps the partial result instead of failing.
@@ -441,7 +449,7 @@ final class HealthXMLDelegate: NSObject, XMLParserDelegate {
         )
         // Dedupe on type+start+end+source+value (correctness-critical; the
         // dedupe set is the smaller, retained cost).
-        if seenSampleKeys.insert(sample.dedupeKey).inserted {
+        if seenSampleKeys.insert(Self.hash64(sample.dedupeKey)).inserted {
             // Always fold into the bounded per-day accumulator.
             dailyAcc.add(sample)
             anyRecordSeen = true

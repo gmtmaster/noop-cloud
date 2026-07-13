@@ -9,6 +9,19 @@ public enum WhoopStoreInfo {
     public static let schemaVersion = 18
 }
 
+/// Serialize pool creation and migration so concurrent first-open callers cannot both apply the same
+/// migration and collide in GRDB's migration bookkeeping.
+private actor StoreOpenGate {
+    static let shared = StoreOpenGate()
+
+    func openAndMigrate(path: String, configuration: Configuration) throws -> DatabasePool {
+        WhoopStore.quarantineIncompatibleDatabase(at: path)
+        let pool = try DatabasePool(path: path, configuration: configuration)
+        try WhoopStore.makeMigrator().migrate(pool)
+        return pool
+    }
+}
+
 /// WhoopStore is an `actor`: its public API is `async`, and all GRDB work runs on the
 /// actor's serial executor rather than the caller's (the main actor).
 ///
@@ -35,18 +48,14 @@ public actor WhoopStore {
         try WhoopStore.makeMigrator().migrate(dbWriter)
     }
 
+    private init(preMigrated dbWriter: any DatabaseWriter) {
+        self.dbWriter = dbWriter
+    }
+
     /// Open (creating if needed) a database at `path` and run migrations.
     /// Uses a `DatabasePool`, which enables WAL automatically, plus a 5-second busy timeout so two
     /// handles to the same file (BLEManager + MetricsRepository) don't deadlock on write contention.
     public init(path: String) async throws {
-        // Self-heal a foreign DB left in place by a bad cross-platform restore (#222): an Android
-        // (Room) backup that slipped past the import guard replaces our file with one that has our
-        // data tables but NO `grdb_migrations` bookkeeping. The migrator then thinks nothing is
-        // applied, re-runs v1, and crashes with `table "device" already exists` on every open — the
-        // store never bootstraps. Quarantine such a file BEFORE opening so we start fresh instead of
-        // looping forever. (A normal GRDB backup carries grdb_migrations and is left untouched.)
-        WhoopStore.quarantineIncompatibleDatabase(at: path)
-
         var config = Configuration()
         config.prepareDatabase { db in
             // `DatabasePool` puts the database in WAL mode itself (reads run as concurrent snapshots
@@ -60,7 +69,8 @@ public actor WhoopStore {
             try db.execute(sql: "PRAGMA temp_store = MEMORY")
         }
         config.busyMode = .timeout(5)
-        try self.init(dbWriter: try DatabasePool(path: path, configuration: config))
+        let pool = try await StoreOpenGate.shared.openAndMigrate(path: path, configuration: config)
+        self.init(preMigrated: pool)
     }
 
     /// Move aside a database file that has our data tables but no GRDB migration bookkeeping — the

@@ -266,9 +266,6 @@ public final class OuraDriver {
         case .ibi:
             // The bare 0x44 IBI tag shares the bit-packed layout family; route through the same decoder.
             return (OuraDecoders.decodeIBIAmplitude(record) ?? []).map { OuraEvent.ibi($0) }
-        case .greenIbiAmp:
-            return (OuraDecoders.decodeIBIAmplitude(record) ?? []).map { OuraEvent.ibi($0) }
-
         // --- Tier A: HRV ---
         case .hrvRmssd:
             return (OuraDecoders.decodeHRV(record) ?? []).map { OuraEvent.hrv($0) }
@@ -300,7 +297,7 @@ public final class OuraDriver {
             return []
 
         // --- Tier A: Sleep phase (2-bit codes are verified) ---
-        case .sleepPhase, .sleepPhaseAlt:
+        case .sleepPhaseB, .sleepPhase, .sleepPhaseAlt:
             return (OuraDecoders.decodeSleepPhase(record) ?? []).map { OuraEvent.sleepPhase($0) }
 
         // --- Tier A: Lifecycle / state / time ---
@@ -344,7 +341,10 @@ public final class OuraDriver {
             return []
 
         // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
-        case .sleepSummary1, .sleepSummaryB, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE, .sleepSummaryF:
+        case .greenIbiAmp:
+            return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
+                                            rawPayload: record.payload, kind: "green_ibi_amp"))]
+        case .sleepSummary1, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE, .sleepSummaryF:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "sleep_summary"))]
         case .activityInfo:

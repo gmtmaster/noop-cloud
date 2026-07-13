@@ -21,6 +21,15 @@ public enum HeaderCRCKind: String, Sendable, CaseIterable {
 }
 
 public extension DeviceFamily {
+    /// Resolve the historical registry spellings. Unknown and ambiguous legacy labels keep the prior
+    /// WHOOP 5-style fallback; only a positively identified 4.0 changes decoding scale.
+    static func forRegistryModel(_ model: String?) -> DeviceFamily {
+        switch model {
+        case "4.0", "WHOOP 4.0": return .whoop4
+        default: return .whoop5
+        }
+    }
+
     /// The header-CRC algorithm this family uses. This is the single switch that the family-aware
     /// `verifyFrame`/`parseFrame` overloads branch on; the payload CRC32 is identical for both.
     var headerCRCKind: HeaderCRCKind {

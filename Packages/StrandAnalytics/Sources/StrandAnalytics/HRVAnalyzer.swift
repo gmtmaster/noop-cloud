@@ -141,6 +141,75 @@ public enum HRVAnalyzer {
         rejectEctopic(rangeFilter(rr))
     }
 
+    /// A cleaned NN series that remembers whether each retained beat was adjacent to its predecessor in
+    /// the original input. This prevents successive-difference metrics from spanning a removed beat.
+    public struct CleanSeries: Equatable, Sendable {
+        public let nn: [Double]
+        public let contiguous: [Bool]
+    }
+
+    public static func cleanRRGapAware(_ rr: [Double]) -> CleanSeries {
+        var rangedIndices: [Int] = []
+        var rangedValues: [Double] = []
+        rangedIndices.reserveCapacity(rr.count)
+        rangedValues.reserveCapacity(rr.count)
+        for (index, value) in rr.enumerated() where value >= rrMinMs && value <= rrMaxMs {
+            rangedIndices.append(index)
+            rangedValues.append(value)
+        }
+
+        var keptIndices: [Int] = []
+        var keptValues: [Double] = []
+        keptIndices.reserveCapacity(rangedValues.count)
+        keptValues.reserveCapacity(rangedValues.count)
+        if rangedValues.count <= ectopicWindowRadius {
+            keptIndices = rangedIndices
+            keptValues = rangedValues
+        } else {
+            for i in rangedValues.indices {
+                let lo = max(0, i - ectopicWindowRadius)
+                let hi = min(rangedValues.count - 1, i + ectopicWindowRadius)
+                var neighbours: [Double] = []
+                neighbours.reserveCapacity(hi - lo)
+                for j in lo...hi where j != i { neighbours.append(rangedValues[j]) }
+                let med = median(neighbours)
+                if neighbours.count < 2 || med <= 0 || abs(rangedValues[i] - med) / med <= ectopicThreshold {
+                    keptIndices.append(rangedIndices[i])
+                    keptValues.append(rangedValues[i])
+                }
+            }
+        }
+
+        var contiguous = Array(repeating: false, count: keptValues.count)
+        for i in keptValues.indices.dropFirst() {
+            contiguous[i] = keptIndices[i] == keptIndices[i - 1] + 1
+        }
+        return CleanSeries(nn: keptValues, contiguous: contiguous)
+    }
+
+    public static func rmssdGapAware(_ nn: [Double], _ contiguous: [Bool]) -> Double? {
+        precondition(nn.count == contiguous.count)
+        var sumSq = 0.0
+        var pairs = 0
+        for i in nn.indices.dropFirst() where contiguous[i] {
+            let delta = nn[i] - nn[i - 1]
+            sumSq += delta * delta
+            pairs += 1
+        }
+        return pairs == 0 ? nil : (sumSq / Double(pairs)).squareRoot()
+    }
+
+    public static func pnn50GapAware(_ nn: [Double], _ contiguous: [Bool]) -> Double? {
+        precondition(nn.count == contiguous.count)
+        var nn50 = 0
+        var pairs = 0
+        for i in nn.indices.dropFirst() where contiguous[i] {
+            if abs(nn[i] - nn[i - 1]) > 50 { nn50 += 1 }
+            pairs += 1
+        }
+        return pairs == 0 ? nil : Double(nn50) / Double(pairs) * 100
+    }
+
     // MARK: - Windowed analysis
 
     /// Compute HRV (RMSSD/SDNN/meanNN/pNN50) over the RR intervals whose ts falls
@@ -170,7 +239,8 @@ public enum HRVAnalyzer {
     ///   skips the gate entirely, so the nightly RMSSD is byte-identical to before this parameter existed.
     public static func analyze(rawRR: [Double], maxRejectedFraction: Double? = nil) -> HRVResult {
         let nInput = rawRR.count
-        let clean = cleanRR(rawRR)
+        let cleaned = cleanRRGapAware(rawRR)
+        let clean = cleaned.nn
         guard clean.count >= minBeats else {
             return .empty(nInput: nInput)
         }
@@ -182,14 +252,11 @@ public enum HRVAnalyzer {
                 return .empty(nInput: nInput)
             }
         }
-        let rmssd = rmssdRaw(clean)
+        let rmssd = rmssdGapAware(cleaned.nn, cleaned.contiguous)
         let sdnn = sdnnRaw(clean)
         let mean = clean.reduce(0, +) / Double(clean.count)
 
-        // pNN50 over the clean NN series.
-        var nn50 = 0
-        for i in 1..<clean.count where abs(clean[i] - clean[i - 1]) > 50.0 { nn50 += 1 }
-        let pnn50 = Double(nn50) / Double(clean.count - 1) * 100.0
+        let pnn50 = pnn50GapAware(cleaned.nn, cleaned.contiguous)
 
         return HRVResult(rmssd: rmssd, sdnn: sdnn, meanNN: mean, pnn50: pnn50,
                          nInput: nInput, nClean: clean.count)
