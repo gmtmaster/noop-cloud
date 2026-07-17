@@ -3,6 +3,12 @@ import CoreBluetooth
 import WhoopProtocol
 import WhoopStore
 import StrandAnalytics
+
+struct HistoryIdleWatchdog {
+    static func shouldTimeout(isProcessing: Bool, queueDepth: Int) -> Bool {
+        !isProcessing && queueDepth == 0
+    }
+}
 // #78/#747 hole-4: the one-shot bond-loop salvage probe listens for the app-foreground notification,
 // which lives in UIKit on iOS and AppKit on macOS (see installForegroundSalvageProbe).
 #if os(iOS)
@@ -613,10 +619,17 @@ public final class BLEManager: NSObject, ObservableObject {
     private var rawCaptureInFlight = false
     /// Ordered queue of frames awaiting drain through the serial Backfiller task.
     private var backfillFrameQueue: [[UInt8]] = []
+    private var backfillFrameQueueHead = 0
     /// True while the drain task is running (prevents a second drain task from launching).
     private var backfillDraining = false
+    private var backfillQueueHighWaterMark = 0
+    private var historySessionID = ""
+    private var historyChunkNumber = 0
+    private var pendingHistoryAckRequestedAt: TimeInterval?
+    private var connectedAtUptime: TimeInterval?
     /// Keep each main-actor drain slice small enough that SwiftUI can process input/paint between slices.
     private static let backfillDrainBatchSize = 12
+    private var backfillQueueDepth: Int { backfillFrameQueue.count - backfillFrameQueueHead }
 
     /// Records WHOOP 5/MG puffin frames to a JSON file for protocol mapping. Passive (read-only on the
     /// strap) and gated by the Settings → Experimental "Record puffin frames" toggle; a no-op for
@@ -1485,11 +1498,17 @@ public final class BLEManager: NSObject, ObservableObject {
     /// The `trim` argument (= end_data first u32) is already persisted as the strap_trim cursor by
     /// the Backfiller; it is passed here only for logging.
     func ackHistoricalChunk(trim: UInt32, endData: [UInt8]) {
+        historyChunkNumber += 1
+        pendingHistoryAckRequestedAt = ProcessInfo.processInfo.systemUptime
         send(.historicalDataResult, payload: [0x01] + endData, writeType: .withResponse)
         // Progress signal for the "Syncing strap history…" UI (#77). Same main-queue delegate path as
         // the other state mutations (e.g. lastSyncedAt in exitBackfilling). NOT historicalAckLogCounter
         // — that's a puffin-write log throttle that never increments on WHOOP 4.
         state.syncChunksThisSession += 1
+        if TestCentre.active(.connection), historyChunkNumber.isMultiple(of: 25)
+            || (240...270).contains(historyChunkNumber) || (380...430).contains(historyChunkNumber) {
+            state.append(log: "whoop4History session=\(historySessionID) chunk=\(historyChunkNumber) phase=ackRequested trim=\(trim) queueDepth=\(backfillQueueDepth) queueHWM=\(backfillQueueHighWaterMark) reassemblerBytes=\(reassembler.bufferedByteCount) reassemblerHWM=\(reassembler.bufferedByteHighWaterMark)", domain: .connection)
+        }
     }
 
     // MARK: Backfill helpers
@@ -1532,6 +1551,10 @@ public final class BLEManager: NSObject, ObservableObject {
         state.r22FlagsAccepted = 0
         state.deepPacketsThisSession = 0
         historicalAckLogCounter = 0
+        historySessionID = UUID().uuidString.lowercased().prefix(8).description
+        historyChunkNumber = 0
+        pendingHistoryAckRequestedAt = nil
+        backfillQueueHighWaterMark = 0
         // Payload MUST be [0x00], NOT empty: verified on-device that this strap serves type-47 only with
         // [0x00] (empty → 0 frames on a clean stable link with ~2k records pending); the Mac ground-truth
         // offload (re/sync_openwhoop.py, re/diagnose_biometrics.py) uses [0x00] too. Plain offload — the
@@ -1547,27 +1570,37 @@ public final class BLEManager: NSObject, ObservableObject {
     /// data / END chunk assembly is never reordered while the UI still gets time to paint.
     private func routeBackfillFrame(_ frame: [UInt8]) {
         backfillFrameQueue.append(frame)
+        backfillQueueHighWaterMark = max(backfillQueueHighWaterMark, backfillQueueDepth)
         guard !backfillDraining else { return }
         backfillDraining = true
         Task { @MainActor in await drainBackfillFrames() }
     }
 
     private func drainBackfillFrames() async {
-        while !backfillFrameQueue.isEmpty {
-            let count = min(Self.backfillDrainBatchSize, backfillFrameQueue.count)
-            let batch = Array(backfillFrameQueue.prefix(count))
-            backfillFrameQueue.removeFirst(count)
+        while backfillQueueDepth > 0 {
+            let count = min(Self.backfillDrainBatchSize, backfillQueueDepth)
+            let end = backfillFrameQueueHead + count
+            let batch = Array(backfillFrameQueue[backfillFrameQueueHead..<end])
+            backfillFrameQueueHead = end
 
             for f in batch {
                 await backfiller?.ingest(f)
                 afterBackfillIngest()
                 if !backfilling {
                     backfillFrameQueue.removeAll(keepingCapacity: true)
+                    backfillFrameQueueHead = 0
                     break
                 }
             }
 
-            if !backfillFrameQueue.isEmpty {
+            if backfillFrameQueueHead == backfillFrameQueue.count {
+                backfillFrameQueue.removeAll(keepingCapacity: true)
+                backfillFrameQueueHead = 0
+            } else if backfillFrameQueueHead >= 256 {
+                backfillFrameQueue.removeFirst(backfillFrameQueueHead)
+                backfillFrameQueueHead = 0
+            }
+            if backfillQueueDepth > 0 {
                 await Task.yield()
             }
         }
@@ -1609,6 +1642,14 @@ public final class BLEManager: NSObject, ObservableObject {
         backfillTimeout?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            guard HistoryIdleWatchdog.shouldTimeout(isProcessing: self.backfillDraining,
+                                                     queueDepth: self.backfillQueueDepth) else {
+                if TestCentre.active(.connection) {
+                    self.state.append(log: "whoop4History session=\(self.historySessionID) phase=timeoutDeferred queueDepth=\(self.backfillQueueDepth) processing=\(self.backfillDraining) lastAckRequestedChunk=\(self.historyChunkNumber)", domain: .connection)
+                }
+                self.armBackfillTimeout()
+                return
+            }
             self.backfiller?.timeoutFired()
             self.exitBackfilling(reason: "timeout")
         }
@@ -1631,6 +1672,7 @@ public final class BLEManager: NSObject, ObservableObject {
         backfillTimeout?.cancel()
         backfillTimeout = nil
         backfillFrameQueue.removeAll()
+        backfillFrameQueueHead = 0
         log("Backfill: session ended — reason=\(reason)")
         // Inactivity reminder (#419): read-only hook on the natural offload completion (no cadence
         // change). Only on a true HISTORY_COMPLETE — a timeout/disconnect didn't bring a fresh window.
@@ -2869,6 +2911,7 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
             state.reconnectGuide = nil
         }
         lastDataAt = Date()
+        connectedAtUptime = ProcessInfo.processInfo.systemUptime
         log("Connected — discovering services")
         // Connection test mode: report the connect latency + the uptime-start marker the readout reads.
         // Gated zero-cost: the .connection bool is read before any string is built, so this is a no-op
@@ -2897,6 +2940,14 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager,
                                didDisconnectPeripheral peripheral: CBPeripheral,
                                error: Error?) {
+        if TestCentre.active(.connection), selectedModel.deviceFamily == .whoop4 {
+            let duration = connectedAtUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
+            let ns = error as NSError?
+            let seconds = duration.map { String(format: "%.3f", $0) } ?? "?"
+            let domain = ns?.domain ?? "nil"
+            let description = error?.localizedDescription ?? "nil"
+            state.append(log: "whoop4History session=\(historySessionID) phase=disconnect connectedSeconds=\(seconds) peripheralState=\(peripheral.state.rawValue) errorDomain=\(domain) errorCode=\(ns?.code ?? 0) description=\(description) queueDepth=\(backfillQueueDepth) queueHWM=\(backfillQueueHighWaterMark) reassemblerBytes=\(reassembler.bufferedByteCount) lastAckRequestedChunk=\(historyChunkNumber)", domain: .connection)
+        }
         Task { @MainActor in await collector?.flush() }
         // #80 marginal-radio detection: judge this drop BEFORE the state resets below clobber the
         // arm timestamp. A drop that is unintentional, error-bearing, and lands shortly after we armed
@@ -2990,7 +3041,10 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         backfillTimeout?.cancel()
         backfillTimeout = nil
         backfillFrameQueue.removeAll()
+        backfillFrameQueueHead = 0
         backfillDraining = false
+        reassembler.reset()
+        connectedAtUptime = nil
         uploadTimer?.cancel()
         uploadTimer = nil
         backfillTimer?.cancel()
@@ -3240,6 +3294,18 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
     public func peripheral(_ peripheral: CBPeripheral,
                            didWriteValueFor characteristic: CBCharacteristic,
                            error: Error?) {
+        if selectedModel.deviceFamily == .whoop4,
+           let requested = pendingHistoryAckRequestedAt {
+            pendingHistoryAckRequestedAt = nil
+            if TestCentre.active(.connection) {
+                let ms = Int((ProcessInfo.processInfo.systemUptime - requested) * 1000)
+                if historyChunkNumber.isMultiple(of: 25) || (240...270).contains(historyChunkNumber)
+                    || (380...430).contains(historyChunkNumber) || error != nil {
+                    let result = error.map { connErrorToken($0) } ?? "ok"
+                    state.append(log: "whoop4History session=\(historySessionID) chunk=\(historyChunkNumber) phase=ackConfirmed latencyMs=\(ms) result=\(result)", domain: .connection)
+                }
+            }
+        }
         if let error = error {
             log("Confirmed write failed: \(error.localizedDescription)")
             // #78 hole-1: classify by ATT code first (locale-proof), English string fallback second.
