@@ -29,4 +29,16 @@ final class SettingsDisclosureDefaultsTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: SettingsDisclosureDefaults.advancedOpenKey))
         defaults.removePersistentDomain(forName: "SettingsDisclosureDefaultsTests")
     }
+
+    func testSleepStagerV2DefaultsOnAndExplicitFalseRevertsToV1() {
+        let defaults = UserDefaults.standard
+        let key = PuffinExperiment.experimentalSleepV2Key
+        defaults.removeObject(forKey: key)
+        XCTAssertTrue(PuffinExperiment.experimentalSleepV2Enabled)
+
+        defaults.set(false, forKey: key)
+        XCTAssertFalse(PuffinExperiment.experimentalSleepV2Enabled)
+
+        defaults.removeObject(forKey: key)
+    }
 }
