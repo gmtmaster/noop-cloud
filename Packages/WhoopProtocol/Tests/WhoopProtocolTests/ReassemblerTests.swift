@@ -82,4 +82,38 @@ final class ReassemblerTests: XCTestCase {
         let out = r.feed([0xAA, 0xFF, 0xFF, 0x00] + valid)
         XCTAssertEqual(out, [valid], "a garbage oversized SOF must not wedge the stream")
     }
+
+    func testMoreThanFiveHundredFramesAcrossArbitraryNotificationBoundaries() {
+        let frames = (0..<525).map { i in
+            frameFromPayload((0..<(i % 37 + 1)).map { UInt8(($0 + i) & 0xff) },
+                             type: i.isMultiple(of: 17) ? 49 : 47,
+                             seq: UInt8(truncatingIfNeeded: i))
+        }
+        let bytes = frames.flatMap { $0 }
+        let fragmentSizes = [1, 3, 7, 19, 244, 2, 61, 5]
+        let r = Reassembler()
+        var output: [[UInt8]] = []
+        var offset = 0
+        var fragment = 0
+        while offset < bytes.count {
+            let end = min(bytes.count, offset + fragmentSizes[fragment % fragmentSizes.count])
+            output.append(contentsOf: r.feed(Array(bytes[offset..<end])))
+            offset = end
+            fragment += 1
+        }
+        XCTAssertEqual(output, frames)
+        XCTAssertEqual(r.bufferedByteCount, 0)
+        XCTAssertLessThanOrEqual(r.bufferedByteHighWaterMark, Reassembler.maxFrameBytes)
+    }
+
+    func testResetDiscardsAnIncompleteChunkAcrossReconnect() {
+        let abandoned = frameFromPayload(Array(repeating: 0x11, count: 80), type: 47)
+        let resumed = frameFromPayload([0x22, 0x33], type: 49)
+        let r = Reassembler()
+        XCTAssertTrue(r.feed(Array(abandoned.prefix(12))).isEmpty)
+        XCTAssertEqual(r.bufferedByteCount, 12)
+        r.reset()
+        XCTAssertEqual(r.bufferedByteCount, 0)
+        XCTAssertEqual(r.feed(resumed), [resumed])
+    }
 }

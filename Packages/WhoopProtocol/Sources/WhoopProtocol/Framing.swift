@@ -241,6 +241,13 @@ public final class Reassembler {
     private var head = 0   // index of the first byte not yet consumed
     private let family: DeviceFamily
 
+    /// Diagnostic-only size of the incomplete frame retained between notifications.
+    /// Never includes already-emitted frames.
+    public var bufferedByteCount: Int { buf.count - head }
+
+    /// Largest incomplete-frame buffer observed for this reassembler instance.
+    public private(set) var bufferedByteHighWaterMark = 0
+
     /// ~4× the largest real WHOOP frame (~1920 B raw/historical). A declared total beyond this is a
     /// corrupt or misaligned length (a bit-flip, or a spurious 0xAA injected mid-frame), not a real
     /// frame — so drop that SOF and resync rather than wait forever for bytes that can't arrive.
@@ -260,6 +267,7 @@ public final class Reassembler {
 
     public func feed(_ fragment: [UInt8]) -> [[UInt8]] {
         buf.append(contentsOf: fragment)
+        bufferedByteHighWaterMark = max(bufferedByteHighWaterMark, bufferedByteCount)
         var out: [[UInt8]] = []
         while true {
             guard let sof = indexOfSOF() else {
@@ -295,7 +303,16 @@ public final class Reassembler {
             head += total
         }
         compact()
+        bufferedByteHighWaterMark = max(bufferedByteHighWaterMark, bufferedByteCount)
         return out
+    }
+
+    /// Discard an incomplete frame after a link loss. A reconnect starts a new ATT byte stream,
+    /// so retaining the old connection's tail could splice unrelated notifications together.
+    public func reset() {
+        buf.removeAll(keepingCapacity: true)
+        head = 0
+        bufferedByteHighWaterMark = 0
     }
 
     /// Index of the first 0xAA at or after `head` in the live window, or nil if none remain.
