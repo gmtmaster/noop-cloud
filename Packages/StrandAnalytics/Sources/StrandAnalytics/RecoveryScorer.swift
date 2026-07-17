@@ -259,6 +259,18 @@ public enum RecoveryScorer {
         return (0..<seed).contains(n) ? n : nil
     }
 
+    /// Compatibility entry point for fork UI callers that do not carry day keys. It still uses the real
+    /// baseline fold's `nValid` (so nil, out-of-range, and rejected values are counted correctly) while the
+    /// day-keyed overload above remains available to engine callers that can honor a recalibration epoch.
+    public static func calibrationNights(nightlyHrv: [Double?],
+                                         hasRecovery: Bool,
+                                         seed: Int = Baselines.minNightsSeed,
+                                         cfg: MetricCfg = Baselines.hrvCfg) -> Int? {
+        guard !hasRecovery else { return nil }
+        let n = Baselines.foldHistory(nightlyHrv, cfg: cfg).nValid
+        return (0..<seed).contains(n) ? n : nil
+    }
+
     // MARK: - Recovery score
 
     /// A baseline driver: mean + spread (internal abs-dev units, as in BaselineState).

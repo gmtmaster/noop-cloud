@@ -70,6 +70,13 @@ final class RecoveryCalibrationTests: XCTestCase {
         XCTAssertEqual(nights([55.0, 4.0, 999.0], hasRecovery: false), 1)
     }
 
+    func testCompatibilityOverloadUsesRealValidNightCount() {
+        XCTAssertEqual(
+            RecoveryScorer.calibrationNights(
+                nightlyHrv: [55.0, nil, 4.0, 999.0, 60.0], hasRecovery: false),
+            2)
+    }
+
     // MARK: - Bug B (#393 follow-up): recalibration must not strand a calibrating user on "Needs the strap"
 
     func testRecalibrationDropsPreEpochNightsSoNTracksTheRealBaseline() {
