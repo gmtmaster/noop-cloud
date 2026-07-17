@@ -445,6 +445,12 @@ final class IntelligenceEngine: ObservableObject {
         let stepsTraceActive = TestCentre.active(.steps)
         let scanned: [DayScan] = await Task.detached(priority: .utility) {
             var out: [DayScan] = []
+            // #938: the WHOOP 4.0 ADC offset is per-device, not per-night. Learn one anchor per owner
+            // from the whole scan window and reuse it for every night so cross-night deviations survive.
+            let skinAnchorScanFrom = nowLocalMidnight - (maxDays - 1) * 86_400 - 30 * 3_600
+            let skinAnchorScanTo = nowLocalMidnight + 18 * 3_600
+            var skinAnchorByOwner: [String: Double] = [:]
+            var skinAnchorResolvedOwners = Set<String>()
             for offset in 0..<maxDays {
                 let dayStart = nowLocalMidnight - offset * 86_400
                 let day = AnalyticsEngine.dayString(dayStart, offsetSec: tzOffset)
@@ -479,9 +485,33 @@ final class IntelligenceEngine: ObservableObject {
                 // registry knows each device's model; unknown/non-WHOOP owners fall back to `.whoop5` (the prior
                 // /100 behaviour), so this only changes the mapping for a device positively identified as a 4.0.
                 let skinFamily = Self.skinTempFamily(forOwner: owner, devices: regDevices)
-                let skinAnchorRaw = skinFamily == .whoop4
-                    ? Whoop4SkinTemp.deviceAnchorRaw(skin.map(\.raw))
-                    : nil
+                // #938 (second capture): learn THIS device's worn skin-temp anchor raw ONCE, WINDOW-WIDE (the
+                // whole scan window's skin samples), not per-night. The @72 skin-temp ADC's register offset is
+                // per-device — a second real 4.0 strap shares the no-contact floor (~509) + 11-bit saturation
+                // (2047) but a worn band ~1100–1600 (nightly mean raw ~1290), which the global 826 anchor maps
+                // to 47–72 °C, so 100% of its worn samples fail the 28–42 °C gate (kept=0, no baseline, no
+                // signal). WINDOW-WIDE, not per-night: a per-night re-centre would subtract each night's own
+                // mean and ERASE the cross-night deviation the skinTempDevC signal exists to carry.
+                // Deterministic per run; SAFE because the skin baseline is re-folded from the SAME window's
+                // nightly means every run, so this constant offset cancels in the deviation. nil for a non-4.0
+                // owner (`.whoop5` ignores the anchor) or when <100 in-band samples exist → the conversion
+                // falls back to the global anchor (byte-identical to today).
+                let skinAnchorRaw: Double?
+                if skinFamily == .whoop4 {
+                    if !skinAnchorResolvedOwners.contains(owner) {
+                        let windowSkin = (try? await store.skinTempSamples(deviceId: owner,
+                                                                           from: skinAnchorScanFrom,
+                                                                           to: skinAnchorScanTo,
+                                                                           limit: 200_000)) ?? []
+                        if let anchor = Whoop4SkinTemp.deviceAnchorRaw(windowSkin.map { $0.raw }) {
+                            skinAnchorByOwner[owner] = anchor
+                        }
+                        skinAnchorResolvedOwners.insert(owner)
+                    }
+                    skinAnchorRaw = skinAnchorByOwner[owner]
+                } else {
+                    skinAnchorRaw = nil
+                }
                 // Wrist-wear events in the night window, paired into off-wrist [start, end) intervals for the
                 // off-wrist sleep backstop (#500). The HR-gap proxy in the stager is the always-on guard;
                 // these explicit intervals sharpen it under the FRACTIONAL rule (#504) , a session is dropped
@@ -680,9 +710,9 @@ final class IntelligenceEngine: ObservableObject {
             histRhrByDay[d.day] = d.restingHr.map(Double.init)
             histRespByDay[d.day] = d.respRateBpm
         }
-        for (day, v) in nightlyHrvByDay where histHrvByDay[day] == nil { histHrvByDay[day] = v }
-        for (day, v) in nightlyRhrByDay where histRhrByDay[day] == nil { histRhrByDay[day] = v }
-        for (day, v) in nightlyRespByDay where histRespByDay[day] == nil { histRespByDay[day] = v }
+        Self.mergeNightlyIntoHistory(&histHrvByDay, nightlyHrvByDay)
+        Self.mergeNightlyIntoHistory(&histRhrByDay, nightlyRhrByDay)
+        Self.mergeNightlyIntoHistory(&histRespByDay, nightlyRespByDay)
         // rhr/resp/skin honour the Charge-wide recalibration epoch (noop.recoveryBaselineEpoch); 0 = no-op,
         // so this is byte-identical to the plain fold until the user taps Recalibrate, at which point the
         // whole Charge build-up (HRV + resting HR + resp + skin) re-anchors together.
@@ -1662,5 +1692,24 @@ private extension DailyMetric {
                     strain: strain, exerciseCount: exerciseCount, spo2Pct: spo2Pct,
                     skinTempDevC: skinTempDevC, respRateBpm: respRateBpm, steps: steps,
                     activeKcalEst: activeKcalEst)
+    }
+}
+
+extension IntelligenceEngine {
+    /// Merge one metric's on-device pass-1 nightly values into the imported-history map.
+    /// Imported (cloud) values WIN per day; the computed estimate only fills days the import
+    /// does not cover at all (key absent). Twin of the Kotlin `mergeNightlyIntoHistory`.
+    nonisolated static func mergeNightlyIntoHistory(
+        _ hist: inout [String: Double?], _ nightly: [String: Double?]
+    ) {
+        // `hist` values are themselves Optional, so `hist[day] == nil` is only
+        // true when the KEY is absent — an imported row with a nil value is
+        // `.some(.none)` and would shadow the real computed night forever,
+        // starving the baseline (the "Needs the strap" bug). Imported non-nil
+        // wins; a nil (or absent) slot is backfilled by the computed value.
+        for (day, v) in nightly {
+            if let existing = hist[day], existing != nil { continue }  // imported non-nil wins
+            hist[day] = v
+        }
     }
 }
