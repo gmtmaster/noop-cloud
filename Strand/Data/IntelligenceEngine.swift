@@ -588,8 +588,12 @@ final class IntelligenceEngine: ObservableObject {
                 // #690: read the experimental-V2 toggle ONCE here (off the detached executor, matching the
                 // Repository self-heal call site) and capture the Bool, so the Settings toggle now drives the
                 // NORMAL detected-night staging path , not only the userEdited self-heal restage.
-                let useSleepStagerV2 = Self.sleepStagerV2(
-                    enabled: PuffinExperiment.experimentalSleepV2Enabled, family: skinFamily)
+                // V2 is the default staging engine for EVERY strap (the toggle defaults on); turn it off to
+                // fall back to V1. WHOOP 4.0 is unvalidated either way — V2 can over-stage on sparse motion
+                // (#319) and V1 can badly UNDER-stage deep/REM (kavemang, #347), so neither is proven; the
+                // toggle is the honest escape until real 4.0 ground truth settles it (#271/#319). Matches the
+                // self-heal restage below, which reads the same toggle.
+                let useSleepStagerV2 = PuffinExperiment.experimentalSleepV2Enabled
 
                 // Already OFF the main actor , score directly (the prior nested `Task.detached` here only
                 // existed to hop off the main actor; the whole loop now runs off it, so the score is computed
@@ -1375,15 +1379,8 @@ final class IntelligenceEngine: ObservableObject {
     }
 
     /// The strap family that wrote `owner`'s skin-temp rows (#938), so the nightly funnel converts the raw
-    /// register on the right scale. The registry stores each device's model string; a positively-identified
-    /// WHOOP 4.0 maps to `.whoop4` (raw-ADC skin-temp map), and EVERYTHING else — a 5/MG, a non-WHOOP source
-    /// (Oura/Apple Watch/etc. whose imported skin temp is already °C, not a strap register), or an unknown
-    /// owner not in the snapshot — falls back to `.whoop5`, the prior /100 behaviour. So this only changes
-    /// the mapping for a device we KNOW is a 4.0, never risking a wrong scale on anything else.
-    nonisolated static func sleepStagerV2(enabled: Bool, family: DeviceFamily) -> Bool {
-        enabled && family != .whoop4
-    }
-
+    /// register on the right scale. The model-label → family mapping (and the `.whoop5` fallback for
+    /// unknowns) lives in `DeviceFamily.forRegistryModel` (#171).
     nonisolated static func skinTempFamily(forOwner owner: String, devices: [PairedDevice]) -> DeviceFamily {
         DeviceFamily.forRegistryModel(devices.first(where: { $0.id == owner })?.model)
     }

@@ -54,9 +54,14 @@ enum PuffinExperiment {
     /// transparent cardiorespiratory recipe (reimplemented from contributor PR #600) that recovers deep/REM
     /// better than the shipped V1 stager on its author's n=1 validation. Pure analysis switch: it changes
     /// ONLY which staging engine runs over an already-detected sleep window; sleep DETECTION, scoring and the
-    /// default V1 path are all untouched. Default OFF. Read at the staging call site (Repository) to pick
-    /// V1 vs V2. Mirrors the Android `PuffinExperiment.KEY_EXPERIMENTAL_SLEEP_V2`.
-    static let experimentalSleepV2Key = "noopExperimentalSleepV2"
+    /// V1 path remains available as an explicit revert. Default ON for new/unset installs. Registering the
+    /// default does not persist a value, so an existing or newly-written `false` continues to select V1.
+    /// Read at the staging call sites in Repository and IntelligenceEngine.
+    static let experimentalSleepV2Key: String = {
+        let key = "noopExperimentalSleepV2"
+        UserDefaults.standard.register(defaults: [key: true])
+        return key
+    }()
 
     static var experimentalSleepV2Enabled: Bool { UserDefaults.standard.bool(forKey: experimentalSleepV2Key) }
 
