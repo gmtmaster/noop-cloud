@@ -305,6 +305,8 @@ private func parseFrameWhoop5(_ frame: [UInt8], collectFields: Bool) -> ParsedFr
             decodeWhoop5CommandResponse(frame, fb: fb, schema: schema, payloadEnd: payloadEnd)
         } else if spec!.post == "event" {
             decodeWhoop5Event(frame, fb: fb, schema: schema)
+        } else if spec!.post == "console_logs" {
+            decodeWhoop5ConsoleLogs(frame, fb: fb, payloadEnd: payloadEnd)
         } else if let payloadEnd = payloadEnd, innerStart + 3 < payloadEnd, payloadEnd <= frame.count {
             // Other types: static fields decoded above; the remaining variable body is kept raw —
             // its 4.0 post-hook awaits per-type 5.0 hardware verification before we apply it at +4.
@@ -562,16 +564,18 @@ private func decodeWhoop5HistoricalV26(_ frame: [UInt8], fb: FieldBuilder) {
 /// Both versions reuse the v18 record header — layout version @9, a marker byte @10 (0x81 on v20, 0x80 on
 /// v21), the monotonic u32 record index @11 (the same lifetime counter as v18), and the u32 unix second
 /// @15. Their bodies are blocks of fixed-length sample channels, established from captured frames:
-///   • v21 (1244 B): a (100, 100, 3) descriptor near @22, then three 100-sample i16 channels at @28 /
-///     @228 / @428 (200 B apart), each a bounded pulsatile waveform at its own DC baseline.
+///   • v21 (1244 B): a (100, 100, 3) descriptor near @22, then SIX 100-sample i16 channels in two blocks —
+///     accelerometer at @28 / @228 / @428 and gyroscope at @640 / @840 / @1040 (200 B apart; countB @630 =
+///     100). This is 6-axis IMU, not optical: the accel channels sphere-fit to a ~1 g gravity shell on a
+///     stationary strap (validated by Whoop5RawImu over 1423 real buffers, #423/#493).
 ///   • v20 (2140 B): five channel blocks, each preceded by a presence byte (0x19 = active, 0x00 =
 ///     empty / zero-filled); an active block holds two 50-sample i32 channels. The presence bytes sit at
 ///     @0x1a / @0x1c0 / @0x366 / @0x50c / @0x6b2; the ten channel slots start at
 ///     @0x2f / 0xf7 / 0x1d5 / 0x29d / 0x37b / 0x443 / 0x521 / 0x5e9 / 0x6c7 / 0x78f.
 ///
-/// Channels are exposed as raw sample arrays with NO invented scale or unit (an optical waveform has no
-/// absolute unit). Which channel maps to which optical LED — and which carries motion — needs a labelled
-/// capture (e.g. a deliberate moving window), so no per-channel identity is asserted here.
+/// v21 channels are named accel_/gyro_ per the gravity-shell evidence above; v20 sensor identity is still
+/// OPEN (no labelled/moving v20 capture in the tree) so its channels stay neutrally named. Both are exposed
+/// as raw i16 sample arrays with no scale applied here — Whoop5RawImu.decode applies the physical scales.
 private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: FieldBuilder, version: Int, payloadEnd: Int?) {
     if frame.count > 10 {
         fb.add(10, 1, "layout_marker", "meta", value: .int(Int(frame[10])))
@@ -583,16 +587,26 @@ private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: FieldBuilder, ver
         fb.add(15, 4, "unix", "time", value: .int(unix), note: "real unix seconds")
     }
     if version == 21 {
-        // Three 100-sample i16 channels, 200 B apart.
-        for (ch, start) in [(0, 28), (1, 228), (2, 428)] {
+        // TWO blocks of three 100-sample i16 channels: accelerometer (@28/@228/@428) then gyroscope
+        // (@640/@840/@1040), matching the (100,100,3) header @22 and countB @630. NOT optical: on a
+        // stationary strap the three accel channels sphere-fit to a ~1 g gravity shell (median |a| =
+        // 1.006 g, 100/100 samples in-shell on the real fixture) — a gravity vector, which PPG cannot
+        // produce. Validated as 6-axis IMU by Whoop5RawImu over 1423 real buffers (#423/#493). Emitted as
+        // raw i16 arrays (this field layer applies no scale); the physical scales — 1/4096 g/LSB (accel),
+        // 2000/32768 (°/s)/LSB (gyro) — are applied by Whoop5RawImu.decode.
+        let channels: [(name: String, start: Int)] = [
+            ("accel_x", 28), ("accel_y", 228), ("accel_z", 428),
+            ("gyro_x", 640), ("gyro_y", 840), ("gyro_z", 1040),
+        ]
+        for (name, start) in channels {
             var samples: [Int] = []
             for i in 0..<100 {
                 guard let v = readI16(frame, start + i * 2) else { break }
                 samples.append(v)
             }
             if samples.count == 100 {
-                fb.add(start, 200, "optical_ch\(ch)", "ppg", value: .intArray(samples),
-                       note: "raw i16 channel samples (no absolute unit)")
+                fb.add(start, 200, name, "imu", value: .intArray(samples),
+                       note: "raw i16 samples (scale via Whoop5RawImu: 1/4096 g accel, 2000/32768 dps gyro)")
             }
         }
         fb.parsed["sensor_channel_samples"] = .int(100)
@@ -723,6 +737,36 @@ private func decodeWhoop5Event(_ frame: [UInt8], fb: FieldBuilder, schema: Schem
     if let ch = readDType(frame, 30, "u8"), ch <= 1 {
         fb.add(30, 1, "battery_charging", "battery", value: .int(ch & 1))
     }
+}
+
+/// Decode a WHOOP 5.0 CONSOLE_LOGS (type 50) frame — the strap firmware's own plaintext diagnostics
+/// channel. The console is one continuous text stream chunked into fixed-size pieces, so a log line
+/// routinely splits mid-sentence across frames; consumers reassemble by `record_index` order before
+/// reading. Lines look like `19, 146552119: BLE: History burst success. Trim: …` (boot-count,
+/// firmware tick ms, tag, message) and narrate the history sync and the sensor pipeline
+/// ("SENSORS: AFE configuration changed", "SIGPROC: generated a valid SPO2 during sleep") — primary
+/// raw material for the deep-data work (#103).
+///
+/// Record header, verified across 3 257 real frames from two nights (all one shape: 76-byte frame,
+/// chunk_len 52, channel 1): `record_index` u16@9 (monotonic per-chunk counter — the frame's u8 seq
+/// slot is its low byte), `unix` u32@12 + `subsec` u16@16 (batch write time), chunk_len u16@18,
+/// channel u8@20, text bytes @21 up to the CRC32 trailer with NUL padding. The Kotlin twin is
+/// `Framing.decodeConsoleLogsWhoop5` (text key "console"), same offsets.
+private func decodeWhoop5ConsoleLogs(_ frame: [UInt8], fb: FieldBuilder, payloadEnd: Int?) {
+    if let idx = readDType(frame, 9, "u16") {
+        fb.add(9, 2, "record_index", "meta", value: .int(idx), note: "per-chunk counter")
+    }
+    if let unix = readDType(frame, 12, "u32") { fb.add(12, 4, "unix", "time", value: .int(unix)) }
+    if let ss = readDType(frame, 16, "u16") { fb.add(16, 2, "subsec", "time", value: .int(ss)) }
+    guard let payloadEnd = payloadEnd, 21 < payloadEnd, payloadEnd <= frame.count else { return }
+    var textBytes = Array(frame[21..<payloadEnd])
+    while textBytes.last == 0 { textBytes.removeLast() }
+    guard !textBytes.isEmpty else { return }
+    let txt = String(decoding: textBytes, as: UTF8.self)
+    fb.region(21, payloadEnd, "console log text", "text", note: String(txt.prefix(80)))
+    // Same 2 KB cap as the 4.0 console post-hook: a garbled/malicious peer must not pin arbitrary
+    // bytes as a String on the parse path. A real chunk is 51 bytes.
+    fb.parsed["log"] = .string(String(txt.prefix(2048)))
 }
 
 @inline(__always)
