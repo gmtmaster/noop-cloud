@@ -81,6 +81,11 @@ public struct DeviceRegistryStore: Sendable {
         "stepSample", "ppgHrSample", "event", "battery", "dailyMetric", "sleepSession",
         "journal", "workout", "appleDaily", "metricSeries", "dayOwnership",
         "rawBatch", "labMarker", "sleepStateSample", "liveSession",
+        // v27-ppg-waveform (issue #156 follow-up): the durable raw v26 optical PPG waveform is
+        // deviceId-keyed exactly like every other per-second stream above — must be cleared too, or a
+        // "delete all of this device's data" leaves the raw waveform behind (the same privacy defect
+        // this list exists to close).
+        "ppgWaveformSample",
     ]
 
     /// Permanently delete every recorded sample/derived row belonging to one device, across all
