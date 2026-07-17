@@ -29,15 +29,6 @@ struct RootTabView: View {
     @AppStorage(MoreSectionPrefs.storageKey) private var expandedMoreSectionsCSV = MoreSectionPrefs.defaultCSV
     private var expandedMoreSections: Set<String> { MoreSectionPrefs.decode(expandedMoreSectionsCSV) }
 
-    /// V8 liquid redesign is the default Today; the Settings toggle lets a user fall back to the classic
-    /// Today if they prefer it (keyed identically to the SettingsView toggle). Default ON.
-    @AppStorage("noop.liquidTodayEnabled") private var liquidTodayEnabled = true
-
-    /// The Today tab root, honouring the liquid/classic preference.
-    @ViewBuilder private var todayTabRoot: some View {
-        if liquidTodayEnabled { LiquidTodayView() } else { TodayView() }
-    }
-
     init() {
         // Plain Titanium bar: pin the background to `surfaceBase` and clear the system
         // selection-indicator tint so there is NO gold/accent pill behind the selected
@@ -61,7 +52,7 @@ struct RootTabView: View {
             // cleanly in the gap between them — replaces the native tab bar: no overlap, no glow. The
             // native TabView still drives content + per-tab nav state; only its bar is hidden.
             TabView(selection: $selectedTab) {
-                tab(todayTabRoot, "Today", "square.grid.2x2").tag(0)
+                tab(TodayView(), "Today", "square.grid.2x2").tag(0)
                 tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis").tag(1)
                 tab(SleepView(), "Sleep", "bed.double").tag(2)
                 tab(FriendsView(), "Friends", "person.2.fill").tag(3)
@@ -177,7 +168,7 @@ struct RootTabView: View {
                 case .activeWorkout: LiveView()
                 // .liveSession routes to the Today tab (handled above — its Start entry owns the cover);
                 // this keeps the switch exhaustive and falls back to Today if it ever reaches the host.
-                case .liveSession: LiquidTodayView()
+                case .liveSession: TodayView()
                 }
             }
             .background(StrandPalette.surfaceBase.ignoresSafeArea())

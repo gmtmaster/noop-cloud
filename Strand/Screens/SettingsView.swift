@@ -76,12 +76,6 @@ struct SettingsView: View {
     @AppStorage(AppearanceMode.storageKey) private var appearanceRaw = AppearanceMode.system.rawValue
     // Chart colour style: Titanium (brand) or Classic (throwback red→green). Re-colours gauges + charts.
     @AppStorage(ChartStyle.storageKey) private var chartStyleRaw = ChartStyle.titanium.rawValue
-    // Day-cycle scene backdrop behind Today (#698). Default ON. Off swaps the scene for a plain dark
-    // canvas. TodayView reads the same key to gate its SceneScreenBackground.
-    @AppStorage(SceneBackgroundPrefs.enabledKey) private var showDayCycleBackground = true
-    // "Sky behind cards" (opt-in, default OFF): extend the day-cycle sky behind the whole Today scroll so
-    // Card transparency reveals it under every card. Mirrors Kotlin NoopPrefs.skyBehindCards.
-    @AppStorage(SkyBehindCardsPrefs.enabledKey) private var skyBehindCards = false
     // Card-surface opacity percent (100 = solid). Reactive — moving the slider live-updates every card.
     @AppStorage(CardAppearancePrefs.opacityKey) private var cardOpacityPercent = CardAppearancePrefs.defaultPercent
     // Hydration tracker (opt-in, MVP). Default OFF — when off the hydration dashboard card + detail are
@@ -701,40 +695,6 @@ struct SettingsView: View {
                 }
                 #endif
 
-                Divider().overlay(StrandPalette.hairline).padding(.vertical, 4)
-                // MARK: Day-cycle background — the time-of-day scene behind Today (#698). On by default.
-                // Off swaps it for the plain dark canvas for people who find the moving scene distracting.
-                Toggle(isOn: $showDayCycleBackground) {
-                    Text("Day-cycle background")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                Text("Shows a soft sunrise, day, dusk and night scene behind the Today screen. Turn it off for a plain dark canvas. Your cards stay exactly as readable.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                // MARK: Sky behind cards — extend the day-cycle sky behind the WHOLE Today scroll so the
-                // Card-transparency slider reveals it under every card (not just the hero). Opt-in, off by
-                // default; pairs with Card transparency below.
-                Toggle(isOn: $skyBehindCards) {
-                    Text("Sky behind cards")
-                        .font(StrandFont.subhead)
-                        // Greyed when day-cycle is off — the sky it extends isn't drawn then (Android parity).
-                        .foregroundStyle(showDayCycleBackground ? StrandPalette.textPrimary : StrandPalette.textTertiary)
-                }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                .disabled(!showDayCycleBackground)
-                Text("Extends the sky behind the whole Today screen, so lowering Card transparency lets it show through every card. Needs the day-cycle background on.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
                 // MARK: Card transparency — fade every frosted card's glass toward the background. Reactive
                 // @AppStorage, so all cards (incl. the ones on this screen) update live as you drag. The
                 // slider shows TRANSPARENCY (0 = solid, 100 = clear); we store the OPACITY percent.
@@ -1105,36 +1065,10 @@ struct SettingsView: View {
     /// #22); the raw-sensor CSV diagnostic is split into its own card so it stays available on every
     /// model — a 4.0 owner still needs the export to share decoded streams.
     @ViewBuilder private var experimentalCard: some View {
-        liquidTodayCard
         liveSessionsCard
         if showFiveMGControls { fiveMGCard }
         sleepStagingCard
         rawSensorDiagnosticsCard
-    }
-
-    /// Opt-in liquid Today redesign (default ON in this build). Off falls back to the
-    /// classic dashboard immediately, no rebuild. Same data either way.
-    @AppStorage("noop.liquidTodayEnabled") private var liquidTodayEnabled = true
-    private var liquidTodayCard: some View {
-        SettingsSection(
-            icon: "drop.fill",
-            title: "Experimental · Liquid Today",
-            blurb: "A redesigned Today screen in the new liquid language: the scores as living liquid, a time-of-day sky, and a calmer layout. Same numbers, new look."
-        ) {
-            VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
-                Toggle(isOn: $liquidTodayEnabled) {
-                    Text("Liquid Today (prototype)")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                Text("Replaces the Today tab with the prototype redesign. Turn it off any time to return to the classic dashboard. Reads the same live data from your strap.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
     }
 
     /// Live Sessions (beta) — the silent-guardian in-workout coach. Default ON (the entry itself is

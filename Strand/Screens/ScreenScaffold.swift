@@ -17,8 +17,8 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     /// 800+ day imported history (#345). Defaults to `false` so every existing caller keeps
     /// the eager `VStack` and its identical layout/scroll behaviour.
     var lazy: Bool = false
-    /// Optional full-bleed view drawn behind the scroll content at the TOP of the screen (e.g. Today's
-    /// day-cycle scene). Defaults to nil so other screens stay on the flat canvas; nil renders nothing.
+    /// Shared full-bleed background supplied by screen call sites. The app-wide provider now resolves to
+    /// the same solid adaptive canvas, preserving source compatibility without per-screen overrides.
     var topBackground: AnyView? = nil
     /// Optional element pinned to the header's trailing edge (e.g. the strap-battery badge on Today).
     /// Defaults to `EmptyView` via the convenience init below, so other screens are unaffected.
@@ -60,10 +60,7 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
         // is width-capped), so the spurious horizontal rubber-band that caused the sideways drift is gone.
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         #endif
-        // The flat canvas, plus an optional full-bleed TOP backdrop (Today's day-cycle scene) drawn behind
-        // the scroll content — edge-to-edge under the status bar. The scene is CONFINED to the header+hero
-        // band (see SceneScreenBackground.height) so it fades out ABOVE the dashboard cards, which then sit
-        // on the opaque canvas and stay fully legible (2026-06-23: cards were "losing the data").
+        // One app-wide canvas: the shared provider and fallback are the same solid adaptive grey.
         .background(alignment: .top) {
             ZStack(alignment: .top) {
                 StrandPalette.surfaceBase
@@ -73,8 +70,7 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
         }
         .modifier(RefreshableIfNeeded(onRefresh: onRefresh))
         #if os(macOS)
-        // The mac window toolbar's default vibrant material washed the top of the liquid day-of-sky WHITE
-        // (the scroll-under-titlebar blend). Hide it so the sky reads edge-to-edge and dark, like iOS.
+        // Keep the window toolbar visually continuous with the shared app canvas.
         .toolbarBackground(.hidden, for: .windowToolbar)
         #endif
     }
@@ -98,23 +94,15 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     }
 
     private var header: some View {
-        // When a `topBackground` (the day-cycle liquid sky) sits behind the header, that band is dark in
-        // BOTH themes — so the title/subtitle must use the scheme-invariant on-dark tokens. The regular
-        // text tokens flip to dark ink in Light mode and went dark-on-dark over the sky, exactly the #1013
-        // pattern the Liquid Today hero hit (osifaind's Trends-tab sibling report). Flat-canvas screens
-        // (no topBackground) keep the theme tokens so the header reads on the light/dark surfaceBase.
-        let overSky = topBackground != nil
-        let titleColor = overSky ? StrandPalette.onDarkPrimary : StrandPalette.textPrimary
-        let subtitleColor = overSky ? StrandPalette.onDarkSecondary : StrandPalette.textSecondary
         return HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 if let title {
                     // Match the liquid home's title face (SF Rounded 28) so every page's header reads
                     // identically (2026-07-02 cohesion pass).
-                    Text(title).font(StrandFont.rounded(28)).foregroundStyle(titleColor)
+                    Text(title).font(StrandFont.rounded(28)).foregroundStyle(StrandPalette.textPrimary)
                 }
                 if let subtitle {
-                    Text(subtitle).font(StrandFont.subhead).foregroundStyle(subtitleColor)
+                    Text(subtitle).font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
                 }
             }
             Spacer(minLength: 0)

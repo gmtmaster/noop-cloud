@@ -6,6 +6,7 @@
 //  no blur — clean and crisp, the atmosphere of the app's header.
 
 import SwiftUI
+import StrandDesign
 
 struct LiquidSkyStop {
     let h: Double
@@ -131,13 +132,11 @@ struct LiquidSky: View {
     }
 }
 
-/// A subtle full-bleed time-of-day sky for any `ScreenScaffold.topBackground`, so the liquid
-/// atmosphere carries across EVERY tab. Same live sky as Today at a modest header height, so the
-/// charts/cards below sit on the dark canvas — the redesign's "the options change, not the page"
-/// feel. Non-interactive + accessibility-hidden (pure decoration).
+/// The shared scaffold canvas. Kept as the existing provider so every screen adopts the unified solid
+/// adaptive background centrally without changing individual screen layouts.
 func liquidScaffoldSky(height: CGFloat = 240) -> AnyView {
     AnyView(
-        LiquidSkyStatic(hour: nil)
+        StrandPalette.surfaceBase
             .frame(maxWidth: .infinity)
             .frame(height: height, alignment: .top)
             .allowsHitTesting(false)
