@@ -107,15 +107,16 @@ final class Whoop5HistoricalTests: XCTestCase {
     func testHistoricalV18ObservedFields() {
         // Fields read off this same real worn frame and justified by their observed behaviour:
         //  @11 record_index — a per-record counter (+1/record, independent of unix; seen on two straps)
-        //  @36 hr_fixed_8_8 — value/256 tracks hr@22 to sub-bpm (here 25997/256 ≈ 101.55 ≈ HR 102)
+        //  @36 hr_quality_flags — bit 7 marks HR/R-R validity; @37 duplicates HR while valid
         //  @59 step_cadence — a cadence-like byte (never 0; lower when moving faster)
         //  @75 status_word — a 16-bit word that is NOT a deep-sleep marker
         //  @81 sleep_state — high nibble = band state (worn daytime frame = wake)
         //  @33/@38/@40 — raw bytes near the HR/R-R fields; @113 — a float of unknown purpose
         let p = parseFrame(bytes(historicalHex), family: .whoop5).parsed
         XCTAssertEqual(p["record_index"]?.intValue, 25443699)
-        XCTAssertEqual(p["hr_fixed_8_8"]?.intValue, 25997)
-        XCTAssertEqual((p["hr_fixed_8_8"]?.intValue ?? 0) / 256, 101)   // ≈ hr@22 (102)
+        XCTAssertNil(p["hr_fixed_8_8"])
+        XCTAssertEqual(p["hr_quality_flags"]?.intValue, 141)
+        XCTAssertEqual(p["heart_rate_alt"]?.intValue, 101)
         XCTAssertEqual(p["step_cadence"]?.intValue, 170)
         XCTAssertEqual(p["status_word"]?.intValue, 1792)
         XCTAssertEqual(p["sleep_state"]?.intValue, 0)
@@ -353,6 +354,18 @@ final class Whoop5HistoricalTests: XCTestCase {
             } else {
                 XCTFail("gravity did not decode")
             }
+        }
+    }
+
+    func testHistoricalV18QualityFlagDoesNotFabricateHighPrecisionHR() {
+        for (hex, hr, flags, alternate) in [(secondDeviceHR57, 57, 11, 97),
+                                            (secondDeviceHR63, 63, 2, 227)] {
+            let p = parseFrame(bytes(hex), family: .whoop5).parsed
+            XCTAssertEqual(p["heart_rate"]?.intValue, hr)
+            XCTAssertEqual(p["hr_quality_flags"]?.intValue, flags)
+            XCTAssertEqual((p["hr_quality_flags"]?.intValue ?? 0) & 0x80, 0)
+            XCTAssertEqual(p["heart_rate_alt"]?.intValue, alternate)
+            XCTAssertNil(p["hr_fixed_8_8"])
         }
     }
 }

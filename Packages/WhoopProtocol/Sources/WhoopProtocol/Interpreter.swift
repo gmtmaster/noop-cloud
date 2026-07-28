@@ -388,13 +388,18 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
         }
     }
     fb.parsed["rr_intervals"] = .intArray(rrs)
-    // Bytes adjacent to the HR/R-R fields, read off real frames. @36 / 256 tracks the integer hr@22 to
-    // sub-bpm (corr 0.989 over ~258k records) — a higher-precision heart rate; the others are raw.
+    // Bytes adjacent to the HR/R-R fields. Capture analysis established @36 as a flag byte and @37 as
+    // a duplicate heart-rate byte, rather than the halves of a fixed-point value.
     if let v = readDType(frame, 33, "u8") {
         fb.add(33, 1, "cardiac_flags", "cardiac", value: .int(v), note: "raw byte near the HR fields")
     }
-    if let v = readDType(frame, 36, "u16") {
-        fb.add(36, 2, "hr_fixed_8_8", "hr", value: .int(v), note: "higher-precision HR: bpm = value/256")
+    if let v = readDType(frame, 36, "u8") {
+        fb.add(36, 1, "hr_quality_flags", "hr", value: .int(v),
+               note: "flag byte (raw); bit7 = HR/R-R valid; not fixed-point HR")
+    }
+    if let v = readDType(frame, 37, "u8") {
+        fb.add(37, 1, "heart_rate_alt", "hr", value: .int(v),
+               note: "duplicate heart rate; trust only when hr_quality_flags bit7 is set")
     }
     if let v = readDType(frame, 38, "u16") {
         fb.add(38, 2, "rr_packed", "rr", value: .int(v), note: "raw u16 near the R-R fields; meaning not pinned")
