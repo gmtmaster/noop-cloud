@@ -16140,9 +16140,6 @@
     "A good day for higher strain" : {
 
     },
-    "A locally-adopted Oura ring, in beta." : {
-
-    },
     "A logged caffeine is past your bedtime cutoff. It may still be on board and keep you up. Just a timing heads-up." : {
       "localizations" : {
         "de" : {
@@ -124739,6 +124736,7 @@
       }
     },
     "Stress · M" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -141022,9 +141020,6 @@
           }
         }
       }
-    },
-    "What each band captures (and what NOOP uses it for)." : {
-
     },
     "WHAT IT'S GREAT AT" : {
       "localizations" : {
