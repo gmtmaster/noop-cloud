@@ -672,7 +672,7 @@ public enum AnalyticsEngine {
     static func nightlyHRV(sessions: [SleepSession], rr: [RRInterval],
                            deepHrvWindow: Bool = false) -> Double? {
         if deepHrvWindow {
-            let rrSorted = rr.sorted { $0.ts < $1.ts }
+            let rrSorted = rr.sortedByTsStable()
             let deepValues = sessions.flatMap { session in
                 SleepStager.sessionHrvWindows(start: session.start, end: session.end,
                                                rr: rrSorted, stages: session.stages)

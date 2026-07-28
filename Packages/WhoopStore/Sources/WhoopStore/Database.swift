@@ -490,6 +490,14 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "ts"])
             }
         }
+
+        // Additive only: preserve existing rows and record emission order for newly stored
+        // same-second R-R beats so RMSSD is not biased by value-sorted reads.
+        migrator.registerMigration("v30-rr-ord") { db in
+            try db.alter(table: "rrInterval") { t in
+                t.add(column: "ord", .integer)
+            }
+        }
         return migrator
     }
 }
