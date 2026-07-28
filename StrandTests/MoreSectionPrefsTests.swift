@@ -5,13 +5,14 @@ import XCTest
 /// the user's expanded/collapsed choice SURVIVES leaving + re-entering the More tab (and relaunch) instead
 /// of resetting to the seed every visit. These exercise the pure encode/decode/default model that the
 /// `@AppStorage`-backed `RootTabView` reads and writes through, and lock it in lockstep with the Android
-/// `MoreSectionPrefs` twin (same key suffix, same CSV encoding, same Insights+Body default).
+/// `MoreSectionPrefs` twin (same key suffix and CSV encoding).
 final class MoreSectionPrefsTests: XCTestCase {
 
-    func testFreshInstallDefaultsToInsightsAndBody() {
-        // The seed: Insights + Body open at rest, Data + App collapsed.
-        XCTAssertEqual(MoreSectionPrefs.defaultExpanded, ["Insights", "Body"])
-        XCTAssertEqual(MoreSectionPrefs.decode(MoreSectionPrefs.defaultCSV), ["Insights", "Body"])
+    func testFreshInstallDefaultsToEverydayGroups() {
+        // Everyday data, devices, and analytics are open; settings and diagnostics are collapsed.
+        XCTAssertEqual(MoreSectionPrefs.defaultExpanded, ["Account & Data", "Devices", "Health & Analytics"])
+        XCTAssertEqual(MoreSectionPrefs.decode(MoreSectionPrefs.defaultCSV),
+                       ["Account & Data", "Devices", "Health & Analytics"])
     }
 
     func testKeyMatchesAndroidSuffix() {
@@ -28,7 +29,8 @@ final class MoreSectionPrefsTests: XCTestCase {
     }
 
     func testEncodeDecodeRoundTrips() {
-        for set in [Set<String>(), ["Data"], ["Insights", "Body"], ["Insights", "Body", "Data", "App"]] {
+        for set in [Set<String>(), ["Devices"], ["Account & Data", "Health & Analytics"],
+                    ["Account & Data", "Devices", "App Settings", "Diagnostics & Experimental"]] {
             XCTAssertEqual(MoreSectionPrefs.decode(MoreSectionPrefs.encode(set)), set)
         }
     }
@@ -41,8 +43,13 @@ final class MoreSectionPrefsTests: XCTestCase {
     }
 
     func testDecodeIgnoresBlankAndStrayTokens() {
-        XCTAssertEqual(MoreSectionPrefs.decode("Insights, ,Body,"), ["Insights", "Body"])
-        XCTAssertEqual(MoreSectionPrefs.decode("  Data  "), ["Data"])
+        XCTAssertEqual(MoreSectionPrefs.decode("Insights, ,Body,"), ["Health & Analytics"])
+        XCTAssertEqual(MoreSectionPrefs.decode("  Data  "), ["Account & Data", "Devices"])
+    }
+
+    func testLegacyExpansionChoicesMigrateToNewSections() {
+        XCTAssertEqual(MoreSectionPrefs.decode("App,Body,Data"),
+                       ["Account & Data", "Devices", "Health & Analytics", "App Settings"])
     }
 
     func testCollapsedChoicePersistsThroughUserDefaults() {
@@ -57,10 +64,10 @@ final class MoreSectionPrefsTests: XCTestCase {
         XCTAssertEqual(MoreSectionPrefs.decode(defaults.string(forKey: MoreSectionPrefs.storageKey) ?? ""),
                        MoreSectionPrefs.defaultExpanded)
 
-        // User expands Data too; it persists and reads back.
-        defaults.set(MoreSectionPrefs.encode(["Insights", "Body", "Data"]), forKey: MoreSectionPrefs.storageKey)
+        // User expands another current section too; it persists and reads back.
+        defaults.set(MoreSectionPrefs.encode(["Account & Data", "App Settings"]), forKey: MoreSectionPrefs.storageKey)
         XCTAssertEqual(MoreSectionPrefs.decode(defaults.string(forKey: MoreSectionPrefs.storageKey) ?? ""),
-                       ["Insights", "Body", "Data"])
+                       ["Account & Data", "App Settings"])
 
         defaults.removePersistentDomain(forName: suite)
     }

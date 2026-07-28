@@ -21,7 +21,7 @@ struct RootTabView: View {
     /// Selected tab — bound so tab switches can crossfade (README §Motion: ~240ms opacity swap
     /// between tab roots, calm easing). Defaults to Today.
     @State private var selectedTab: Int = 0
-    /// Which More-tab groups are expanded (S2). Insights + Body stay open at rest; Data + App collapse to
+    /// Which More-tab groups are expanded. The everyday data, device, and analytics groups open at rest;
     /// just their header until tapped. Persisted (#860 item 2): the user's open/closed choice must SURVIVE
     /// leaving and re-entering the More tab (and relaunch), not reset to the seed every visit. Backed by an
     /// `@AppStorage` CSV string (keyed identically to the Android `MoreSectionPrefs`), bridged to a
@@ -283,37 +283,33 @@ struct RootTabView: View {
             ScreenScaffold(title: "More", subtitle: "Everything else, one tap away",
                            onRefresh: { await repo.refresh() },
                            topBackground: liquidScaffoldSky()) {
-                moreSection("Insights") {
+                moreSection("Account & Data") {
+                    MoreRow("Cloud Sync", "icloud.and.arrow.up.fill") { CloudSyncSettingsView() }
+                    MoreRow("Backup & Restore", "externaldrive.fill.badge.icloud") { BackupSyncView() }
+                    MoreRow("Data Sources", "externaldrive.fill") { DataSourcesView() }
+                    MoreRow("Apple Health", "heart.fill") { AppleHealthView() }
+                    MoreRow("Shortcuts Export", "square.and.arrow.up.fill") { ShortcutExportSettingsView() }
+                    MoreRow("Your Data, Fused", "square.stack.3d.up.fill") { FusedRecordHost() }
+                }
+                moreSection("Devices") {
+                    MoreRow("Devices", "badge.plus.radiowaves.right") { DevicesView() }
+                    MoreRow("Live", "waveform.path.ecg") { LiveView() }
+                }
+                moreSection("Health & Analytics") {
                     MoreRow("What Moves You", "wand.and.sparkles") { InsightsHubView() }
                     MoreRow("Intelligence", "brain.head.profile") { IntelligenceView() }
                     MoreRow("Coach", "sparkles") { CoachView() }
                     MoreRow("Insights", "lightbulb.fill") { InsightsView() }
                     MoreRow("Explore", "square.grid.2x2.fill") { MetricExplorerView() }
                     MoreRow("Compare", "rectangle.split.2x1.fill") { CompareView() }
-                }
-                moreSection("Body") {
-                    MoreRow("Live", "waveform.path.ecg") { LiveView() }
                     MoreRow("Workouts", "figure.run") { WorkoutsView() }
                     MoreRow("Health", "heart.text.square.fill") { HealthView() }
-                    MoreRow("Lab Book", "books.vertical.fill") { LabBookView() }
                     MoreRow("Stress", "bolt.heart.fill") { StressView() }
+                    MoreRow("Lab Book", "books.vertical.fill") { LabBookView() }
                     MoreRow("Breathe", "wind") { BreathingView() }
                     MoreRow("Intervals", "timer") { IntervalTimerView() }
-                    // Experimental beat-to-beat regularity visualization — self-gates on its own consent.
-                    MoreRow("Rhythm", "waveform.path") { RhythmHost() }
                 }
-                moreSection("Data") {
-                    MoreRow("Your Data, Fused", "square.stack.3d.up.fill") { FusedRecordHost() }
-                    MoreRow("Apple Health", "heart.fill") { AppleHealthView() }
-                    MoreRow("Mi Band", "figure.walk.motion") { XiaomiBandView() }
-                    MoreRow("Data Sources", "externaldrive.fill") { DataSourcesView() }
-                    MoreRow("Backup & Sync", "externaldrive.fill.badge.icloud") { BackupSyncView() }
-                    MoreRow("Cloud Sync", "icloud.and.arrow.up.fill") { CloudSyncSettingsView() }
-                    // #155: HealthKit-free Apple Health path for sideloaded installs (Siri Shortcut
-                    // reads the opt-in Documents/noop_sync.txt drop file).
-                    MoreRow("Shortcuts Export", "square.and.arrow.up.fill") { ShortcutExportSettingsView() }
-                }
-                moreSection("App") {
+                moreSection("App Settings") {
                     // #805/#811: the v7.3.1 #766 alarm consolidation moved Smart Alarm under a single
                     // "Alarms" sidebar entry (RootView .smartAlarm) but the regression dropped the row
                     // from the iPhone More list, leaving Alarms unreachable on iPhone. Restore it here
@@ -326,11 +322,13 @@ struct RootTabView: View {
                     // Automations screen instead. Its absence from the iPhone More list is correct.
                     MoreRow("Alarms", "alarm.fill") { SmartAlarmView() }
                     MoreRow("Automations", "wand.and.stars") { AutomationsView() }
-                    // The Test Centre (the diagnostics + bug-report hub) gets a first-class home here, not
-                    // just buried in Settings, so the feedback loop is one tap from the More tab.
-                    MoreRow("Test Centre", "stethoscope") { TestCentreView() }
                     MoreRow("Siri & Shortcuts", "mic.fill") { SiriShortcutsSettingsView() }
                     MoreRow("Settings", "gearshape.fill") { SettingsView() }
+                }
+                moreSection("Diagnostics & Experimental") {
+                    MoreRow("Test Centre", "stethoscope") { TestCentreView() }
+                    // Experimental beat-to-beat regularity visualization — self-gates on its own consent.
+                    MoreRow("Rhythm", "waveform.path") { RhythmHost() }
                 }
             }
             .toolbar(.hidden, for: .tabBar)   // we draw our own FloatingTabBar
@@ -340,7 +338,7 @@ struct RootTabView: View {
 
     /// One titled, COLLAPSIBLE group in the More index (S2): the app's overline (UPPERCASE) becomes a
     /// tappable header with a disclosure chevron; tapping it expands/collapses the grouped rows card.
-    /// Insights + Body default open, Data + App default collapsed (the `expandedMoreSections` seed) so the
+    /// Everyday groups default open while settings and diagnostics stay collapsed, so the
     /// list is shorter at rest without dropping a single row. The grouped card is unchanged: a single
     /// `NoopCard` holding a `VStack(spacing: 0)` whose `MoreRow`s draw their own hairlines, clipped to the
     /// card's rounded shape so the last divider is trimmed inside the corners. Same idiom Settings/Health use.
