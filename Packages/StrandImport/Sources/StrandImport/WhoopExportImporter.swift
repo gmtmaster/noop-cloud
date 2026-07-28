@@ -352,7 +352,7 @@ public struct WhoopExportImporter {
             r.tzOffsetMin = tz
             r.cycleStart = WhoopTime.parse(row.cell("cycle_start_time"), offsetMinutes: tz)
             r.question = row.cell("question_text", "question")
-            r.answer   = row.cell("answered_yes_no", "answer", "answer_text")
+            r.answer   = row.cell("answered_yes", "answered_yes_no", "answer", "answer_text")
             r.notes    = row.cell("notes")
 
             // A journal row is only meaningful if it has a question.

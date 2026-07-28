@@ -459,6 +459,8 @@ public final class LiveState: ObservableObject {
         recentGravitySamples.removeAll()
         clearStrapRange()                 // a stale clock-drift window must not outlive the link either
         lastFrameAtUnix = nil             // #987: a stale "last frame" freshness must not outlive it either
+        Self.persistTail(log)
+        logsSincePersist = 0
     }
 
     /// Cap on the in-app strap-log ring buffer. Raised from the old ~1h (200 lines) to retain a rolling
@@ -468,14 +470,24 @@ public final class LiveState: ObservableObject {
     /// unbounded. Drives the Live log card AND the shareable `exportableLogText()`.
     static let maxLogLines = 5_000
 
+    private static let persistEveryNLines = 32
+    private static let trimSlack = 256
+    private var logsSincePersist = 0
+
     public func append(log line: String, domain: TestDomain? = nil) {
         // Tag inert when nil (today's behaviour, byte-identical). When tagged, prefix a compact,
         // parseable marker the export filters on. Redaction is STILL the only scrub point
         // (redactPii below); tagging happens BEFORE redaction so the scrub covers the whole line.
         let tagged = domain.map { "[\($0.id)] " + line } ?? line
         log.append(Self.redactPii(tagged))
-        if log.count > Self.maxLogLines { log.removeFirst(log.count - Self.maxLogLines) }
-        Self.persistTail(log)
+        if log.count > Self.maxLogLines + Self.trimSlack {
+            log.removeFirst(log.count - Self.maxLogLines)
+        }
+        logsSincePersist += 1
+        if logsSincePersist >= Self.persistEveryNLines {
+            logsSincePersist = 0
+            Self.persistTail(log)
+        }
         // #990: fold the Backfiller's per-session "session persisted N rows" summary into the persisted
         // ALL-TIME drained-rows tally, right here at the single log sink (no new BLE seam). The summary
         // is emitted unconditionally whenever rows landed (#150), so the cumulative counter accrues on

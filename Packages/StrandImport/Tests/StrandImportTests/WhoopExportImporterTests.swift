@@ -159,6 +159,16 @@ final class WhoopExportImporterTests: XCTestCase {
         XCTAssertEqual(rows[1].notes, "One coffee in the morning")
     }
 
+    func testJournalReadsRealWhoopAnsweredYesHeader() throws {
+        let csv = """
+        Cycle start time,Cycle end time,Cycle timezone,Question text,Answered yes,Notes
+        2025-09-14 23:16:59,2025-09-15 23:08:01,UTC+02:00,Have any alcoholic drinks?,TRUE,
+        2025-09-14 23:16:59,2025-09-15 23:08:01,UTC+02:00,Experienced a migraine?,FALSE,
+        """
+        let rows = WhoopExportImporter().parseJournal(CSVTable(data: Data(csv.utf8)))
+        XCTAssertEqual(rows.map(\.answer), ["TRUE", "FALSE"])
+    }
+
     // MARK: - Folder import end to end
 
     func testImportFromFolder() throws {

@@ -27,6 +27,8 @@ import ZIPFoundation
 /// security-scoped access on the panel-returned URLs. Every path is best-effort — failures surface
 /// as a `.failure` result and never crash.
 enum DataBackup {
+    private static let maxBackupSQLiteBytes: Int64 = 2_147_483_648
+    private static let maxBackupSettingsBytes: Int64 = 1_048_576
 
     // MARK: - Result
 
@@ -431,6 +433,16 @@ enum DataBackup {
     /// a backup produced on either platform restores on the other.
     private static let backupEntryName = "noop-backup.sqlite"
 
+    private enum BackupArchiveError: LocalizedError {
+        case entryTooLarge(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .entryTooLarge(let name): return "\(name) is too large to restore safely."
+            }
+        }
+    }
+
     /// "NOOP-backup-2026-06-07.noopbak"
     private static func defaultBackupName() -> String {
         let f = DateFormatter()
@@ -509,15 +521,35 @@ enum DataBackup {
         return head[0] == 0x50 && head[1] == 0x4B && head[2] == 0x03 && head[3] == 0x04
     }
 
-    /// Extract the SQLite entry from a `.noopbak` ZIP at `zipURL` into `destDir`. Each file entry is
-    /// written under its own last-path-component, so the SQLite lands as `<destDir>/<name>.sqlite`
-    /// for the caller to locate. Uses the `Archive` reader (the repo's ZIPFoundation idiom).
+    /// Extract only canonical backup entries, streaming each through an uncompressed-size cap.
     private static func extractBackupZip(at zipURL: URL, into destDir: URL) throws {
         let archive = try Archive(url: zipURL, accessMode: .read)
         for entry in archive where entry.type == .file {
             let name = (entry.path as NSString).lastPathComponent
+            let limit: Int64
+            switch name {
+            case backupEntryName: limit = maxBackupSQLiteBytes
+            case BackupSettings.entryName: limit = maxBackupSettingsBytes
+            default: continue
+            }
             let out = destDir.appendingPathComponent(name)
-            _ = try archive.extract(entry, to: out)
+            if FileManager.default.fileExists(atPath: out.path) {
+                try FileManager.default.removeItem(at: out)
+            }
+            FileManager.default.createFile(atPath: out.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: out)
+            defer { try? handle.close() }
+            var written: Int64 = 0
+            _ = try archive.extract(entry) { data in
+                let next = written + Int64(data.count)
+                guard next <= limit else {
+                    try? handle.close()
+                    try? FileManager.default.removeItem(at: out)
+                    throw BackupArchiveError.entryTooLarge(name)
+                }
+                try handle.write(contentsOf: data)
+                written = next
+            }
         }
     }
 

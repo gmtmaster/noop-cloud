@@ -2022,8 +2022,10 @@ final class Repository: ObservableObject {
                     // so the child task crosses only Sendable scalars.
                     let cls = WorkoutSource.classify(rows[idx].source)
                     let wantStrain = (cls == .manual || cls == .detected) && rows[idx].strain == nil
-                    group.addTask { [deviceId] in
-                        let samples = (try? await store.hrSamples(deviceId: deviceId,
+                    let hrDeviceId = Self.workoutHrDeviceId(source: rows[idx].source,
+                                                            activeStrapId: deviceId)
+                    group.addTask { [hrDeviceId] in
+                        let samples = (try? await store.hrSamples(deviceId: hrDeviceId,
                                                                   from: startTs, to: endTs,
                                                                   limit: 8000)) ?? []
                         guard samples.count >= minSamples else { return nil }
@@ -2064,6 +2066,13 @@ final class Repository: ObservableObject {
                               avgHr: r.avg, maxHr: newMax, strain: newStrain, distanceM: row.distanceM,
                               zonesJSON: row.zonesJSON, notes: row.notes)
         }
+    }
+
+    /// Resolve the HR storage key for a workout. Detected workout sources carry the recording strap's
+    /// computed id (`<base>-noop`); manual and imported rows continue to use the active strap.
+    nonisolated static func workoutHrDeviceId(source: String, activeStrapId: String) -> String {
+        guard WorkoutSource.classify(source) == .detected else { return activeStrapId }
+        return source.hasSuffix("-noop") ? String(source.dropLast(5)) : source
     }
 
     /// #833: the per-workout HR reduction (mean bpm → rounded Int, peak bpm), pulled OUT of the @MainActor
