@@ -3832,6 +3832,9 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     // sync/backfill). Logged only when it decodes plausibly; a short/garbage frame → nil.
                     if let pages = DataRange.pagesBehind(from: frame, cmdOff: 6) {
                         log("Strap backlog pages behind: \(pages) (#689 — GET_DATA_RANGE ring backlog, diagnostic only)")
+                    } else {
+                        log("Strap backlog pages behind: not decodable from this frame (#689 — offsets may have moved; "
+                            + "the raw frame above is the input). Diagnostic only, sync is unaffected.")
                     }
                     if let newest = BLEManager.dataRangeNewestUnix(from: frame) {
                         strapNewestTs = newest                    // feeds the liveness watchdog
