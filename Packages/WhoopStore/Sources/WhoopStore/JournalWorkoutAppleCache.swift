@@ -153,6 +153,20 @@ extension WhoopStore {
         }
     }
 
+    /// Delete workouts only when both their type (`sport`) and provenance (`source`) match.
+    /// Used to retire legacy auto-detected rows without touching manual or imported workouts.
+    @discardableResult
+    public func deleteWorkouts(deviceId: String, sport: String, source: String,
+                               from: Int, to: Int) async throws -> Int {
+        try syncWrite { db in
+            try db.execute(sql: """
+                DELETE FROM workout
+                WHERE deviceId = ? AND sport = ? AND source = ? AND startTs >= ? AND startTs <= ?
+                """, arguments: [deviceId, sport, source, from, to])
+            return db.changesCount
+        }
+    }
+
     /// Upsert Apple-Health daily aggregates. Natural key (deviceId, day). Returns rows changed.
     @discardableResult
     public func upsertAppleDaily(_ rows: [AppleDaily], deviceId: String) async throws -> Int {

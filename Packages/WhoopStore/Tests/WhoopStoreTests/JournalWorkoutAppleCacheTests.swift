@@ -259,6 +259,33 @@ final class JournalWorkoutAppleCacheTests: XCTestCase {
         XCTAssertEqual(other.count, 1, "other device untouched")
     }
 
+    func testDeleteLegacyDetectedWorkoutsRequiresMatchingTypeAndSource() async throws {
+        let store = try await WhoopStore.inMemory()
+        let computedId = "devA-noop"
+        func row(_ ts: Int, _ sport: String, _ source: String) -> WorkoutRow {
+            WorkoutRow(startTs: ts, endTs: ts + 600, sport: sport, source: source,
+                       durationS: 600, energyKcal: nil, avgHr: nil, maxHr: nil, strain: nil,
+                       distanceM: nil, zonesJSON: nil, notes: nil)
+        }
+        try await store.upsertWorkouts([
+            row(1_000, "detected", computedId),
+            row(2_000, "run", "manual"),
+            row(3_000, "cycle", "apple-health"),
+            row(4_000, "detected", "manual"),
+            row(5_000, "run", computedId),
+        ], deviceId: computedId)
+        try await store.upsertWorkouts([row(1_500, "detected", computedId)], deviceId: "apple-health")
+
+        let n = try await store.deleteWorkouts(deviceId: computedId, sport: "detected", source: computedId,
+                                               from: 0, to: 10_000)
+
+        XCTAssertEqual(n, 1)
+        let retained = try await store.workouts(deviceId: computedId, from: 0, to: 10_000, limit: 100)
+        XCTAssertEqual(retained.map(\.startTs), [2_000, 3_000, 4_000, 5_000])
+        let imported = try await store.workouts(deviceId: "apple-health", from: 0, to: 10_000, limit: 100)
+        XCTAssertEqual(imported.map(\.startTs), [1_500])
+    }
+
     // MARK: - appleDaily
 
     func testAppleDailyUpsertReadAndIdempotency() async throws {

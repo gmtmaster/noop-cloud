@@ -110,6 +110,28 @@ final class AnalyticsEngineTests: XCTestCase {
         XCTAssertEqual(result.cachedSleep.count, 1)
         XCTAssertNotNil(result.cachedSleep[0].stagesJSON)
         XCTAssertEqual(result.cachedSleep[0].restingHr, 50)
+        XCTAssertTrue(result.workouts.isEmpty)
+    }
+
+    func testElevatedHeartRateAndMotionNeverCreateAutomaticWorkoutAndEffortStillCalculates() {
+        let start = 1_609_459_200
+        let hr = (0..<1_200).map { HRSample(ts: start + $0, bpm: 155) }
+        let gravity = (0..<1_200).map { i in
+            GravitySample(ts: start + i, x: i.isMultiple(of: 2) ? 0 : 0.5, y: 0, z: 1)
+        }
+        let profile = UserProfile(weightKg: 75, heightCm: 178, age: 30, sex: "male")
+        let expectedEffort = StrainScorer.strain(hr, maxHR: StrainScorer.tanakaHRmax(age: 30),
+                                                 restingHR: StrainScorer.defaultRestingHR, sex: "male")
+
+        let whoop4 = AnalyticsEngine.analyzeDay(day: "2021-01-01", hr: hr, gravity: gravity,
+                                                dayHr: hr, skinTempFamily: .whoop4, profile: profile)
+        let whoop5 = AnalyticsEngine.analyzeDay(day: "2021-01-01", hr: hr, gravity: gravity,
+                                                dayHr: hr, skinTempFamily: .whoop5, profile: profile)
+
+        XCTAssertTrue(whoop4.workouts.isEmpty)
+        XCTAssertTrue(whoop5.workouts.isEmpty)
+        XCTAssertEqual(whoop4.strain, expectedEffort)
+        XCTAssertEqual(whoop5.strain, expectedEffort)
     }
 
     func testNightlyHrvDefaultsToWholeNightAndDeepExcludesOtherStages() throws {

@@ -373,7 +373,7 @@ final class IntelligenceEngine: ObservableObject {
         // except recovery is baseline-independent, so pass 2 only re-scores the cheap recovery
         // composite. The hr/rr/resp/gravity arrays go out of scope each iteration (memory stays bounded).
         var scoredNights: [(daily: DailyMetric, strain: Double?, cachedSleep: [CachedSleepSession],
-                            workouts: [ExerciseSession], nightlySkin: Double?,
+                            nightlySkin: Double?,
                             sessionMotion: [Int: [Double]],
                             sessionSleepState: [Int: [Int]])] = []
         // Nightly values harvested in pass 1, keyed by day, to seed the pass-2 baseline.
@@ -555,19 +555,6 @@ final class IntelligenceEngine: ObservableObject {
                 } else {
                     daySteps = (try? await store.stepSamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? []
                 }
-                // Full calendar-day gravity for WORKOUT detection. The night window above ends at
-                // dayStart+12h (≈ noon), so an afternoon/evening workout sits outside it and was only
-                // detected once a later pass re-read it through the next night window , a ~day lag. This
-                // [localMidnight, localMidnight+24h) read (today: clamped to `now` by the store) lets the
-                // detector see the whole day, so a 5 pm run shows up on the same day.
-                let dayGrav: [GravitySample]
-                if let slice = AnalyticsEngine.daySliceFromNight(grav, nightLo: from, nightHi: to,
-                                                                 dayLo: dayMid, dayHi: dayEnd, ts: { $0.ts }) {
-                    dayGrav = slice
-                } else {
-                    dayGrav = (try? await store.gravitySamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? []
-                }
-
                 // CONSUME (#531 / #175): the strap's OWN band sleep_state for the night window as timestamped
                 // (ts, state) samples, so the H7 morning-stillness guard can confirm a borderline re-onset
                 // against the strap's OWN scored band, AND analyzeDay can grid it per session for persistence.
@@ -604,7 +591,6 @@ final class IntelligenceEngine: ObservableObject {
                 let traceSink: ((String) -> Void)? = sleepTraceActive ? { sleepTrace.append($0) } : nil
                 let res = AnalyticsEngine.analyzeDay(day: day, hr: hr, rr: rr, resp: resp, gravity: grav,
                                                      steps: steps, dayHr: dayHr, daySteps: daySteps,
-                                                     dayGravity: dayGrav,
                                                      skinTemp: skin,
                                                      skinTempFamily: skinFamily,   // #938
                                                      skinTempAnchorRaw: skinAnchorRaw,
@@ -695,7 +681,7 @@ final class IntelligenceEngine: ObservableObject {
             // mode is active, so the default path emits zero `.steps` lines here.
             for line in scan.stepsTrace { diagnosticSink?(line, .steps) }
             scoredNights.append((daily: res.daily, strain: res.strain, cachedSleep: res.cachedSleep,
-                                 workouts: res.workouts, nightlySkin: res.nightlySkinTempC,
+                                 nightlySkin: res.nightlySkinTempC,
                                  sessionMotion: res.sessionMotionByStart,
                                  sessionSleepState: res.sessionSleepStateByStart))
         }
@@ -747,18 +733,7 @@ final class IntelligenceEngine: ObservableObject {
             resp: respFold.usable ? respFold : nil,
             skinTemp: skinFold.usable ? skinFold : nil)
 
-        // Real (non-detected) workouts in the scored window, used to de-duplicate detected bouts so a
-        // user who BOTH has real sessions AND wears the strap doesn't see the same session twice (the
-        // per-day merge precedence does not cover the workout table). This covers BOTH directions of
-        // the cross-source duplicate (#107): the strap source carries imported WHOOP rows AND manual /
-        // re-labelled rows (both written under `deviceId`), and apple-health carries Health imports ,
-        // a detected bout overlapping ANY of them is skipped below. Port of the Android dedup block.
-        // (`computedId` is bound once above, before the off-actor scan loop.)
         let windowStart = now - maxDays * 86_400 - 30 * 3_600
-        var realWorkouts = (try? await store.workouts(deviceId: deviceId, from: windowStart,
-                                                       to: now, limit: 100_000)) ?? []
-        realWorkouts += (try? await store.workouts(deviceId: "apple-health", from: windowStart,
-                                                    to: now, limit: 100_000)) ?? []
 
         // ── Pass 2: re-score ONLY recovery against the now-seeded baseline (cheap, baseline-dependent);
         // every other field was computed once in pass 1. Recovery stays nil until the HRV baseline is
@@ -766,7 +741,6 @@ final class IntelligenceEngine: ObservableObject {
         var out: [Computed] = []
         var dailies: [DailyMetric] = []
         var cachedSleep: [CachedSleepSession] = []
-        var workoutRows: [WorkoutRow] = []
         // Rest composite (0–100) per computed night, persisted as the `sleep_performance` metric
         // series so the dashboard's Rest score reflects the new composite, not raw efficiency.
         var restPoints: [MetricPoint] = []
@@ -809,11 +783,6 @@ final class IntelligenceEngine: ObservableObject {
         // CAPTURE-B (#814/#799): the universal dayOwner line rides every export, so its gate is "ANY mode
         // active" (TestCentre.active(.universal) == anyActive). Read once here, like the other gates.
         let universalTraceActive = TestCentre.active(.universal)
-        // Workouts & GPS test mode (#975): read the zero-cost gate ONCE before the scoring loop so the
-        // detected-bout persist/drop decision can emit ONE `.workouts` line per derived bout. Without this
-        // the auto path produced NO trace at all (the "mode was on but produced NO trace" report), so an
-        // "auto workout appeared then vanished" could not be explained from an export. Diagnostic only.
-        let workoutsTraceActive = TestCentre.active(.workouts)
         for night in scoredNights {
             let dayEditedRows = Self.editedRowsForDay(editedRows, day: night.daily.day,
                                                       tzOffsetSeconds: tzOffset)
@@ -878,34 +847,6 @@ final class IntelligenceEngine: ObservableObject {
                 restPoints.append(MetricPoint(day: daily.day, key: "sleep_performance", value: rest))
             }
             cachedSleep.append(contentsOf: night.cachedSleep)
-            // Persist the detected workouts the pipeline already computes (previously discarded).
-            // Skip any bout overlapping a real imported/manual workout so import+wear users don't
-            // double-count. sport = "detected"; energyKcal is the APPROXIMATE Keytel/BMR total.
-            for s in night.workouts {
-                let durMin = max(0, (s.end - s.start) / 60)
-                let avgBpm = Int(s.avgHR)
-                // The overlap test is bare time overlap (any source), so a detected bout collapses against a
-                // manual session even though their SPORTS differ ("detected" vs the user's sport) , the
-                // #975 "two workouts, one vanished" seam. Find the collider so the trace can name its source.
-                if let hit = realWorkouts.first(where: { s.start < $0.endTs && $0.startTs < s.end }) {
-                    if workoutsTraceActive {
-                        diagnosticSink?(WorkoutsTrace.detectedBoutLine(
-                            verdict: "droppedOverlap", durMin: durMin, avgBpm: avgBpm,
-                            overlapSource: WorkoutSource.sourceLabel(hit)), .workouts)
-                    }
-                    continue
-                }
-                workoutRows.append(WorkoutRow(startTs: s.start, endTs: s.end,
-                                              sport: "detected", source: computedId,
-                                              durationS: s.durationS, energyKcal: s.caloriesKcal,
-                                              avgHr: avgBpm, maxHr: s.peakHR,
-                                              strain: s.strain, distanceM: nil,
-                                              zonesJSON: nil, notes: nil))
-                if workoutsTraceActive {
-                    diagnosticSink?(WorkoutsTrace.detectedBoutLine(
-                        verdict: "persisted", durMin: durMin, avgBpm: avgBpm), .workouts)
-                }
-            }
         }
 
         // ── Apple-Watch recovery fold (M1 "Watch as a device") ──────────────────────────────────────
@@ -1276,12 +1217,11 @@ final class IntelligenceEngine: ObservableObject {
         } else {
             healRearmedThisCycle = false
         }
-        // Make re-detection idempotent across runs: clear the prior computed detected workouts in the
-        // scored window (a bout's startTs can drift as more HR arrives, which would otherwise orphan
-        // stale rows under the (deviceId,startTs,sport) key), then re-insert.
-        _ = try? await store.deleteWorkouts(deviceId: computedId, sport: "detected",
+        // Automatic workout creation is disabled. Remove only legacy rows carrying the exact metadata
+        // this engine used to write; manual and imported workouts have different source metadata and are
+        // never selected, even if an unusual row happens to use "detected" as its sport label.
+        _ = try? await store.deleteWorkouts(deviceId: computedId, sport: "detected", source: computedId,
                                             from: windowStart, to: now)
-        if !workoutRows.isEmpty { _ = try? await store.upsertWorkouts(workoutRows, deviceId: computedId) }
 
         // #137: a manually-started workout is scored from sparse live HR at save time , near-zero
         // calories/strain on a 5/MG. Now that offloaded HR may cover the window, re-score the

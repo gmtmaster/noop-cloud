@@ -63,7 +63,9 @@ public enum AnalyticsEngine {
         public let sleepSessions: [SleepSession]
         /// CachedSleepSession cache rows (one per detected session).
         public let cachedSleep: [CachedSleepSession]
-        /// Detected workout/exercise sessions.
+        /// Auto-generated workout/exercise sessions. Always empty: automatic workout creation is disabled.
+        /// Persisted manual/imported workouts are
+        /// owned by the workout store and are intentionally outside this pure daily-analysis result.
         public let workouts: [ExerciseSession]
         /// Recovery / "Charge" score [0,100] or nil (cold-start / no HRV baseline).
         public let recovery: Double?
@@ -174,8 +176,8 @@ public enum AnalyticsEngine {
 
     /// Skip the redundant calendar-day re-read in analyzeRecent's per-day scan (#997, ryanbr). For a
     /// PAST day the night window `[nightLo, nightHi]` reads through to the NEXT local midnight, so the
-    /// calendar day `[dayLo, dayHi]` is a strict SUBSET of the hr/steps/gravity streams already in
-    /// memory — the dayHr/daySteps/dayGravity re-reads (~60 per pass, including the big ~86k-row HR
+    /// calendar day `[dayLo, dayHi]` is a strict SUBSET of the HR/step streams already in
+    /// memory — the dayHr/daySteps re-reads (~40 per pass, including the big ~86k-row HR
     /// ones) re-query rows the caller already holds. When the day span is a NON-truncated subset of the
     /// night window, return the day's samples by filtering the night list in memory; return nil when
     /// the shortcut is unsafe and the caller must read the store directly:
@@ -230,7 +232,7 @@ public enum AnalyticsEngine {
                                   gravity: [GravitySample] = [],
                                   steps: [StepSample] = [],
                                   // Calendar-day-scoped overrides for the ADDITIVE daily totals
-                                  // (steps + activeKcalEst) AND workout detection. When nil, each
+                                  // (steps + activeKcalEst). When nil, each
                                   // falls back to the same night window the rest of the analysis uses
                                   // (preserving the pure-function contract). The caller
                                   // (IntelligenceEngine) supplies a full
@@ -239,12 +241,6 @@ public enum AnalyticsEngine {
                                   // window (it ends at dayStart+12h ≈ noon) — are still seen.
                                   //
                                   // dayHr/daySteps drive the additive step + calorie totals.
-                                  // dayHr/dayGravity ALSO feed WorkoutDetector so an afternoon /
-                                  // evening workout is detected on its OWN calendar day instead of
-                                  // lagging to the next pass (the old night window only reached noon,
-                                  // so a 5 pm run was invisible until tomorrow's run re-read it). A
-                                  // workout straddling local midnight is split at the day boundary —
-                                  // the same accepted tradeoff the step/calorie totals already make.
                                   // dayHr ALSO drives Strain / "Effort" so the day's load reflects the
                                   // WHOLE calendar day (afternoon workouts included), not midnight→noon.
                                   //
@@ -252,7 +248,6 @@ public enum AnalyticsEngine {
                                   // pre-midnight night span the calendar day omits.
                                   dayHr: [HRSample]? = nil,
                                   daySteps: [StepSample]? = nil,
-                                  dayGravity: [GravitySample]? = nil,
                                   // Wear-gated nightly skin-temp mean is harvested here
                                   // (baseline-independent); IntelligenceEngine seeds a personal
                                   // baseline from these means across nights and re-derives
@@ -512,54 +507,14 @@ public enum AnalyticsEngine {
         // when no deviation is available (no baseline yet / not worn) so the UI shows nothing.
         let skinTempRelative = RecoveryScorer.skinTempRelative(deviationC: skinTempDevC)
 
+        // ── Strain / "Effort" (cardiovascular load over the full CALENDAR day) ──
+        // Automatic workout creation is disabled. Effort remains an independent integration of the
+        // original calendar-day HR stream; no workout detector or workout filtering participates.
         let effMaxHR: Double? = maxHROverride ?? (profile.age > 0 ? StrainScorer.tanakaHRmax(age: profile.age) : nil)
         let restForStrain = restingHRDaily.map(Double.init) ?? StrainScorer.defaultRestingHR
-
-        // ── Workouts ──────────────────────────────────────────────────────────
-        // Detect over the full CALENDAR day (dayHr/dayGravity) when the caller supplies it, so a
-        // current-day afternoon/evening workout is caught on its own day rather than lagging until
-        // a later pass re-reads it through the next night window (which ends at ≈ noon). Falls back
-        // to the night window for pure-function callers/tests. restingHR still comes from the night's
-        // sleep sessions; nil → WorkoutDetector derives it from the day's own HR floor.
-        let detectedWorkouts = WorkoutDetector.detect(
-            hr: dayHr ?? hr, gravity: dayGravity ?? gravity,
-            restingHR: restingHRDaily.map(Double.init),
-            maxHR: maxHROverride,
-            age: profile.age > 0 ? profile.age : nil,
-            profile: profile)
-
-        // WHOOP 4 only: a CRC-valid v24 record can carry a sustained but false optical-HR plateau while
-        // its independent beat timings remain at resting rate. Drop only bouts with decisive R-R
-        // contradiction; absent/sparse/noisy R-R keeps the historical detector result. WHOOP 5/MG never
-        // enters this branch, preserving its established v18 path exactly.
-        let rejectedWhoop4Bouts = skinTempFamily == .whoop4
-            ? detectedWorkouts.filter { WorkoutDetector.rrContradictsElevatedHR($0, hr: dayHr ?? hr, rr: rr) }
-            : []
-        let workouts = rejectedWhoop4Bouts.isEmpty ? detectedWorkouts : detectedWorkouts.filter { bout in
-            !rejectedWhoop4Bouts.contains { $0.start == bout.start && $0.end == bout.end }
-        }
-
-        let rejectedWhoop4HRSpans = rejectedWhoop4Bouts.map {
-            WorkoutDetector.elevatedSpan(containing: $0, hr: dayHr ?? hr, restingHR: restForStrain)
-        }
-
-        // ── Strain / "Effort" (cardiovascular load over the full CALENDAR day) ──
-        // Integrate the whole calendar day. For the WHOOP-4 contradiction case above, exclude exactly the
-        // disproved elevated-HR episode from Effort too; otherwise deleting the workout row would leave the same bad
-        // optical plateau inflating the day score. Every other device/family and every uncontradicted high-HR
-        // event uses the original sample array unchanged.
-        let effortHR: [HRSample]
-        if rejectedWhoop4Bouts.isEmpty {
-            effortHR = dayHr ?? hr
-        } else {
-            effortHR = (dayHr ?? hr).filter { sample in
-                !WorkoutDetector.excludesFromEffort(sample.ts,
-                                                    rejectedSpans: rejectedWhoop4HRSpans,
-                                                    retainedWorkouts: workouts)
-            }
-        }
-        let strain = StrainScorer.strain(effortHR, maxHR: effMaxHR, restingHR: restForStrain,
+        let strain = StrainScorer.strain(dayHr ?? hr, maxHR: effMaxHR, restingHR: restForStrain,
                                          sex: profile.sex)
+        let workouts: [ExerciseSession] = []
 
         // ── Steps (APPROXIMATE) ───────────────────────────────────────────────
         // step_motion_counter@57 is a CUMULATIVE u16 running counter (it climbs while you move, holds

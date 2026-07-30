@@ -89,19 +89,6 @@ public enum WorkoutDetector {
     /// between two separate workouts is gated out by the HR check, not by this window.
     public static let bridgeGapS: Double = 300.0
 
-    // WHOOP 4.0's v24 historical record can occasionally retain a plausible-looking optical HR plateau
-    // after pulse lock is lost (for example, contact/motion artefact). The frame is CRC-valid and
-    // its HR byte remains inside the physiological 30...220 range, so transport and scalar sanity checks
-    // cannot distinguish it from exercise. R-R intervals are an independent beat-timing lane in the same
-    // record. Use them only as a decisive CONTRADICTION gate: sparse/absent/noisy R-R never rejects a bout.
-    public static let rrContradictionMinSeconds = 8
-    public static let rrContradictionBPM = 40.0
-    public static let rrContradictionFraction = 0.80
-    /// Effort exclusion is considered elevated only well above baseline. This is deliberately stricter
-    /// than workout detection and is used solely after R-R has already disproved a WHOOP-4 bout.
-    public static let rrContradictionEffortMarginBPM = 30.0
-    public static let rrContradictionEffortDipS = 90
-
     // MARK: - Activity series (activity.py)
 
     public struct ActivityPoint: Equatable, Sendable {
@@ -240,77 +227,6 @@ public enum WorkoutDetector {
         }
         merged.append((curStart, curEnd))
         return merged
-    }
-
-    /// True only when enough per-second R-R evidence consistently says the reported HR is much too high.
-    /// This is intentionally family-agnostic pure math; the app invokes it only for WHOOP 4 historical HR.
-    /// Multiple intervals in one second are averaged before conversion (`60_000 / meanRR`), so a high beat
-    /// count cannot overweight one timestamp. Invalid intervals are ignored rather than treated as evidence.
-    public static func rrContradictsElevatedHR(_ session: ExerciseSession,
-                                               hr: [HRSample],
-                                               rr: [RRInterval]) -> Bool {
-        let windowHR = Dictionary(
-            hr.lazy.filter { $0.ts >= session.start && $0.ts <= session.end }.map { ($0.ts, $0.bpm) },
-            uniquingKeysWith: { _, latest in latest })
-        if windowHR.isEmpty { return false }
-
-        var rrBySecond: [Int: (sum: Int, count: Int)] = [:]
-        for beat in rr where beat.ts >= session.start && beat.ts <= session.end
-            && beat.rrMs >= 250 && beat.rrMs <= 3_000 {
-            let old = rrBySecond[beat.ts] ?? (0, 0)
-            rrBySecond[beat.ts] = (old.sum + beat.rrMs, old.count + 1)
-        }
-
-        var compared = 0
-        var contradictions = 0
-        for (ts, values) in rrBySecond {
-            guard values.count > 0, let bpm = windowHR[ts] else { continue }
-            let rrBPM = 60_000.0 / (Double(values.sum) / Double(values.count))
-            compared += 1
-            if Double(bpm) - rrBPM >= rrContradictionBPM { contradictions += 1 }
-        }
-        guard compared >= rrContradictionMinSeconds else { return false }
-        return Double(contradictions) / Double(compared) >= rrContradictionFraction
-    }
-
-    /// Expand a rejected motion-qualified bout to its surrounding elevated-HR episode for Effort removal.
-    /// Uses a conservative baseline+30 floor: short optical dropouts stay inside the same episode, while
-    /// 90 seconds below that floor stops expansion. Returns the original bout if no elevated span overlaps.
-    public static func elevatedSpan(containing session: ExerciseSession,
-                                    hr: [HRSample], restingHR: Double) -> (start: Int, end: Int) {
-        let floor = restingHR + rrContradictionEffortMarginBPM
-        let sorted = cleanHR(hr)
-        var spans: [(start: Int, end: Int)] = []
-        var start: Int?
-        var end = 0
-        var dipStart: Int?
-        func close() {
-            if let start { spans.append((start, end)) }
-            start = nil
-            dipStart = nil
-        }
-        for sample in sorted {
-            if sample.bpm > floor {
-                if start == nil { start = sample.ts }
-                end = sample.ts
-                dipStart = nil
-            } else if start != nil {
-                if dipStart == nil { dipStart = sample.ts }
-                if let dipStart, sample.ts - dipStart > rrContradictionEffortDipS { close() }
-            }
-        }
-        close()
-        return spans.first { $0.start <= session.end && session.start <= $0.end }
-            ?? (session.start, session.end)
-    }
-
-    /// Exclude a disproved optical-HR episode unless the timestamp belongs to a separately retained workout.
-    /// This prevents the tolerated 90-second optical dip from consuming an adjacent legitimate bout.
-    public static func excludesFromEffort(_ ts: Int,
-                                          rejectedSpans: [(start: Int, end: Int)],
-                                          retainedWorkouts: [ExerciseSession]) -> Bool {
-        rejectedSpans.contains { ts >= $0.start && ts <= $0.end }
-            && !retainedWorkouts.contains { ts >= $0.start && ts <= $0.end }
     }
 
     // MARK: - Public API
