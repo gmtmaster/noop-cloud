@@ -512,16 +512,8 @@ public enum AnalyticsEngine {
         // when no deviation is available (no baseline yet / not worn) so the UI shows nothing.
         let skinTempRelative = RecoveryScorer.skinTempRelative(deviationC: skinTempDevC)
 
-        // ── Strain / "Effort" (cardiovascular load over the full CALENDAR day) ──
-        // Integrate dayHr ([localMidnight, localMidnight+24h), clamped to `now` for today) when the
-        // caller supplies it, so Effort covers the WHOLE day — an afternoon/evening workout lands in
-        // today's Effort same-day instead of being cut off at the night window's ≈ noon bound, and
-        // the prior evening's HR (the night window's −30h tail) no longer bleeds in. Falls back to the
-        // night `hr` for pure-function callers/tests.
         let effMaxHR: Double? = maxHROverride ?? (profile.age > 0 ? StrainScorer.tanakaHRmax(age: profile.age) : nil)
         let restForStrain = restingHRDaily.map(Double.init) ?? StrainScorer.defaultRestingHR
-        let strain = StrainScorer.strain(dayHr ?? hr, maxHR: effMaxHR, restingHR: restForStrain,
-                                         sex: profile.sex)
 
         // ── Workouts ──────────────────────────────────────────────────────────
         // Detect over the full CALENDAR day (dayHr/dayGravity) when the caller supplies it, so a
@@ -529,12 +521,45 @@ public enum AnalyticsEngine {
         // a later pass re-reads it through the next night window (which ends at ≈ noon). Falls back
         // to the night window for pure-function callers/tests. restingHR still comes from the night's
         // sleep sessions; nil → WorkoutDetector derives it from the day's own HR floor.
-        let workouts = WorkoutDetector.detect(
+        let detectedWorkouts = WorkoutDetector.detect(
             hr: dayHr ?? hr, gravity: dayGravity ?? gravity,
             restingHR: restingHRDaily.map(Double.init),
             maxHR: maxHROverride,
             age: profile.age > 0 ? profile.age : nil,
             profile: profile)
+
+        // WHOOP 4 only: a CRC-valid v24 record can carry a sustained but false optical-HR plateau while
+        // its independent beat timings remain at resting rate. Drop only bouts with decisive R-R
+        // contradiction; absent/sparse/noisy R-R keeps the historical detector result. WHOOP 5/MG never
+        // enters this branch, preserving its established v18 path exactly.
+        let rejectedWhoop4Bouts = skinTempFamily == .whoop4
+            ? detectedWorkouts.filter { WorkoutDetector.rrContradictsElevatedHR($0, hr: dayHr ?? hr, rr: rr) }
+            : []
+        let workouts = rejectedWhoop4Bouts.isEmpty ? detectedWorkouts : detectedWorkouts.filter { bout in
+            !rejectedWhoop4Bouts.contains { $0.start == bout.start && $0.end == bout.end }
+        }
+
+        let rejectedWhoop4HRSpans = rejectedWhoop4Bouts.map {
+            WorkoutDetector.elevatedSpan(containing: $0, hr: dayHr ?? hr, restingHR: restForStrain)
+        }
+
+        // ── Strain / "Effort" (cardiovascular load over the full CALENDAR day) ──
+        // Integrate the whole calendar day. For the WHOOP-4 contradiction case above, exclude exactly the
+        // disproved elevated-HR episode from Effort too; otherwise deleting the workout row would leave the same bad
+        // optical plateau inflating the day score. Every other device/family and every uncontradicted high-HR
+        // event uses the original sample array unchanged.
+        let effortHR: [HRSample]
+        if rejectedWhoop4Bouts.isEmpty {
+            effortHR = dayHr ?? hr
+        } else {
+            effortHR = (dayHr ?? hr).filter { sample in
+                !WorkoutDetector.excludesFromEffort(sample.ts,
+                                                    rejectedSpans: rejectedWhoop4HRSpans,
+                                                    retainedWorkouts: workouts)
+            }
+        }
+        let strain = StrainScorer.strain(effortHR, maxHR: effMaxHR, restingHR: restForStrain,
+                                         sex: profile.sex)
 
         // ── Steps (APPROXIMATE) ───────────────────────────────────────────────
         // step_motion_counter@57 is a CUMULATIVE u16 running counter (it climbs while you move, holds
