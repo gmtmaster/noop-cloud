@@ -55,6 +55,8 @@ struct TrendsView: View {
     /// the Today Rest score (#732). sleep_performance is a metricSeries, not a DailyMetric field, so load
     /// it once (mirroring TodayView's restScore source) and key by day for `resolve` below.
     @State private var sleepPerfByDay: [String: Double] = [:]
+    @State private var sleepSessions: [CachedSleepSession] = []
+    @State private var habitualMidsleepSec: Int?
 
     // #710 — browse previous weeks in the Week-in-review digest. 0 = the week containing today; each step
     // back is one Mon–Sun week earlier. Clamped so it never runs past the earliest day we hold (see
@@ -251,7 +253,10 @@ struct TrendsView: View {
                 // Rest = the sleep_performance composite — the same number the Today Rest score shows
                 // (#732); see sleepPerfByDay. resolve() still does the windowing/widening.
                 let rest = resolve { sleepPerfByDay[$0.day] }
-                let sleepDebt = resolve { repo.importedSleep[$0.day]?.debtMin }
+                let localDebt = Dictionary(sleepDebtHistory.compactMap { point in
+                    point.carriedDebtMinutes.map { (point.day, $0) }
+                }, uniquingKeysWith: { _, last in last })
+                let sleepDebt = resolve { localDebt[$0.day] }
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                     // The main card list ripples in once on appear (Reduce-Motion safe).
                     Group {
@@ -288,6 +293,8 @@ struct TrendsView: View {
         .task(id: repo.days.count) {
             let s = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
             sleepPerfByDay = Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
+            sleepSessions = await repo.allSleepSessions()
+            habitualMidsleepSec = await repo.habitualMidsleepSec()
         }
     }
 
@@ -577,10 +584,43 @@ struct TrendsView: View {
     /// and Explore use. Falls back to the metrics Explorer if the key isn't in the catalog.
     @ViewBuilder
     private func metricDetail(_ key: String) -> some View {
-        if let m = MetricCatalog.all.first(where: { $0.key == key }) {
+        if key == "sleep_debt_min" {
+            SleepDebtDetailView(history: sleepDebtHistory)
+        } else if let m = MetricCatalog.all.first(where: { $0.key == key }) {
             MetricDetailView(metric: m)
         } else {
             MetricExplorerView()
+        }
+    }
+
+    private var sleepDebtHistory: [SleepDebtHistoryPoint] {
+        let parts = sleepSessionParts
+        return SleepNeedEngine.history(repo.days.map { day in
+            let split = parts[day.day]
+            return SleepNeedNightInput(day: day.day,
+                mainSleepMinutes: split?.main ?? day.totalSleepMin,
+                napSleepMinutes: split?.naps ?? 0, strain: day.strain, efficiency: day.efficiency,
+                importedWhoopNeedMinutes: repo.importedSleep[day.day]?.needMin,
+                importedWhoopDebtMinutes: repo.importedSleep[day.day]?.debtMin)
+        })
+    }
+
+    private var sleepSessionParts: [String: (main: Double, naps: Double)] {
+        let grouped = Dictionary(grouping: sleepSessions) {
+            Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
+        }
+        return grouped.reduce(into: [:]) { result, pair in
+            let sessions = pair.value.sorted { $0.effectiveStartTs < $1.effectiveStartTs }
+            let main = Set(SleepView.mainNightGroup(sessions, habitualMidsleepSec: habitualMidsleepSec).map(\.startTs))
+            func asleep(_ session: CachedSleepSession) -> Double {
+                let duration = Double(max(0, session.endTs - session.effectiveStartTs)) / 60
+                guard let raw = session.efficiency else { return duration }
+                return duration * min(max(raw > 1 ? raw / 100 : raw, 0), 1)
+            }
+            result[pair.key] = sessions.reduce(into: (main: 0, naps: 0)) { totals, session in
+                if main.contains(session.startTs) { totals.main += asleep(session) }
+                else { totals.naps += asleep(session) }
+            }
         }
     }
 
@@ -949,6 +989,119 @@ private struct RoundedBarTrendChart: View {
         guard total > 1 else { return 1 }
         let progress = Double(index) / Double(total - 1)
         return 0.35 + progress * 0.65
+    }
+}
+
+private struct SleepDebtDetailView: View {
+    let history: [SleepDebtHistoryPoint]
+
+    private static let parser: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private var plotted: [TrendPoint] {
+        history.compactMap { point in
+            guard let debt = point.carriedDebtMinutes, let date = Self.parser.date(from: point.day) else { return nil }
+            return TrendPoint(date: date, value: debt)
+        }
+    }
+    private var latest: SleepDebtHistoryPoint? { history.last { $0.carriedDebtMinutes != nil } }
+    private var recentPlotted: [TrendPoint] { Array(plotted.suffix(30)) }
+    private var chartUpperBound: Double {
+        let values = recentPlotted.map(\.value).sorted()
+        guard values.count >= 5 else { return max(60, values.last ?? 60) }
+        let p90 = values[Int((Double(values.count - 1) * 0.90).rounded(.down))]
+        return max(60, p90 * 1.15)
+    }
+    private var chartPoints: [TrendPoint] {
+        recentPlotted.map { TrendPoint(date: $0.date, value: min($0.value, chartUpperBound)) }
+    }
+    private var chartClipsOutlier: Bool {
+        recentPlotted.contains { $0.value > chartUpperBound }
+    }
+
+    var body: some View {
+        ScreenScaffold(title: "Sleep Debt", subtitle: "A NOOP estimate from your sleep history.", lazy: true) {
+            if let latest {
+                NoopCard(tint: StrandPalette.statusWarning) {
+                    VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                        Text("CURRENT ESTIMATE").strandOverline()
+                        Text(duration(latest.carriedDebtMinutes ?? 0))
+                            .font(StrandFont.display(48)).foregroundStyle(StrandPalette.textPrimary)
+                        Text("Surplus sleep repays carried debt gradually. Only the amount added to one night's recommendation is capped. This is an estimate, not a diagnosis or a proprietary WHOOP value.")
+                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        Text("Confidence: \(confidence(latest.breakdown.confidence))")
+                            .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    }
+                }
+                if plotted.count >= 2 {
+                    ChartCard(title: "Recent carried debt", trailing: duration(latest.carriedDebtMinutes ?? 0),
+                              height: NoopMetrics.chartHeight, tint: StrandPalette.statusWarning,
+                              chart: {
+                        RoundedBarTrendChart(points: chartPoints, valueRange: 0...chartUpperBound,
+                            tint: StrandPalette.statusWarning, valueFormat: duration,
+                            accessibilityLabel: String(localized: "Carried sleep debt"))
+                    }, footer: {
+                        if chartClipsOutlier {
+                            Text("The chart scale limits isolated outliers; exact debt values are shown above and below.")
+                                .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                        }
+                    })
+                }
+                recentChanges
+            } else {
+                NoopCard {
+                    VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+                        Text("Sleep history needed").font(StrandFont.headline)
+                        Text("Record at least one completed main sleep. Missing nights stay missing and are never treated as zero sleep.")
+                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var recentChanges: some View {
+        let changes = history.filter {
+            ($0.nightlyDeficitMinutes ?? 0) > 0 || ($0.repaymentMinutes ?? 0) > 0 || $0.breakdown.napCreditMinutes > 0
+        }.suffix(10).reversed()
+        return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("What changed it", overline: "Recent nights")
+            NoopCard(padding: 0) {
+                VStack(spacing: 0) {
+                    ForEach(Array(changes), id: \.day) { point in
+                        HStack(spacing: NoopMetrics.space3) {
+                            Text(point.day).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                if let deficit = point.nightlyDeficitMinutes, deficit > 0 {
+                                    Text("Added \(duration(deficit))")
+                                } else if let repayment = point.repaymentMinutes, repayment > 0 {
+                                    Text("Repaid \(duration(repayment))")
+                                } else {
+                                    Text("Nap reduced tonight's need by \(duration(point.breakdown.napCreditMinutes))")
+                                }
+                            }.font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                            Spacer()
+                            Text(point.carriedDebtMinutes.map(duration) ?? "—")
+                                .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        }.padding(NoopMetrics.cardInnerPadding)
+                        if point.day != changes.last?.day { Divider().overlay(StrandPalette.hairline) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func duration(_ minutes: Double) -> String {
+        let rounded = max(0, Int(minutes.rounded()))
+        return rounded >= 60 ? "\(rounded / 60)h \(rounded % 60)m" : "\(rounded)m"
+    }
+    private func confidence(_ value: SleepNeedConfidence) -> String {
+        switch value { case .fallback: return String(localized: "Fallback"); case .limited: return String(localized: "Limited"); case .established: return String(localized: "Established") }
     }
 }
 

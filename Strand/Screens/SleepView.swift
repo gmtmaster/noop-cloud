@@ -100,6 +100,7 @@ struct SleepView: View {
     /// WHOOP-style stage highlight: tapping a stage row under the timeline lights that stage up on the
     /// chart and recedes the rest (tap again to clear). Display-only selection state. (ryanAtriumAi #988)
     @State private var selectedStage: SleepStage? = nil
+    @State private var showSleepNeedBreakdown = false
 
     /// Sleeping heart-rate for the displayed night (1-min buckets), for the WHOOP-style HR chart above
     /// the stage rows. Loaded once per night via `.task(id:)` on the stage card. (ryanAtriumAi #988)
@@ -137,11 +138,12 @@ struct SleepView: View {
                         if let sleepUndo { sleepUndoBanner(sleepUndo) }
                         restHero(resolved).staggeredAppear(index: 0)
                         hero(resolved).staggeredAppear(index: 1)
-                        sleepDebtLedger(resolved).staggeredAppear(index: 2)
-                        metricGrid(resolved).staggeredAppear(index: 3)
-                        stagesVsTypical(resolved).staggeredAppear(index: 4)
-                        durationTrend(resolved).staggeredAppear(index: 5)
-                        SleepMarkCard().staggeredAppear(index: 6)
+                        sleepNeedCard(resolved).staggeredAppear(index: 2)
+                        sleepDebtLedger(resolved).staggeredAppear(index: 3)
+                        metricGrid(resolved).staggeredAppear(index: 4)
+                        stagesVsTypical(resolved).staggeredAppear(index: 5)
+                        durationTrend(resolved).staggeredAppear(index: 6)
+                        SleepMarkCard().staggeredAppear(index: 7)
                     }
                 } else {
                     emptyState
@@ -342,7 +344,7 @@ struct SleepView: View {
     private func restHero(_ model: SleepModel) -> some View {
         let score = model.performance.latest
         let asleep = model.night.stages.asleep
-        let need = sleepNeedMin
+        let need = model.sleepNeed.totalSleepNeedMinutes
         let sleepDelta = asleep - need
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader("Sleep performance", overline: "Last night", trailing: String(localized: "Rest"))
@@ -374,6 +376,55 @@ struct SleepView: View {
                 }
             }
         }
+    }
+
+    private func sleepNeedCard(_ model: SleepModel) -> some View {
+        let need = model.sleepNeed
+        let actual = model.night.stages.asleep
+        let performance = need.totalSleepNeedMinutes > 0 ? actual / need.totalSleepNeedMinutes * 100 : 0
+        return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Sleep Need", overline: "NOOP estimate", trailing: confidenceLabel(need.confidence))
+            NoopCard(tint: StrandPalette.restColor) {
+                VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                    HStack(spacing: NoopMetrics.space2) {
+                        SleepHeroStat(label: "Slept", value: durationText(actual), tint: StrandPalette.restBright)
+                        SleepHeroStat(label: "Need", value: durationText(need.totalSleepNeedMinutes), tint: StrandPalette.restColor)
+                        SleepHeroStat(label: "Met", value: "\(Int(performance.rounded()))%", tint: performance >= 100 ? StrandPalette.statusPositive : StrandPalette.statusWarning)
+                    }
+                    if let timeInBed = need.recommendedTimeInBedMinutes {
+                        Text("Recommended time in bed: \(durationText(timeInBed))")
+                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                    }
+                    Button { withAnimation { showSleepNeedBreakdown.toggle() } } label: {
+                        Label(showSleepNeedBreakdown ? "Hide calculation" : "How this is calculated",
+                              systemImage: showSleepNeedBreakdown ? "chevron.up" : "chevron.down")
+                            .font(StrandFont.subhead)
+                    }.buttonStyle(.plain).foregroundStyle(StrandPalette.accent)
+                    if showSleepNeedBreakdown {
+                        Divider().overlay(StrandPalette.hairline)
+                        sleepNeedBreakdownRows(need)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func sleepNeedBreakdownRows(_ need: SleepNeedBreakdown) -> some View {
+        sleepNeedRow("Baseline", need.baselineMinutes, sign: nil)
+        if need.debtAdjustmentMinutes > 0 { sleepNeedRow("Recent sleep debt", need.debtAdjustmentMinutes, sign: "+") }
+        if need.strainAdjustmentMinutes > 0 { sleepNeedRow("Day strain", need.strainAdjustmentMinutes, sign: "+") }
+        if need.napCreditMinutes > 0 { sleepNeedRow("Nap credit", need.napCreditMinutes, sign: "−") }
+        Text("NOOP Sleep Need is a local estimate, not WHOOP's proprietary calculation.")
+            .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+    }
+
+    private func sleepNeedRow(_ label: LocalizedStringKey, _ minutes: Double, sign: String?) -> some View {
+        HStack { Text(label); Spacer(); Text("\(sign ?? "")\(durationText(minutes))") }
+            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+    }
+
+    private func confidenceLabel(_ confidence: SleepNeedConfidence) -> String {
+        switch confidence { case .fallback: return String(localized: "Fallback"); case .limited: return String(localized: "Limited"); case .established: return String(localized: "Established") }
     }
 
     @ViewBuilder
@@ -1735,6 +1786,7 @@ struct SleepView: View {
             loaded: repo.loaded,
             daysCount: repo.days.count,
             sleepsCount: repo.sleeps.count,
+            allSessionsCount: allSessions.count,
             firstDay: repo.days.first?.day,
             lastDay: repo.days.last?.day,
             lastDayUpdated: repo.days.last,
@@ -1776,6 +1828,8 @@ struct SleepView: View {
             restorative: restorativeSeries,
             respiratory: respiratorySeries,
             sleepDebt: sleepDebtSeries,
+            sleepNeed: currentSleepNeed,
+            sleepDebtHistory: sleepNeedHistory,
             typicalTotalMin: typicalTotalMin,
             typicalDeepMin: typicalStageMin(\.deepMin),
             typicalRemMin: typicalStageMin(\.remMin),
@@ -1784,14 +1838,18 @@ struct SleepView: View {
             sleepDebtLedger: debtLedger)
     }
 
-    /// The rolling 14-night sleep-debt ledger from the cached daily metrics. Uses the
-    /// SAME personal sleep need the tiles use (`sleepNeedMin`, ≥ 7.5 h, the per-user
-    /// override over the 8 h default), measured against each night's `totalSleepMin`.
-    /// Skips nights with no sleep (the analytics function does the skip). (#242)
+    /// Compatibility projection for the existing ledger card. Its balance and nightly deltas now come
+    /// from the shared NOOP engine; missing nights remain absent instead of becoming artificial debt.
     private var debtLedger: SleepDebtLedger {
-        SleepDebt.ledger(
-            series: repo.days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) },
-            needHours: sleepNeedMin / 60.0)
+        let points = sleepNeedHistory.compactMap { point -> SleepDebtNight? in
+            guard let actual = point.actualMainSleepMinutes,
+                  let deficit = point.nightlyDeficitMinutes,
+                  let repayment = point.repaymentMinutes else { return nil }
+            return SleepDebtNight(day: point.day, sleptMin: actual, deltaMin: repayment - deficit)
+        }
+        let recent = Array(points.suffix(SleepDebt.defaultWindowNights))
+        return SleepDebtLedger(balanceMin: -(sleepNeedHistory.compactMap(\.carriedDebtMinutes).last ?? 0),
+                               nights: recent, needMin: currentSleepNeed.totalSleepNeedMinutes)
     }
 
     // MARK: - Derived model
@@ -2163,17 +2221,13 @@ struct SleepView: View {
         return (scores.last, mean(scores), scores)
     }
 
-    /// Hours vs needed % = asleep / need (can exceed 100 on a long night). The imported
-    /// sleep_need_min wins per day; else the APPROXIMATE personal-mean need.
+    /// Hours vs needed % = main sleep / the date's no-look-ahead NOOP Sleep Need.
     private var hoursVsNeededSeries: Metric {
-        let imported = repo.importedSleep
-        let fallbackNeed = sleepNeedMin
-        return metric { d in
-            guard let asleep = d.totalSleepMin, asleep > 0 else { return nil }
-            let need = imported[d.day]?.needMin ?? fallbackNeed
-            guard need > 0 else { return nil }
-            return asleep / need * 100
+        let series = sleepNeedHistory.compactMap { point -> Double? in
+            guard let actual = point.actualMainSleepMinutes, point.breakdown.totalSleepNeedMinutes > 0 else { return nil }
+            return actual / point.breakdown.totalSleepNeedMinutes * 100
         }
+        return (series.last, mean(series), series)
     }
 
     /// Restorative % = (deep + REM) / asleep — the share of the night that does the work.
@@ -2189,23 +2243,51 @@ struct SleepView: View {
         metric { $0.respRateBpm }
     }
 
-    /// Sleep debt (minutes): the imported sleep_debt_min when the export carried it; else
-    /// the APPROXIMATE per-night need − asleep, floored at 0 (no "credit").
+    /// Carried NOOP sleep debt. Imported WHOOP debt remains an untouched reference in each history point.
     private var sleepDebtSeries: Metric {
-        let imported = repo.importedSleep
-        let need = sleepNeedMin
-        let series = repo.days.compactMap { d -> Double? in
-            if let debt = imported[d.day]?.debtMin { return debt }   // minutes, export-verbatim
-            guard let asleep = d.totalSleepMin, asleep > 0, need > 0 else { return nil }
-            return Swift.max(0, need - asleep)   // APPROXIMATE fallback
-        }
+        let series = sleepNeedHistory.compactMap(\.carriedDebtMinutes)
         return (series.last, mean(series), series)
     }
 
-    /// The personal sleep need (minutes): mean asleep, but never below a 7.5h floor so
-    /// debt/performance read sensibly even for a chronically short sleeper.
-    private var sleepNeedMin: Double {
-        Swift.max(450, typicalTotalMin ?? 450)   // 450 min = 7.5h
+    private var sleepNeedHistory: [SleepDebtHistoryPoint] {
+        let sessionParts = sleepNeedSessionParts
+        return SleepNeedEngine.history(repo.days.map { day in
+            let parts = sessionParts[day.day]
+            return SleepNeedNightInput(day: day.day,
+                mainSleepMinutes: parts?.main ?? day.totalSleepMin,
+                napSleepMinutes: parts?.naps ?? 0, strain: day.strain, efficiency: day.efficiency,
+                importedWhoopNeedMinutes: repo.importedSleep[day.day]?.needMin,
+                importedWhoopDebtMinutes: repo.importedSleep[day.day]?.debtMin)
+        })
+    }
+
+    /// Main/nap split from the same selector used by this screen and sleep analytics. Session duration is
+    /// converted to actual sleep with its stored efficiency; a daily canonical total remains the fallback
+    /// while the full session list is loading or for imported rows without session detail.
+    private var sleepNeedSessionParts: [String: (main: Double, naps: Double)] {
+        guard !allSessions.isEmpty else { return [:] }
+        let grouped = Dictionary(grouping: allSessions) {
+            Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
+        }
+        return grouped.reduce(into: [:]) { result, pair in
+            let sessions = pair.value.sorted { $0.effectiveStartTs < $1.effectiveStartTs }
+            let main = Set(SleepView.mainNightGroup(sessions, habitualMidsleepSec: habitualMidsleepSec).map(\.startTs))
+            func asleep(_ session: CachedSleepSession) -> Double {
+                let duration = Double(max(0, session.endTs - session.effectiveStartTs)) / 60
+                guard let raw = session.efficiency else { return duration }
+                return duration * min(max(raw > 1 ? raw / 100 : raw, 0), 1)
+            }
+            result[pair.key] = sessions.reduce(into: (main: 0, naps: 0)) { totals, session in
+                if main.contains(session.startTs) { totals.main += asleep(session) }
+                else { totals.naps += asleep(session) }
+            }
+        }
+    }
+
+    private var currentSleepNeed: SleepNeedBreakdown {
+        sleepNeedHistory.last?.breakdown ?? SleepNeedEngine.calculate(
+            priorMainSleepMinutes: [], priorEfficiencies: [], carriedDebtMinutes: 0,
+            strain: repo.days.last?.strain, qualifyingNapSleepMinutes: 0)
     }
 
     // MARK: - Trend points
@@ -2592,6 +2674,7 @@ private struct SleepInputKey: Equatable {
     let loaded: Bool
     let daysCount: Int
     let sleepsCount: Int
+    let allSessionsCount: Int
     let firstDay: String?
     let lastDay: String?
     /// Newest day row (Equatable) — catches in-place edits to the latest day's values.
@@ -2631,6 +2714,8 @@ private struct SleepModel {
     let restorative: Metric
     let respiratory: Metric
     let sleepDebt: Metric
+    let sleepNeed: SleepNeedBreakdown
+    let sleepDebtHistory: [SleepDebtHistoryPoint]
 
     let typicalTotalMin: Double?
     let typicalDeepMin: Double?
