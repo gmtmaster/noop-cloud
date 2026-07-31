@@ -21,8 +21,6 @@ struct StrandiOSApp: App {
     @StateObject private var router = NavRouter()
     @State private var liveActivity = LiveActivityController()
     @Environment(\.scenePhase) private var scenePhase
-    /// Appearance preference (System/Light/Dark). Default follows the OS; the Settings picker writes it.
-    @AppStorage(AppearanceMode.storageKey) private var appearanceRaw = AppearanceMode.system.rawValue
     /// Chart data-colour style (Titanium / Classic throwback). Re-colours gauges + charts.
     @AppStorage(ChartStyle.storageKey) private var chartStyleRaw = ChartStyle.titanium.rawValue
 
@@ -68,7 +66,10 @@ struct StrandiOSApp: App {
                 // v5 L3: the shared stress check-in nudge surface, so the Breathe screen's passive
                 // card observes the SAME instance the central detector (AppModel.evaluateStress) posts to.
                 .environment(\.stressNudgeCenter, model.stressNudgeCenter)
-                .preferredColorScheme(AppearanceMode.resolve(appearanceRaw).colorScheme)
+                // The performance dashboard is intentionally one coherent, dark-only visual system.
+                // Keep the stored appearance preference intact for compatibility, but do not vary the
+                // user-facing iOS interface at runtime.
+                .preferredColorScheme(.dark)
                 .chartStyle(chartStyleRaw)
                 // Dynamic Type now scales the prose/label roles (StrandFont). Cap the upper end so the
                 // fixed-geometry tiles/gauges stay legible at the largest accessibility sizes rather than

@@ -45,6 +45,35 @@ struct TrendsView: View {
 
     @State private var range: Range = .quarter
 
+    private enum TrendMetric: String, CaseIterable, Identifiable {
+        case strain, recovery, sleep, hrv, restingHR
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .strain: return String(localized: "Strain")
+            case .recovery: return String(localized: "Recovery")
+            case .sleep: return String(localized: "Sleep")
+            case .hrv: return "HRV"
+            case .restingHR: return "RHR"
+            }
+        }
+    }
+
+    private enum TrendMode: String, CaseIterable, Identifiable {
+        case summary, bars, line
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .summary: return String(localized: "SUMMARY")
+            case .bars: return String(localized: "BARS")
+            case .line: return String(localized: "LINE")
+            }
+        }
+    }
+
+    @State private var selectedMetric: TrendMetric = .strain
+    @State private var trendMode: TrendMode = .summary
+
     // #436 — shareable offline trends report (PDF over a date range). The sheet owns its
     // own range picker; this just presents it with the loaded history.
     @State private var showingReport = false
@@ -257,29 +286,8 @@ struct TrendsView: View {
                     point.carriedDebtMinutes.map { (point.day, $0) }
                 }, uniquingKeysWith: { _, last in last })
                 let sleepDebt = resolve { localDebt[$0.day] }
-                VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
-                    // The main card list ripples in once on appear (Reduce-Motion safe).
-                    Group {
-                        // Week-in-review digest (#208) with prev/next week browsing (#710) — self-hides
-                        // only when NO week in history has data. Past weeks render in the same format.
-                        weeklyDigestNav
-                            .staggeredAppear(index: 0)
-                        // The Charge / Effort / Rest trio, presented in NOOP's pip language.
-                        weekInReview(charge: recovery, effort: strain, rest: rest)
-                            .staggeredAppear(index: 1)
-                        rangeBar(recovery: recovery)
-                            .staggeredAppear(index: 2)
-                        heroRecovery(recovery: recovery)
-                            .staggeredAppear(index: 3)
-                        smallMultiples(hrv: hrv, rhr: rhr, respiratory: respiratory, skinTemp: skinTemp,
-                                       strain: strain, rest: rest, sleepDebt: sleepDebt)
-                            .staggeredAppear(index: 4)
-                        yearStrip
-                            .staggeredAppear(index: 5)
-                        exportReportRow
-                            .staggeredAppear(index: 6)
-                    }
-                }
+                performanceDashboard(recovery: recovery, strain: strain, rest: rest, hrv: hrv, rhr: rhr,
+                                     respiratory: respiratory, skinTemp: skinTemp, sleepDebt: sleepDebt)
             }
         }
         // #436 — present the offline trends-report exporter (range picker + PDF export).
@@ -295,6 +303,293 @@ struct TrendsView: View {
             sleepPerfByDay = Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
             sleepSessions = await repo.allSleepSessions()
             habitualMidsleepSec = await repo.habitualMidsleepSec()
+        }
+    }
+
+    // MARK: - WHOOP-inspired metric explorer
+
+    private func performanceDashboard(
+        recovery: ResolvedMetric, strain: ResolvedMetric, rest: ResolvedMetric,
+        hrv: ResolvedMetric, rhr: ResolvedMetric, respiratory: ResolvedMetric,
+        skinTemp: ResolvedMetric, sleepDebt: ResolvedMetric
+    ) -> some View {
+        let selected = selectedResolved(recovery: recovery, strain: strain, rest: rest, hrv: hrv, rhr: rhr)
+        return VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
+            trendDateRangeHeader
+            metricTabs
+            SegmentedPillControl(TrendMode.allCases, selection: $trendMode) { $0.label }
+
+            Group {
+                switch trendMode {
+                case .summary:
+                    trendSummary(metric: selectedMetric, resolved: selected)
+                case .bars:
+                    trendChart(metric: selectedMetric, resolved: selected, bars: true)
+                case .line:
+                    trendChart(metric: selectedMetric, resolved: selected, bars: false)
+                }
+            }
+            .animation(StrandMotion.interactive, value: trendMode)
+
+            trendStatistics(metric: selectedMetric, resolved: selected)
+
+            // Keep every previously-supported signal one tap away, below the focused explorer.
+            smallMultiples(hrv: hrv, rhr: rhr, respiratory: respiratory, skinTemp: skinTemp,
+                           strain: strain, rest: rest, sleepDebt: sleepDebt)
+            yearStrip
+            exportReportRow
+        }
+    }
+
+    private var trendDateRangeHeader: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button { stepRange(-1) } label: {
+                    Image(systemName: "chevron.left").frame(width: 32, height: 32)
+                }
+                Spacer()
+                Text(rangeSubtitle.uppercased())
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .tracking(1.2)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Spacer()
+                Button { stepRange(1) } label: {
+                    Image(systemName: "chevron.right").frame(width: 32, height: 32)
+                }
+            }
+            .foregroundStyle(StrandPalette.textSecondary)
+            .background(StrandPalette.surfaceInset, in: Capsule())
+            SegmentedPillControl(Range.allCases, selection: $range) { $0.label }
+        }
+    }
+
+    private func stepRange(_ delta: Int) {
+        guard let index = Range.allCases.firstIndex(of: range) else { return }
+        let next = min(Range.allCases.count - 1, max(0, index + delta))
+        withAnimation(StrandMotion.interactive) { range = Range.allCases[next] }
+    }
+
+    private var metricTabs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 20) {
+                ForEach(TrendMetric.allCases) { metric in
+                    Button {
+                        withAnimation(StrandMotion.interactive) { selectedMetric = metric }
+                    } label: {
+                        VStack(spacing: 7) {
+                            Text(metric.title.uppercased())
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .tracking(0.8)
+                            Capsule()
+                                .fill(selectedMetric == metric ? trendTint(metric) : Color.clear)
+                                .frame(height: 2)
+                        }
+                        .foregroundStyle(selectedMetric == metric ? StrandPalette.textPrimary : StrandPalette.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selectedMetric == metric ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+    }
+
+    private func selectedResolved(recovery: ResolvedMetric, strain: ResolvedMetric, rest: ResolvedMetric,
+                                  hrv: ResolvedMetric, rhr: ResolvedMetric) -> ResolvedMetric {
+        switch selectedMetric {
+        case .strain: return strain
+        case .recovery: return recovery
+        case .sleep: return rest
+        case .hrv: return hrv
+        case .restingHR: return rhr
+        }
+    }
+
+    private func trendTint(_ metric: TrendMetric) -> Color {
+        switch metric {
+        case .strain: return StrandPalette.strain066
+        case .recovery: return StrandPalette.recovery100
+        case .sleep: return StrandPalette.restColor
+        case .hrv: return StrandPalette.metricPurple
+        case .restingHR: return StrandPalette.metricRose
+        }
+    }
+
+    private func trendRange(_ metric: TrendMetric, points: [TrendPoint]) -> ClosedRange<Double> {
+        switch metric {
+        case .strain, .recovery, .sleep: return 0...100
+        case .hrv: return valueRange(points, fallback: 20...120)
+        case .restingHR: return valueRange(points, fallback: 40...80)
+        }
+    }
+
+    private func trendValue(_ metric: TrendMetric, _ value: Double) -> String {
+        switch metric {
+        case .strain: return UnitFormatter.effortDisplay(value, scale: effortScale)
+        case .recovery, .sleep: return "\(Int(value.rounded()))%"
+        case .hrv: return "\(Int(value.rounded())) ms"
+        case .restingHR: return "\(Int(value.rounded())) bpm"
+        }
+    }
+
+    private func trendSummary(metric: TrendMetric, resolved: ResolvedMetric) -> some View {
+        let latest = resolved.points.last?.value
+        let tint = trendTint(metric)
+        let maximum: Double = metric == .strain ? 100 : (metric == .hrv ? max(120, resolved.points.map(\.value).max() ?? 120) : 100)
+        let fraction = min(1, max(0, (latest ?? 0) / maximum))
+        return VStack(spacing: NoopMetrics.gap) {
+            NavigationLink { metricDetail(metricKey(metric)) } label: {
+                ZStack {
+                    Circle().stroke(StrandPalette.surfaceInset, lineWidth: 14)
+                    Circle().trim(from: 0, to: fraction)
+                        .stroke(tint, style: StrokeStyle(lineWidth: 14, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    VStack(spacing: 5) {
+                        Text(metric.title.uppercased()).strandOverline()
+                        Text(latest.map { trendValue(metric, $0) } ?? "—")
+                            .font(.system(size: 46, weight: .bold, design: .rounded))
+                            .foregroundStyle(StrandPalette.textPrimary)
+                            .minimumScaleFactor(0.72)
+                        if metric == .strain, let count = repo.today?.exerciseCount {
+                            Text("\(count) \(count == 1 ? "ACTIVITY" : "ACTIVITIES")")
+                                .font(StrandFont.captionNumber).foregroundStyle(tint)
+                                .padding(.horizontal, 11).padding(.vertical, 5)
+                                .overlay(Capsule().stroke(tint.opacity(0.8), lineWidth: 1))
+                        }
+                    }
+                }
+                .frame(width: 230, height: 230)
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(LiquidPressStyle())
+
+            NoopCard(tint: tint) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: trendSymbol(metric)).foregroundStyle(tint)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(trendContextTitle(metric, latest: latest))
+                            .font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                        Text(trendContextDetail(metric, points: resolved.points))
+                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    private func trendChart(metric: TrendMetric, resolved: ResolvedMetric, bars: Bool) -> some View {
+        let points = resolved.points
+        let tint = trendTint(metric)
+        let range = trendRange(metric, points: points)
+        return ChartCard(title: LocalizedStringKey(metric.title), subtitle: resolved.caption,
+                         trailing: points.last.map { trendValue(metric, $0.value) },
+                         height: 250, tint: tint) {
+            if points.count >= 2 {
+                if bars {
+                    RoundedBarTrendChart(points: points, valueRange: range, tint: tint,
+                                         valueFormat: { trendValue(metric, $0) },
+                                         accessibilityLabel: String(localized: "\(metric.title) bar chart"))
+                } else {
+                    glowChart(points: points, gradient: gradient(tint), valueRange: range, tip: tint,
+                              valueFormat: { trendValue(metric, $0) },
+                              accessibilityLabel: String(localized: "\(metric.title) line chart"))
+                }
+            } else {
+                sparsePlaceholder
+            }
+        } footer: {
+            ChartFooter([
+                ("Average", mean(points).map { trendValue(metric, $0) } ?? "—"),
+                ("Peak", points.map(\.value).max().map { trendValue(metric, $0) } ?? "—"),
+                ("Days", "\(points.count)")
+            ])
+        }
+    }
+
+    private func trendStatistics(metric: TrendMetric, resolved: ResolvedMetric) -> some View {
+        let points = resolved.points
+        let periodDays = days(for: resolved.effective)
+        let averageHR = periodDays.compactMap(\.restingHr).map(Double.init)
+        let calories = periodDays.compactMap(\.activeKcalEst)
+        return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Statistics", overline: LocalizedStringKey(rangeSubtitle))
+            HStack(spacing: 0) {
+                trendStat("AVERAGE", mean(points).map { trendValue(metric, $0) } ?? "—", trendTint(metric))
+                trendStat(metric == .strain ? "AVG RHR" : "HIGH",
+                          metric == .strain
+                            ? meanValues(averageHR).map { "\(Int($0.rounded())) bpm" } ?? "—"
+                            : points.map(\.value).max().map { trendValue(metric, $0) } ?? "—",
+                          StrandPalette.textSecondary)
+                trendStat(metric == .strain ? "CALORIES" : "LOW",
+                          metric == .strain
+                            ? meanValues(calories).map { "\(Int($0.rounded())) kcal" } ?? "—"
+                            : points.map(\.value).min().map { trendValue(metric, $0) } ?? "—",
+                          StrandPalette.textSecondary)
+            }
+            .padding(.vertical, 14)
+            .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(StrandPalette.hairline, lineWidth: 0.75))
+        }
+    }
+
+    private func trendStat(_ label: LocalizedStringKey, _ value: String, _ tint: Color) -> some View {
+        VStack(spacing: 5) {
+            Text(label).font(StrandFont.overline).foregroundStyle(StrandPalette.textTertiary)
+            Text(value).font(StrandFont.captionNumber).foregroundStyle(tint)
+                .lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func meanValues(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    private func metricKey(_ metric: TrendMetric) -> String {
+        switch metric {
+        case .strain: return "strain"
+        case .recovery: return "recovery"
+        case .sleep: return "sleep_performance"
+        case .hrv: return "hrv"
+        case .restingHR: return "rhr"
+        }
+    }
+
+    private func trendSymbol(_ metric: TrendMetric) -> String {
+        switch metric {
+        case .strain: return "figure.run"
+        case .recovery: return "gauge.with.dots.needle.50percent"
+        case .sleep: return "moon.zzz.fill"
+        case .hrv: return "waveform.path.ecg"
+        case .restingHR: return "heart.fill"
+        }
+    }
+
+    private func trendContextTitle(_ metric: TrendMetric, latest: Double?) -> String {
+        guard let latest else { return String(localized: "More history needed") }
+        switch metric {
+        case .strain:
+            return latest >= 70 ? String(localized: "Strenuous exertion") : String(localized: "Measured exertion")
+        case .recovery: return String(localized: "Recovery context")
+        case .sleep: return String(localized: "Sleep consistency")
+        case .hrv: return String(localized: "HRV trend")
+        case .restingHR: return String(localized: "Resting heart rate trend")
+        }
+    }
+
+    private func trendContextDetail(_ metric: TrendMetric, points: [TrendPoint]) -> String {
+        guard !points.isEmpty else { return String(localized: "Record more days to see a personal trend.") }
+        let change = periodChange(points)
+        let direction = change.map { $0 > 0 ? String(localized: "rising") : String(localized: "falling") }
+            ?? String(localized: "steady")
+        switch metric {
+        case .strain: return String(localized: "Your recorded daily cardiovascular load is \(direction) across this period.")
+        case .recovery: return String(localized: "Your recovery scores are \(direction) across this period.")
+        case .sleep: return String(localized: "Your sleep performance is \(direction) across this period.")
+        case .hrv: return String(localized: "Your overnight HRV is \(direction) relative to the earlier half of this period.")
+        case .restingHR: return String(localized: "Your resting heart rate is \(direction) relative to the earlier half of this period.")
         }
     }
 

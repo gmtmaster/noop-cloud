@@ -537,8 +537,8 @@ private struct QuickActionSheet: View {
 // MARK: - Floating tab bar
 
 /// The signature bottom bar: two frosted "glass" islands (Today·Trends / Sleep·More) with the gold
-/// action button nested cleanly in the gap between them — no overlap, no glow. Real iOS 26 Liquid
-/// Glass where available, a `.ultraThinMaterial` fallback below. Replaces the hidden native tab bar.
+/// Opaque floating charcoal navigation with a restrained border and no glossy material treatment.
+/// Replaces the hidden native tab bar while preserving every existing tab destination.
 private struct FloatingTabBar: View {
     @Binding var selection: Int
     /// Fires when the user taps the ALREADY-active tab (2026-07-02: re-tap should refresh).
@@ -561,23 +561,14 @@ private struct FloatingTabBar: View {
             tabButton(nav[3])
             tabButton(nav[4])
         }
-        .padding(.vertical, 7)
-        .padding(.horizontal, 8)
-        .liquidGlass(in: Capsule())
-        // Over the liquid Today the sky ends at ~340pt, so the bar floats on flat opaque surfaceBase —
-        // a blur material has nothing to dissolve and hardens into a solid lozenge (2026-07-02:
-        // "clips into a solid shape"). A faint translucent scrim INSIDE the same Capsule keeps the pill
-        // reading as tinted glass, not a slab, even against dead-flat colour.
-        .background(.white.opacity(0.06), in: Capsule())
-        // Soft top-lit rim instead of one hard hairline, so there's no crisp cut-out edge.
+        .padding(.vertical, 8)
+        .padding(.horizontal, 9)
+        .background(Color(hex: "#1C2127"), in: RoundedRectangle(cornerRadius: 25, style: .continuous))
         .overlay(
-            Capsule().strokeBorder(
-                LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.04)],
-                               startPoint: .top, endPoint: .bottom),
-                lineWidth: 0.75)
+            RoundedRectangle(cornerRadius: 25, style: .continuous)
+                .strokeBorder(StrandPalette.hairlineStrong.opacity(0.8), lineWidth: 0.75)
         )
-        // Lighter, wider shadow: real elevation without stamping a dark halo on the flat canvas.
-        .shadow(color: .black.opacity(0.22), radius: 18, x: 0, y: 8)
+        .shadow(color: .black.opacity(0.34), radius: 14, x: 0, y: 7)
         .padding(.horizontal, 22)
         .padding(.bottom, 4)
     }
@@ -597,7 +588,7 @@ private struct FloatingTabBar: View {
                 Text(item.title)
                     .font(.system(size: 10, weight: active ? .semibold : .medium))
             }
-            .foregroundStyle(active ? StrandPalette.accent : StrandPalette.textSecondary)
+            .foregroundStyle(active ? Color.white : StrandPalette.textTertiary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 3)
             .contentShape(Rectangle())
@@ -609,12 +600,4 @@ private struct FloatingTabBar: View {
 
 }
 
-// MARK: - Liquid Glass material fallback
-
-private extension View {
-    /// `.ultraThinMaterial` keeps the bar frosted while building with current public SDKs.
-    @ViewBuilder func liquidGlass(in shape: some Shape) -> some View {
-        self.background(.ultraThinMaterial, in: shape)
-    }
-}
 #endif

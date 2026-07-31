@@ -248,6 +248,9 @@ struct TodayView: View {
     // 14-day sparkline series, keyed by metric key. Loaded once in .task.
     @State private var sparks: [String: [Double]] = [:]
     @State private var workouts: [WorkoutRow] = []
+    /// Seven-day completion strip for the WHOOP-inspired My Day journal card. This is a read-only
+    /// projection of the existing journal table; writes continue to live exclusively in InsightsView.
+    @State private var journalEntries: [JournalEntry] = []
     @State private var appleDays: [AppleDaily] = []
     // Design Reset / #582, the pinned "Your cards" values (Stress / Fitness age / Vitality), surfaced
     // on Today so the buried Explore features sit on the home screen. Loaded in loadAll; nil hides the row.
@@ -1186,7 +1189,7 @@ struct TodayView: View {
                 // Compact top bar: profile/settings (left) · ‹ Today › day-nav (centre, bold) · strap
                 // battery (right). Replaces the big title + the full-width day-nav pill (WHOOP-style).
                 todayTopBar
-                HealthAlertBanner()
+                iOSTodayDashboard
                 #else
                 HealthAlertBanner()
                 // Browse past days: chevrons + a date jump capped at today (no future days). Anchored to
@@ -1195,6 +1198,7 @@ struct TodayView: View {
                 DayNavBar(selectedOffset: selectedDayOffset,
                           today: Repository.logicalDay(Date())) { selectedDayOffset = $0 }
                 #endif
+                #if !os(iOS)
                 // A "workout in progress" indicator whenever a manual workout is active. A tap routes to Live
                 // and opens the in-exercise screen. Its own leaf owns the AppModel observation + per-second
                 // clock, so the live tick never re-renders TodayView.body.
@@ -1274,6 +1278,7 @@ struct TodayView: View {
                 // Settings toggle is on AND the detector finds a recent unsaved, un-dismissed window.
                 AutoWorkoutCard()
                 sourcesSection
+                #endif
             }
             #if os(iOS)
             // #817 - horizontal swipe to change day. A right-swipe (positive X) steps to the NEWER day
@@ -1300,6 +1305,7 @@ struct TodayView: View {
         // Reload when the data refreshes OR the selected day changes, the HR trend and Rest score are
         // day-scoped, so navigating must re-fetch them for the newly selected window.
         .task(id: TodayLoadKey(seq: repo.refreshSeq, offset: selectedDayOffset)) { await loadAll() }
+        .task(id: repo.refreshSeq) { journalEntries = await repo.journalEntries(days: 14) }
         // #989: hydration writes don't bump refreshSeq, so the card needs its own triggers, a logged /
         // edited / deleted drink (hydrationSeq) and the Settings feature toggle both re-read just the two
         // hydration fields. Cheap (one metricSeries row), never re-runs the heavy loads.
@@ -1596,6 +1602,404 @@ struct TodayView: View {
         case .bad:     return StrandPalette.metricRose
         }
     }
+
+    #if os(iOS)
+    // MARK: - WHOOP-inspired iOS Today composition
+
+    private var iOSTodayDashboard: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
+            Text("NOOP")
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .tracking(6)
+                .foregroundStyle(StrandPalette.textSecondary)
+                .frame(maxWidth: .infinity)
+                .accessibilityAddTraits(.isHeader)
+
+            heroSection
+                .padding(.vertical, NoopMetrics.space2)
+
+            monitorCards
+
+            HStack(alignment: .center) {
+                Text("My Day")
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Button { router.requestQuickActions() } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(Color.black)
+                        .frame(width: 48, height: 48)
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add to My Day")
+                .accessibilityHint("Start a workout, log your journal, or breathe")
+            }
+
+            NavigationLink { dailyOutlookDetail } label: { dailyOutlookCard }
+                .buttonStyle(LiquidPressStyle())
+
+            todaysActivitiesCard
+            journalWeekCard
+
+            // Existing secondary dashboard content remains available below the redesigned primary flow.
+            ActiveWorkoutIndicatorSection()
+            metricsSection
+            yourCardsSection
+            heartRateTrendSection
+            AutoWorkoutCard()
+            sourcesSection
+        }
+    }
+
+    private var monitorCards: some View {
+        HStack(alignment: .top, spacing: NoopMetrics.gap) {
+            NavigationLink { HealthView() } label: {
+                monitorCard(
+                    title: "Health Monitor",
+                    systemImage: "waveform.path.ecg",
+                    status: healthMonitorSummary.status,
+                    value: healthMonitorSummary.value,
+                    tint: healthMonitorSummary.tint
+                )
+            }
+            NavigationLink { StressView() } label: {
+                monitorCard(
+                    title: "Stress Monitor",
+                    systemImage: "waveform",
+                    status: stressMonitorSummary.status,
+                    value: stressMonitorSummary.value,
+                    tint: stressMonitorSummary.tint
+                )
+            }
+        }
+        .buttonStyle(LiquidPressStyle())
+    }
+
+    private var healthMonitorSummary: (status: String, value: String, tint: Color) {
+        let readings = BodyVitalSigns.readings(days: repo.days, today: repo.today, temperatureUnit: .celsius)
+        let available = readings.filter { $0.value != nil }
+        let inRange = available.filter { $0.banding.band == .inRange }.count
+        if available.isEmpty {
+            return (String(localized: "CALIBRATING"), "0/5", StrandPalette.textTertiary)
+        }
+        if readings.contains(where: { $0.banding.band == .outOfRange }) {
+            return (String(localized: "CHECK SIGNALS"), "\(inRange)/5", StrandPalette.statusWarning)
+        }
+        return (String(localized: "WITHIN RANGE"), "\(inRange)/5", StrandPalette.statusPositive)
+    }
+
+    private var stressMonitorSummary: (status: String, value: String, tint: Color) {
+        guard let stress = stressToday else {
+            return (String(localized: "CALIBRATING"), "—", StrandPalette.textTertiary)
+        }
+        switch stress {
+        case ..<1.0: return (String(localized: "LOW"), String(format: "%.1f", stress), StrandPalette.statusPositive)
+        case ..<2.0: return (String(localized: "MEDIUM"), String(format: "%.1f", stress), StrandPalette.statusWarning)
+        default:     return (String(localized: "HIGH"), String(format: "%.1f", stress), StrandPalette.metricRose)
+        }
+    }
+
+    private func monitorCard(title: LocalizedStringKey, systemImage: String, status: String,
+                             value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 6) {
+                Text(title)
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 40, height: 40)
+                    .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(status)
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                    Text(value)
+                        .font(StrandFont.bodyNumber)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 138, alignment: .topLeading)
+        .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(StrandPalette.hairline, lineWidth: 0.75))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var dailyOutlookCard: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "sun.max")
+                .font(.system(size: 23, weight: .regular))
+                .foregroundStyle(.white)
+            Text("Your Daily Outlook")
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white.opacity(0.8))
+        }
+        .padding(.horizontal, 18)
+        .frame(maxWidth: .infinity, minHeight: 76)
+        .background(
+            LinearGradient(colors: [Color(hex: "#575754"), Color(hex: "#29445D")],
+                           startPoint: .leading, endPoint: .trailing),
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens the detailed daily outlook")
+    }
+
+    private var dailyOutlookDetail: some View {
+        let day = lastScoredRecoveryDay ?? displayDay
+        let score = day?.recovery
+        let copy = synthesisCopy(d: day, score: score)
+        let drivers = dailyInsightDrivers(d: day, score: score)
+        return ScreenScaffold(title: "Daily Outlook", subtitle: LocalizedStringKey(selectedDayOverline), lazy: true) {
+            NoopCard(tint: synthesisCardColor(score: score)) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("TODAY'S FOCUS").strandOverline()
+                    Text(copy.status)
+                        .font(StrandFont.title2)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Text(copy.detail)
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            outlookSection("Recovery", icon: "gauge.with.dots.needle.50percent",
+                           value: score.map { "\(Int($0.rounded()))% · \(StrandPalette.recoveryState($0).capitalized)" }
+                                  ?? String(localized: "Still building"),
+                           detail: recoveryOutlookDetail(day))
+            outlookSection("Sleep", icon: "moon.zzz.fill",
+                           value: day?.totalSleepMin.map { hoursMinutes(Int(($0 * 60).rounded())) }
+                                  ?? String(localized: "No sleep session yet"),
+                           detail: sleepOutlookDetail(day))
+            outlookSection("Effort", icon: "figure.run",
+                           value: day?.strain.map { UnitFormatter.effortDisplay($0, scale: effortScale) }
+                                  ?? String(localized: "Still building"),
+                           detail: String(localized: "Your Effort reflects the activity and cardiovascular load already recorded for this day."))
+            outlookSection("Signals", icon: "waveform.path.ecg",
+                           value: day?.avgHrv.map { "HRV \(Int($0.rounded())) ms" } ?? String(localized: "No HRV reading"),
+                           detail: signalOutlookDetail(day))
+            if !drivers.isEmpty {
+                NoopCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("NOTABLE DEVIATIONS").strandOverline()
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(drivers) { InsightDriverChip(driver: $0) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func outlookSection(_ title: LocalizedStringKey, icon: String, value: String,
+                                detail: String) -> some View {
+        NoopCard {
+            HStack(alignment: .top, spacing: 13) {
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(StrandPalette.accent)
+                    .frame(width: 36, height: 36)
+                    .background(StrandPalette.accent.opacity(0.13), in: RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title).strandOverline()
+                    Text(value).font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                    Text(detail).font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func recoveryOutlookDetail(_ day: DailyMetric?) -> String {
+        guard let day else { return String(localized: "Wear your device overnight to build a personal recovery interpretation.") }
+        var parts: [String] = []
+        if let hrv = day.avgHrv { parts.append(String(localized: "HRV is \(Int(hrv.rounded())) ms")) }
+        if let rhr = day.restingHr { parts.append(String(localized: "resting heart rate is \(rhr) bpm")) }
+        return parts.isEmpty ? String(localized: "Recovery is still waiting for overnight signals.")
+            : parts.joined(separator: ", ").capitalized + "."
+    }
+
+    private func sleepOutlookDetail(_ day: DailyMetric?) -> String {
+        guard let day else { return String(localized: "Sleep context will appear after a session is synchronized.") }
+        var parts: [String] = []
+        if let efficiency = day.efficiency { parts.append(String(localized: "\(Int((efficiency > 1 ? efficiency : efficiency * 100).rounded()))% efficiency")) }
+        if let deep = day.deepMin { parts.append(String(localized: "\(hoursMinutes(Int((deep * 60).rounded()))) deep")) }
+        if let rem = day.remMin { parts.append(String(localized: "\(hoursMinutes(Int((rem * 60).rounded()))) REM")) }
+        return parts.isEmpty ? String(localized: "Sleep stages are still synchronizing.") : parts.joined(separator: " · ")
+    }
+
+    private func signalOutlookDetail(_ day: DailyMetric?) -> String {
+        guard let day else { return String(localized: "No overnight signal context is available yet.") }
+        var parts: [String] = []
+        if let rhr = day.restingHr { parts.append(String(localized: "RHR \(rhr) bpm")) }
+        if let resp = day.respRateBpm { parts.append(String(format: String(localized: "Resp %.1f rpm"), resp)) }
+        if let stress = stressToday { parts.append(String(format: String(localized: "Stress %.1f"), stress)) }
+        return parts.isEmpty ? String(localized: "Signals are still synchronizing.") : parts.joined(separator: " · ")
+    }
+
+    private var selectedDayWorkouts: [WorkoutRow] {
+        workouts.filter { Calendar.current.isDate(Date(timeIntervalSince1970: TimeInterval($0.startTs)), inSameDayAs: selectedLogicalDay) }
+            .sorted { $0.startTs < $1.startTs }
+    }
+
+    private var todaysActivitiesCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("TODAY'S ACTIVITIES")
+                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Spacer()
+                NavigationLink { WorkoutsView() } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+                .accessibilityLabel("Open all activities")
+            }
+            if sleepToday != nil {
+                NavigationLink { SleepView() } label: { sleepActivityRow }
+                    .buttonStyle(.plain)
+            }
+            ForEach(Array(selectedDayWorkouts.enumerated()), id: \.offset) { _, workout in
+                NavigationLink { WorkoutDetailView(row: workout) } label: { workoutActivityRow(workout) }
+                    .buttonStyle(.plain)
+            }
+            if sleepToday == nil && selectedDayWorkouts.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: liveBackfillingFlag ? "arrow.triangle.2.circlepath" : "figure.walk")
+                    Text(liveBackfillingFlag ? "Activities are synchronizing…" : "No activities recorded for this day")
+                        .font(StrandFont.subhead)
+                }
+                .foregroundStyle(StrandPalette.textTertiary)
+                .frame(maxWidth: .infinity, minHeight: 72)
+            }
+        }
+        .padding(16)
+        .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(StrandPalette.hairline, lineWidth: 0.75))
+    }
+
+    private var sleepActivityRow: some View {
+        let session = sleepToday
+        return HStack(spacing: 14) {
+            HStack(spacing: 9) {
+                Image(systemName: "moon.fill").font(.system(size: 19, weight: .semibold))
+                Text(session.map { hoursMinutes($0.endTs - $0.effectiveStartTs) } ?? "—")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .frame(width: 132, height: 62)
+            .background(StrandPalette.restColor.opacity(0.75), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Text("SLEEP").font(.system(size: 15, weight: .bold, design: .rounded)).foregroundStyle(StrandPalette.textPrimary)
+            Spacer(minLength: 4)
+            if let session {
+                Text("\(shortTime(session.effectiveStartTs))\n\(shortTime(session.endTs))")
+                    .font(StrandFont.captionNumber).foregroundStyle(StrandPalette.textTertiary)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+        .padding(10)
+        .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func workoutActivityRow(_ workout: WorkoutRow) -> some View {
+        let title = WorkoutSource.displaySport(workout.sport)
+        let isStrength = title.localizedCaseInsensitiveContains("strength") || workout.sport.localizedCaseInsensitiveContains("lift")
+        let tint = isStrength ? StrandPalette.strain066 : StrandPalette.effortColor
+        return HStack(spacing: 14) {
+            HStack(spacing: 9) {
+                Image(systemName: sportSymbol(workout.sport)).font(.system(size: 19, weight: .semibold))
+                Text(workoutDuration(workout)).font(.system(size: 17, weight: .bold, design: .rounded))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(width: 132, height: 62)
+            .background(tint, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(isStrength ? "STRENGTH TRAINING" : LocalizedStringKey(title.uppercased()))
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .lineLimit(2).minimumScaleFactor(0.75)
+                if let strain = workout.strain {
+                    Text("Effort \(UnitFormatter.effortDisplay(strain, scale: effortScale))")
+                        .font(StrandFont.footnote).foregroundStyle(tint)
+                }
+            }
+            Spacer(minLength: 2)
+            Text("\(shortTime(workout.startTs))\n\(workout.endTs > workout.startTs ? shortTime(workout.endTs) : String(localized: "Ongoing"))")
+                .font(StrandFont.captionNumber).foregroundStyle(StrandPalette.textTertiary)
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(10)
+        .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func shortTime(_ timestamp: Int) -> String {
+        Date(timeIntervalSince1970: TimeInterval(timestamp)).formatted(date: .omitted, time: .shortened)
+    }
+
+    private var journalWeekCard: some View {
+        NavigationLink { InsightsView() } label: {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("MY JOURNAL").font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 13, weight: .bold))
+                }
+                .foregroundStyle(StrandPalette.textPrimary)
+                HStack(spacing: 0) {
+                    ForEach(journalWeekDays, id: \.day) { item in
+                        VStack(spacing: 8) {
+                            Text(item.weekday).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                            Image(systemName: item.complete ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 23, weight: .medium))
+                                .foregroundStyle(item.complete ? StrandPalette.statusPositive : StrandPalette.textTertiary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .accessibilityLabel("\(item.weekday), \(item.complete ? "complete" : "not complete")")
+                    }
+                }
+            }
+            .padding(16)
+            .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(StrandPalette.hairline, lineWidth: 0.75))
+        }
+        .buttonStyle(LiquidPressStyle())
+    }
+
+    private var journalWeekDays: [(day: String, weekday: String, complete: Bool)] {
+        let calendar = Calendar.current
+        let formatter = DateFormatter(); formatter.locale = Locale.current; formatter.setLocalizedDateFormatFromTemplate("EEE")
+        let completed = Set(journalEntries.map(\.day))
+        return (-6...0).compactMap { delta in
+            guard let date = calendar.date(byAdding: .day, value: delta, to: selectedLogicalDay) else { return nil }
+            let day = Repository.localDayKey(date)
+            return (day, String(formatter.string(from: date).prefix(1)).uppercased(), completed.contains(day))
+        }
+    }
+    #endif
 
     // MARK: (a) HERO, three ring scores (Charge / Effort / Rest) over a scenic backdrop,
     // then the green-tinted Synthesis coaching card. Bevel layout.
