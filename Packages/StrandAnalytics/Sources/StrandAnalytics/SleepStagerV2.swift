@@ -170,13 +170,14 @@ public enum SleepStagerV2 {
     /// Weight of the RSA respiration-regularity term (regular → deep, irregular → REM).
     static let respWeight = 0.6
 
-    /// Transition matrix (rows = from, cols = to). Self-transitions dominate; deep↔rem rare; wake mostly
-    /// to/from light. A priori, not fit.
+    /// Transition matrix (rows = from, cols = to). Sleep onset descends through light sleep, so direct
+    /// wake → deep and wake → REM transitions receive the zero/floored penalty validated upstream in #987.
+    /// No other part of the broader historical #348 retune is included.
     static let transition: [String: [String: Double]] = [
         "deep":  ["deep": 0.86, "rem": 0.007, "light": 0.126, "awake": 0.007],
         "rem":   ["deep": 0.005, "rem": 0.88, "light": 0.10, "awake": 0.015],
         "light": ["deep": 0.06, "rem": 0.06, "light": 0.85, "awake": 0.03],
-        "awake": ["deep": 0.01, "rem": 0.02, "light": 0.27, "awake": 0.70]]
+        "awake": ["deep": 0.0, "rem": 0.0, "light": 0.10, "awake": 0.90]]
 
     /// One 30 s epoch's recipe features. Optionals are "no measurement"; the z-score / percentile treat a
     /// missing value as the neutral centre so a sparse channel never blocks a stage.
@@ -389,7 +390,8 @@ public enum SleepStagerV2 {
     /// uniform start. Ties resolve to the earlier stage in `stageNames`.
     static func viterbi(_ emSeq: [[String: Double]]) -> [String] {
         if emSeq.isEmpty { return [] }
-        let logT = transition.mapValues { row in row.mapValues { log($0) } }
+        // Load-bearing for the zeroed wake → deep/REM entries: retain a finite penalty instead of -Inf.
+        let logT = transition.mapValues { row in row.mapValues { log(max($0, 1e-9)) } }
         var V = emSeq[0]   // uniform start
         var back: [[String: String]] = []
         for t in 1..<emSeq.count {

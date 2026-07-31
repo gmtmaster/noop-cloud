@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import HealthKit
+import UIKit
 import WhoopStore
 import StrandImport
 
@@ -84,13 +85,36 @@ final class HealthKitBridge: ObservableObject {
         .basalEnergyBurned, .vo2Max,
         // Body composition — READ-ONLY (#20). Imported under the apple-health source like the file
         // importer already ingests; deliberately NOT in quantityWriteIds (we never write these back).
-        .bodyMass, .bodyFatPercentage, .leanBodyMass, .bodyMassIndex
+        .bodyMass, .bodyFatPercentage, .leanBodyMass, .bodyMassIndex,
+        .dietaryWater, .dietaryCaffeine
     ]
     private static let quantityWriteIds: [HKQuantityTypeIdentifier] = [
         .restingHeartRate, .heartRateVariabilitySDNN, .oxygenSaturation, .respiratoryRate
     ]
 
     // MARK: - Authorization
+
+    private static let readTypeSignatureKey = "noop.health.readTypeSignature"
+    private static var readTypeSignature: String {
+        quantityReadIds.map(\.rawValue).sorted().joined(separator: ",")
+    }
+    private static func persistReadTypeSignature() {
+        UserDefaults.standard.set(readTypeSignature, forKey: readTypeSignatureKey)
+    }
+
+    /// Existing installs must be offered newly-added read scopes while the app is in the foreground.
+    private func requestNewReadTypesIfNeeded() async {
+        guard auth == .authorized,
+              UIApplication.shared.applicationState == .active,
+              UserDefaults.standard.string(forKey: Self.readTypeSignatureKey) != Self.readTypeSignature
+        else { return }
+        do {
+            try await store.requestAuthorization(toShare: writeTypes, read: readTypes)
+            Self.persistReadTypeSignature()
+        } catch {
+            // Keep the old signature so a later foreground sync retries.
+        }
+    }
 
     /// Request read + write permission. HealthKit never reveals whether *read* was granted, so we
     /// treat a successful request as `.authorized` and let queries return empty if the user declined.
@@ -114,6 +138,7 @@ final class HealthKitBridge: ObservableObject {
             // the authoritative signal; the `.notDetermined` fallback only matters when that check can't
             // run, which on iOS means an App Store build that by definition has the entitlement.
             auth = .authorized
+            Self.persistReadTypeSignature()
         } catch {
             // A thrown error here is on a build that carries the entitlement (guarded above), so it's a
             // genuine denial / request failure — keep the normal `.denied` "enable in Settings" path,
@@ -275,6 +300,7 @@ final class HealthKitBridge: ObservableObject {
         guard auth == .authorized, !syncing else { return }
         syncing = true
         defer { syncing = false }
+        await requestNewReadTypesIfNeeded()
         guard let store = await repo.storeHandle() else { return }
 
         let cal = Calendar.current
@@ -330,6 +356,11 @@ final class HealthKitBridge: ObservableObject {
         }
         await collect(.bodyMassIndex, unit: .count(), start: start, end: end, op: .discreteMostRecent) { day, v in
             var a = agg(day); a.bmi = v; byDay[day] = a
+        }
+
+        let waterReadOk = await collect(.dietaryWater, unit: .literUnit(with: .milli),
+                                        start: start, end: end, op: .cumulativeSum) { day, v in
+            var a = agg(day); a.waterMl = v; byDay[day] = a
         }
 
         // Sleep minutes per day (asleep stages summed; attributed to wake day).
@@ -402,6 +433,24 @@ final class HealthKitBridge: ObservableObject {
             try await store.upsertDailyMetrics(dmRows, deviceId: appleDeviceId)
             try await store.upsertMetricSeries(points, deviceId: appleDeviceId)
             if !workoutRows.isEmpty { try await store.upsertWorkouts(workoutRows, deviceId: appleDeviceId) }
+            if waterReadOk, UserDefaults.standard.bool(forKey: HydrationStore.enabledKey) {
+                var waterByDay: [String: Double] = [:]
+                var cursor = cal.startOfDay(for: start)
+                while cursor <= end {
+                    waterByDay[Self.dayString(cursor)] = 0
+                    guard let next = cal.date(byAdding: .day, value: 1, to: cursor) else { break }
+                    cursor = next
+                }
+                for (day, aggregate) in byDay {
+                    if let ml = aggregate.waterMl { waterByDay[day] = ml }
+                }
+                await repo.setImportedHydration(waterByDay)
+            }
+            if let caffeineStart = cal.date(byAdding: .hour,
+                                            value: -Int(CaffeineLogStore.retentionHours), to: end),
+               let imported = await collectCaffeine(start: caffeineStart, end: end) {
+                CaffeineLogStore.shared.replaceImported(imported)
+            }
             try await writeBack(whoopStore: store)
             lastSync = Date()
             lastError = nil
@@ -493,6 +542,7 @@ final class HealthKitBridge: ObservableObject {
         var activeKcal: Double?; var basalKcal: Double?; var vo2max: Double?
         var weightKg: Double?; var bodyFatPct: Double?; var leanMassKg: Double?; var bmi: Double?
         var asleepMin: Double?; var deepMin: Double?; var remMin: Double?; var coreMin: Double?
+        var waterMl: Double?
     }
 
     /// Excludes NOOP's own write-back samples from reads, so the two-way sync never reads its own
@@ -503,21 +553,23 @@ final class HealthKitBridge: ObservableObject {
         NSCompoundPredicate(notPredicateWithSubpredicate: HKQuery.predicateForObjects(from: [HKSource.default()]))
     }
 
+    @discardableResult
     private func collect(_ id: HKQuantityTypeIdentifier, unit: HKUnit, start: Date, end: Date,
-                         op: HKStatisticsOptions, sink: @escaping (String, Double) -> Void) async {
-        guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return }
+                         op: HKStatisticsOptions, sink: @escaping (String, Double) -> Void) async -> Bool {
+        guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return false }
         let cal = Calendar.current
         let anchor = cal.startOfDay(for: start)
         let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate),
             Self.notNoopAuthored,
         ])
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             let q = HKStatisticsCollectionQuery(quantityType: type, quantitySamplePredicate: predicate,
                                                 options: op, anchorDate: anchor,
                                                 intervalComponents: DateComponents(day: 1))
-            q.initialResultsHandler = { _, results, _ in
-                results?.enumerateStatistics(from: start, to: end) { stats, _ in
+            q.initialResultsHandler = { _, results, error in
+                guard error == nil, let results else { cont.resume(returning: false); return }
+                results.enumerateStatistics(from: start, to: end) { stats, _ in
                     let q: HKQuantity?
                     switch op {
                     case .cumulativeSum:     q = stats.sumQuantity()
@@ -528,7 +580,7 @@ final class HealthKitBridge: ObservableObject {
                     }
                     if let q { sink(HealthKitBridge.dayString(stats.startDate), q.doubleValue(for: unit)) }
                 }
-                cont.resume()
+                cont.resume(returning: true)
             }
             store.execute(q)
         }
@@ -577,6 +629,31 @@ final class HealthKitBridge: ObservableObject {
     /// the macOS export importer and the Android Health Connect importer, which already ingest workouts,
     /// closing the iOS gap. The upsert is idempotent on (deviceId, startTs), so re-running a sync window
     /// refreshes rather than duplicates.
+    private func collectCaffeine(start: Date, end: Date) async -> [CaffeineIntake]? {
+        guard let type = HKQuantityType.quantityType(forIdentifier: .dietaryCaffeine) else { return nil }
+        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate),
+            Self.notNoopAuthored,
+        ])
+        return await withCheckedContinuation { (cont: CheckedContinuation<[CaffeineIntake]?, Never>) in
+            let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
+            let query = HKSampleQuery(sampleType: type, predicate: predicate,
+                                      limit: HKObjectQueryNoLimit, sortDescriptors: [sort]) { _, samples, error in
+                guard error == nil, let samples = samples as? [HKQuantitySample] else {
+                    cont.resume(returning: nil); return
+                }
+                let imported = samples.compactMap { sample -> CaffeineIntake? in
+                    let mg = sample.quantity.doubleValue(for: .gramUnit(with: .milli))
+                    guard mg.isFinite, mg > 0 else { return nil }
+                    return CaffeineIntake(id: sample.uuid, at: sample.startDate, mg: mg,
+                                          externalId: sample.uuid.uuidString)
+                }
+                cont.resume(returning: imported)
+            }
+            store.execute(query)
+        }
+    }
+
     private func collectWorkouts(start: Date, end: Date) async -> [WorkoutRow] {
         let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate),

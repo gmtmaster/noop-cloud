@@ -106,6 +106,17 @@ final class SleepStagerV2Tests: XCTestCase {
         XCTAssertEqual(path, ["light"])
     }
 
+    func testWakeRowForbidsDirectDescentIntoDeepOrRem() {
+        XCTAssertEqual(SleepStagerV2.transition["awake"],
+                       ["deep": 0.0, "rem": 0.0, "light": 0.10, "awake": 0.90])
+        let deepPenalty = log(max(SleepStagerV2.transition["awake"]!["deep"]!, 1e-9))
+        let remPenalty = log(max(SleepStagerV2.transition["awake"]!["rem"]!, 1e-9))
+        XCTAssertTrue(deepPenalty.isFinite)
+        XCTAssertTrue(remPenalty.isFinite)
+        XCTAssertLessThan(deepPenalty, log(SleepStagerV2.transition["awake"]!["light"]!))
+        XCTAssertLessThan(remPenalty, log(SleepStagerV2.transition["awake"]!["light"]!))
+    }
+
     // MARK: - #690: the V2 flag drives the NORMAL detected-night staging path
 
     /// A regular R-R stream at ~1 Hz (steady ~1000 ms beats with a small respiratory sinus oscillation),

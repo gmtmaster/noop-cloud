@@ -337,6 +337,8 @@ public final class LiveState: ObservableObject {
     /// has ACKed since the last "Send enable sequence" tap — 15 means the strap accepted the whole
     /// sequence (hardware-confirmed: it returns a COMMAND_RESPONSE per flag). Reset on each new attempt.
     @Published public var r22FlagsAccepted: Int = 0
+    /// Per-key report from the verified R22 disable sequence; nil when no report is active.
+    @Published public var r22DisableReport: String? = nil
     /// Count of type-0x2F records seen this session OUTSIDE our own history offload. #494 showed these are
     /// historical-offload data (e.g. another BLE client pulling the strap's backlog over the shared notify
     /// channel), NOT a separate live R22 stream — type-0x2F is only ever the historical offload. Kept as a

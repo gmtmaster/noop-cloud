@@ -1133,6 +1133,16 @@ struct SettingsView: View {
         #endif
     }
 
+    /// Disabling changes stored flags and does not require the on-wrist stream to be active. Requiring
+    /// `worn` here would strand users who remove the strap before undoing the experimental R22 unlock.
+    private var deepDataDisableButtonDisabled: Bool {
+        #if os(macOS)
+        return true
+        #else
+        return !live.encryptedBond
+        #endif
+    }
+
     /// The reason line under the R22 button. macOS gets an explicit "needs an iPhone/Android" message
     /// rather than the misleading "needs the full encrypted bond" one (a Mac can never get that bond).
     private var deepDataButtonReason: String {
@@ -1212,6 +1222,17 @@ struct SettingsView: View {
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textTertiary)
                     }
+                } else {
+                    NoopButton("Turn deep data back off", systemImage: "arrow.uturn.backward", kind: .secondary) {
+                        model.ble.disableWhoop5DeepData()
+                    }
+                    .disabled(deepDataDisableButtonDisabled)
+                }
+                if let report = live.r22DisableReport {
+                    Text(report)
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Divider().overlay(StrandPalette.hairline)
@@ -1427,9 +1448,10 @@ struct SettingsView: View {
 
     /// Export the last 24h of decoded sensor streams for the connected strap to a CSV, then save (macOS
     /// NSSavePanel) or share (iOS share sheet) — the same pattern as exportPuffinCaptures(). The store
-    /// handle and the strap deviceId both come from the app's single "my-whoop" id.
+    /// handle and active strap id come from the repository.
     private func exportRawSensorCSV() {
         rawCsvBusy = true
+        let strapId = model.repo.deviceId
         Task {
             let since = Date().timeIntervalSince1970 - 24 * 60 * 60
             guard let store = await model.repo.storeHandle() else {
@@ -1442,7 +1464,7 @@ struct SettingsView: View {
                 return
             }
             do {
-                let url = try await store.exportRawCSV(deviceId: model.deviceId, since: since)
+                let url = try await store.exportRawCSV(deviceId: strapId, since: since)
                 await MainActor.run {
                     rawCsvBusy = false
                     lastRawCsvURL = url

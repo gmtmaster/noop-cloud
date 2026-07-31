@@ -650,14 +650,22 @@ final class AppModel: ObservableObject {
         let avg = samples.isEmpty ? nil
             : Int((Double(samples.map(\.bpm).reduce(0, +)) / Double(samples.count)).rounded())
         let peak = samples.map(\.bpm).max()
+        // #983: score the persisted workout once, at explicit save time, with the measured resting HR
+        // for the workout's start day. The documented default remains only when that day has no valid
+        // measurement (including a cold-start save before history has loaded).
+        let workoutDay = Repository.dayString(w.start)
+        let restingHR = repo.days.last(where: { $0.day == workoutDay })?.restingHr.map(Double.init)
+            ?? StrainScorer.defaultRestingHR
         let strain = samples.count >= 2
-            ? StrainScorer.strain(samples, maxHR: Double(profile.hrMax), sex: profile.sex) : nil
+            ? StrainScorer.strain(samples, maxHR: Double(profile.hrMax),
+                                  restingHR: restingHR, sex: profile.sex) : nil
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         let up = UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,
                              age: Double(profile.age), sex: profile.sex)
         let kcal = samples.count >= 2
-            ? Calories.estimateBoutCalories(samples, profile: up, hrmax: Double(profile.hrMax), restingHR: nil).0
+            ? Calories.estimateBoutCalories(samples, profile: up, hrmax: Double(profile.hrMax),
+                                            restingHR: restingHR).0
             : 0
         let startTs = Int(w.start.timeIntervalSince1970)
         let row = WorkoutRow(

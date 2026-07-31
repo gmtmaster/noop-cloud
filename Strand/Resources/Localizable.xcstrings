@@ -8016,6 +8016,9 @@
         }
       }
     },
+    "%lld millilitres from Apple Health. Edit it in the app that logged it." : {
+
+    },
     "%lld min" : {
       "localizations" : {
         "de" : {
@@ -16278,6 +16281,9 @@
         }
       }
     },
+    "A NOOP estimate from your sleep history." : {
+
+    },
     "A note on blood oxygen and your model" : {
       "localizations" : {
         "de" : {
@@ -19888,6 +19894,9 @@
           }
         }
       }
+    },
+    "Added %@" : {
+
     },
     "Adds a simple fluid log with a daily goal that adjusts to your effort. Tap to add a sip, cup or bottle and watch a progress ring fill. On %@ only. Nothing is synced." : {
       "localizations" : {
@@ -34206,6 +34215,9 @@
         }
       }
     },
+    "Carried sleep debt" : {
+
+    },
     "Category" : {
       "localizations" : {
         "de" : {
@@ -39150,6 +39162,9 @@
         }
       }
     },
+    "Confidence: %@" : {
+
+    },
     "Confidence: %@ (distance %@)" : {
       "localizations" : {
         "de" : {
@@ -42992,6 +43007,9 @@
         }
       }
     },
+    "CURRENT ESTIMATE" : {
+
+    },
     "Current physiology, strap trust, and session controls in one working view." : {
       "localizations" : {
         "de" : {
@@ -44667,7 +44685,6 @@
       }
     },
     "Day strain" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -51770,6 +51787,9 @@
         }
       }
     },
+    "Established" : {
+
+    },
     "Estimate" : {
       "localizations" : {
         "de" : {
@@ -57075,6 +57095,9 @@
         }
       }
     },
+    "From Apple Health" : {
+
+    },
     "from profile" : {
       "localizations" : {
         "de" : {
@@ -61274,6 +61297,9 @@
         }
       }
     },
+    "Hide calculation" : {
+
+    },
     "Hide data source detail" : {
       "localizations" : {
         "de" : {
@@ -63113,6 +63139,9 @@
           }
         }
       }
+    },
+    "How this is calculated" : {
+
     },
     "How this is computed" : {
       "localizations" : {
@@ -72965,6 +72994,9 @@
         }
       }
     },
+    "Limited" : {
+
+    },
     "Lining them up…" : {
       "localizations" : {
         "de" : {
@@ -81736,6 +81768,9 @@
     "Name the merged session" : {
 
     },
+    "Nap credit" : {
+
+    },
     "Nap ended" : {
       "localizations" : {
         "de" : {
@@ -81781,6 +81816,9 @@
           }
         }
       }
+    },
+    "Nap reduced tonight's need by %@" : {
+
     },
     "Nap started" : {
       "localizations" : {
@@ -88026,6 +88064,9 @@
     "NOOP didn't get a folder back from the picker. If the Open button won't do anything, tap \"Use NOOP's own folder\" below to back up inside NOOP instead — you can read those backups from the Files app." : {
 
     },
+    "NOOP estimate" : {
+
+    },
     "NOOP estimates your steps from your WHOOP's motion, calibrated to your phone's step count. It's an estimate, not a step counter. A WHOOP 4.0 doesn't transmit steps." : {
       "localizations" : {
         "de" : {
@@ -89179,6 +89220,9 @@
           }
         }
       }
+    },
+    "NOOP Sleep Need is a local estimate, not WHOOP's proprietary calculation." : {
+
     },
     "NOOP stores and lines up the numbers you enter yourself. It does not test you, read your results, give medical advice, or diagnose anything." : {
       "localizations" : {
@@ -104106,6 +104150,9 @@
         }
       }
     },
+    "Recent carried debt" : {
+
+    },
     "Recent intervals: %@ ms" : {
       "localizations" : {
         "de" : {
@@ -104209,6 +104256,12 @@
           }
         }
       }
+    },
+    "Recent nights" : {
+
+    },
+    "Recent sleep debt" : {
+
     },
     "Recent synced recovery, sleep, effort, and workouts." : {
 
@@ -104350,6 +104403,9 @@
           }
         }
       }
+    },
+    "Recommended time in bed: %@" : {
+
     },
     "Recompute" : {
       "localizations" : {
@@ -104639,6 +104695,9 @@
           }
         }
       }
+    },
+    "Record at least one completed main sleep. Missing nights stay missing and are never treated as zero sleep." : {
+
     },
     "Record or inspect the current stream" : {
       "localizations" : {
@@ -107145,6 +107204,9 @@
 
     },
     "Rename…" : {
+
+    },
+    "Repaid %@" : {
 
     },
     "Replace all current data with the backup %@? This cannot be undone." : {
@@ -118259,6 +118321,9 @@
         }
       }
     },
+    "Sleep history needed" : {
+
+    },
     "Sleep logged" : {
 
     },
@@ -126024,6 +126089,9 @@
         }
       }
     },
+    "Surplus sleep repays carried debt gradually. Only the amount added to one night's recommendation is capped. This is an estimate, not a diagnosis or a proprietary WHOOP value." : {
+
+    },
     "Sustained high stress" : {
       "localizations" : {
         "de" : {
@@ -128717,6 +128785,9 @@
           }
         }
       }
+    },
+    "The chart scale limits isolated outliers; exact debt values are shown above and below." : {
+
     },
     "The full terms are in TERMS.md, shipped with NOOP. This is not legal advice." : {
       "localizations" : {
@@ -134927,6 +134998,9 @@
         }
       }
     },
+    "Turn deep data back off" : {
+
+    },
     "Turn off" : {
       "localizations" : {
         "de" : {
@@ -140916,6 +140990,9 @@
           }
         }
       }
+    },
+    "What changed it" : {
+
     },
     "What correlates" : {
       "localizations" : {

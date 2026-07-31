@@ -131,6 +131,8 @@ final class Backfiller {
     /// at a session boundary so a clock-broken strap is visible in the strap log (observability only — the
     /// ingest gate already kept the garbage rows out of the DB).
     private(set) var sessionDroppedImplausible = 0
+    /// Counts dropped, unmapped packet types across the current offload for one-time diagnostics.
+    private var sessionUnhandledPacketTypes: [String: Int] = [:]
 
     /// The trim cursor of the LAST chunk this Backfiller acked (durably persisted + confirmed to the
     /// strap). Survives across sessions on the same connection so the auto-continue gate (#364) can ask
@@ -229,6 +231,7 @@ final class Backfiller {
         loggedNoCursor = false
         loggedFutureRtc = false
         sessionDroppedImplausible = 0
+        sessionUnhandledPacketTypes = [:]
         loggedLayoutVersions.removeAll(keepingCapacity: true)
         spo2Dumped = 0
         // #547: the range markers belong to a connection's GET_DATA_RANGE, which BLEManager re-sets per
@@ -497,6 +500,13 @@ final class Backfiller {
                 sessionDroppedImplausible += decoded.droppedImplausible
                 if wasZero {
                     log?("Backfill: dropped record(s) with an implausible timestamp (trim=\(trim)) — the strap's clock is wrong (records dated far in the past or future), so those samples were skipped rather than misfiled onto the wrong day. Fully charge and reconnect the strap so its clock re-syncs.")
+                }
+            }
+            for (typeName, count) in decoded.unhandledPacketTypes.sorted(by: { $0.key < $1.key }) {
+                let firstSighting = sessionUnhandledPacketTypes[typeName] == nil
+                sessionUnhandledPacketTypes[typeName, default: 0] += count
+                if firstSighting {
+                    log?("Backfill: the strap sent \(count) record(s) of packet type \(typeName), which this decoder has no rows for — they are being dropped. Please report an unfamiliar type with the strap model and firmware build (#891).")
                 }
             }
             // Diagnostic (#77): the AGGREGATE silent-loss case — frames arrived but produced no rows at

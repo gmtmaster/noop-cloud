@@ -60,7 +60,7 @@ public final class HrBroadcaster: NSObject, ObservableObject {
     /// first sample of a session; cleared on stop so a stale bpm can't outlive the broadcast.
     private var lastBpm: Int?
 
-    private var cancellables = Set<AnyCancellable>()
+    private(set) var cancellables = Set<AnyCancellable>()
 
     /// Diagnostic sink for the broadcast lifecycle, wired (when the composition root chooses to) to the
     /// SAME exportable strap log the WHOOP path uses, so a tester whose gym kit can't see NOOP has a
@@ -114,6 +114,9 @@ public final class HrBroadcaster: NSObject, ObservableObject {
     /// ``update(heartRate:)`` directly. Observing `$heartRate` keeps this a pure CONSUMER of the existing
     /// live value — it never drives or mutates the WHOOP/central path.
     public func bind(to live: LiveState) {
+        // `onAppear` may call bind repeatedly; replace the previous subscription instead of stacking
+        // duplicate notifications for every screen visit (#933).
+        cancellables.removeAll()
         live.$heartRate
             .removeDuplicates()
             .sink { [weak self] hr in self?.update(heartRate: hr) }

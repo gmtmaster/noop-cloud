@@ -1226,7 +1226,11 @@ final class IntelligenceEngine: ObservableObject {
         // #137: a manually-started workout is scored from sparse live HR at save time , near-zero
         // calories/strain on a 5/MG. Now that offloaded HR may cover the window, re-score the
         // under-sampled ones from that denser data.
-        await rescoreManualWorkouts(store: store, profile: up)
+        let measuredRestingByDay = Dictionary(out.compactMap { scored in
+            scored.rhr.map { (scored.day, Double($0)) }
+        }, uniquingKeysWith: { latest, _ in latest })
+        await rescoreManualWorkouts(store: store, profile: up,
+                                    restingHRByDay: measuredRestingByDay, tzOffset: tzOffset)
 
         results = out
         note = out.isEmpty
@@ -1331,7 +1335,9 @@ final class IntelligenceEngine: ObservableObject {
     /// window, recompute from it. Conservative + idempotent: only `manual` rows that look under-scored
     /// (negligible calories), and only when the recompute is a genuine improvement , so a well-scored
     /// 4.0 workout is never touched and a still-sparse window is a no-op.
-    private func rescoreManualWorkouts(store: WhoopStore, profile up: UserProfile) async {
+    private func rescoreManualWorkouts(store: WhoopStore, profile up: UserProfile,
+                                       restingHRByDay: [String: Double] = [:],
+                                       tzOffset: Int = 0) async {
         let now = Int(Date().timeIntervalSince1970)
         let since = now - 14 * 86_400
         guard let rows = try? await store.workouts(deviceId: deviceId, from: since, to: now, limit: 200)
@@ -1343,9 +1349,12 @@ final class IntelligenceEngine: ObservableObject {
         // yet Effort stays blank forever). `improves` then accepts a strain-only gain for the latter.
         for row in rows where row.source == "manual"
             && (ManualWorkoutRescore.looksUnderScored(currentKcal: row.energyKcal) || row.strain == nil) {
+            let workoutDay = AnalyticsEngine.dayString(row.startTs, offsetSec: tzOffset)
+            let restingHR = restingHRByDay[workoutDay]
             guard let samples = try? await store.hrSamples(deviceId: deviceId, from: row.startTs,
                                                            to: row.endTs, limit: 20_000),
-                  let s = ManualWorkoutRescore.scored(windowSamples: samples, profile: up, hrMax: hrMax),
+                  let s = ManualWorkoutRescore.scored(windowSamples: samples, profile: up, hrMax: hrMax,
+                                                      restingHR: restingHR),
                   ManualWorkoutRescore.improves(s, over: row.energyKcal, currentStrain: row.strain,
                                                 allowStrainOnlyFill: true)
             else { continue }

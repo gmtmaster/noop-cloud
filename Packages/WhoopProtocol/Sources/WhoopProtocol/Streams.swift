@@ -233,6 +233,9 @@ public struct Streams: Equatable, Codable {
     /// and NOT round-tripped through Codable (excluded from `CodingKeys`) — it is a transient observability
     /// count the Backfiller surfaces to the strap log. Defaults to 0 so it never affects golden fixtures.
     public var droppedImplausible: Int = 0
+    /// Transient history-offload census of packet types dropped because this decoder has no row mapping.
+    /// Expected metadata/console records are excluded by `extractHistoricalStreams`.
+    public var unhandledPacketTypes: [String: Int] = [:]
     public init(hr: [HRSample] = [], rr: [RRInterval] = [],
                 spo2: [SpO2Sample] = [], skinTemp: [SkinTempSample] = [],
                 resp: [RespSample] = [], gravity: [GravitySample] = [],

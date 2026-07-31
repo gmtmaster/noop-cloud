@@ -1,5 +1,8 @@
 import Foundation
 
+/// Packet types expected to produce no persisted sensor rows during history extraction.
+let expectedUnhandledHistoricalTypes: Set<String> = ["METADATA", "CONSOLE_LOGS"]
+
 /// Shared plausibility bounds for a type-47 record's own unix timestamp (#547). A WHOOP strap with a
 /// bad clock/flash (repeated trim=0xFFFFFFFF no-cursor) emits records whose decoded unix is scattered
 /// garbage — far-past (2024/2029), a bogus 2027=1827642881, and even FUTURE dates. NOOP used to trust
@@ -175,6 +178,7 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
     // The SAME (ts, samples) are also appended to `out.ppgWaveform` below (issue #156 follow-up) so the
     // raw waveform is durable too, not just the derived estimate this local buffer exists to produce.
     var ppgRecords: [(ts: Int, samples: [Int])] = []
+    var unhandledTypes: [String: Int] = [:]
     for r in parsed {
         if !r.ok || r.crcOK == false { continue }
         let p = r.parsed
@@ -256,12 +260,16 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
             // No device timestamp on COMMAND_RESPONSE → stamp battery at wallClockRef.
             appendBattery(&out, ts: wallClockRef, p: p)
         default:
+            if !expectedUnhandledHistoricalTypes.contains(r.typeName) {
+                unhandledTypes[r.typeName, default: 0] += 1
+            }
             continue
         }
     }
     // Derive per-second HR from the collected v26 PPG bursts (issue #156). Empty when there were no v26
     // records (the WHOOP 4 / v18-only common case), so this is a no-op cost there.
     out.ppgHr = PpgHr.derivePpgHr(records: ppgRecords, subLagInterp: subLagInterp)
+    out.unhandledPacketTypes = unhandledTypes
     out.droppedImplausible = droppedImplausible   // #547 diag count (not persisted, not encoded)
     return out
 }
