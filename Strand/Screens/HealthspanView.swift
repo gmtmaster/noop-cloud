@@ -3,8 +3,9 @@ import StrandAnalytics
 import StrandDesign
 
 enum HealthNavigationContract {
-    static let primaryTabs = ["Today", "Health", "Sleep", "Friends", "More"]
+    static let primaryTabs = ["Today", "Health", "Friends", "More"]
     static let healthTabIndex = 1
+    static let sleepIsContextual = true
     static let trendsRemainsSecondary = true
 }
 
@@ -134,7 +135,7 @@ struct HealthspanView: View {
 
     var body: some View {
         ScreenScaffold(title: "Healthspan", subtitle: "Your long-term fitness and health trajectory.",
-                       onRefresh: { await load() }, lazy: true, topBackground: liquidScaffoldSky()) {
+                       onRefresh: { await load() }, lazy: true) {
             if !profile.ageIsExplicit && profile.birthDate == nil {
                 missingAge
             } else if let result = selected, let age = result.noopAge {

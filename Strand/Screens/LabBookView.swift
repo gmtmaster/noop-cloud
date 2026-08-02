@@ -59,10 +59,7 @@ struct LabBookView: View {
             // each carrying its own sparkline-bearing cards. The LazyVStack path builds the off-screen
             // categories on demand — byte-identical layout — so a logbook with many categories doesn't
             // render every section + sparkline up-front.
-            lazy: true,
-            // Liquid finish: the day-of-sky backdrop, so Lab Book sits in the same liquid atmosphere as
-            // Today and the other analysis screens.
-            topBackground: liquidScaffoldSky()
+            lazy: true
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 headerCard

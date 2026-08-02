@@ -37,7 +37,8 @@ struct RootTabView: View {
     @State private var routedPillar: NavRouter.Destination?
     /// Selected tab — bound so tab switches can crossfade (README §Motion: ~240ms opacity swap
     /// between tab roots, calm easing). Defaults to Today.
-    @State private var selectedTab: Int = 0
+    @AppStorage("navigation.primaryTab.v2") private var selectedTab: Int = 0
+    @State private var showCoach = false
     /// Which More-tab groups are expanded (S2). Insights + Body stay open at rest; Data + App collapse to
     /// just their header until tapped. Persisted (#860 item 2): the user's open/closed choice must SURVIVE
     /// leaving and re-entering the More tab (and relaunch), not reset to the seed every visit. Backed by an
@@ -71,9 +72,8 @@ struct RootTabView: View {
             TabView(selection: $selectedTab) {
                 tab(TodayView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[0]), "square.grid.2x2").tag(0)
                 tab(HealthspanView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[1]), "heart.text.square.fill").tag(1)
-                tab(SleepView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[2]), "bed.double").tag(2)
-                tab(FriendsView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[3]), "person.2.fill").tag(3)
-                moreTab.tag(4)
+                tab(FriendsView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[2]), "person.2.fill").tag(2)
+                moreTab.tag(3)
             }
             .tint(StrandPalette.accent)
             .toolbar(.hidden, for: .tabBar)
@@ -89,14 +89,14 @@ struct RootTabView: View {
                         guard selectedTab != 0 else { return }
                         let dx = v.translation.width, dy = v.translation.height
                         guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
-                        let next = min(4, max(0, selectedTab + (dx < 0 ? 1 : -1)))
+                        let next = min(3, max(0, selectedTab + (dx < 0 ? 1 : -1)))
                         if next != selectedTab {
                             withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = next }
                         }
                     }
             )
 
-            FloatingTabBar(selection: $selectedTab, onReselect: { _ in
+            FloatingTabBar(selection: $selectedTab, onCoach: { showCoach = true }, onReselect: { _ in
                 // Re-tapping the active tab refreshes that page's data (2026-07-02).
                 Task { await repo.refresh() }
             })
@@ -116,6 +116,9 @@ struct RootTabView: View {
         // animation scoped to the sheet rather than the whole shell.
         .sheet(item: $quickAction) { action in
             quickActionDestination(action)
+        }
+        .sheet(isPresented: $showCoach) {
+            NavigationStack { NoopCoachPlaceholderView() }
         }
         // Live's "Manage devices" affordance (and any future cross-screen link to Devices) routes here:
         // present the Devices manager in its own nav stack, the same way the quick-action screens do.
@@ -140,6 +143,9 @@ struct RootTabView: View {
             case .trends:
                 // Trends remains reachable as a secondary destination after Health takes tab 1.
                 routedPillar = .trends
+                router.requestedDestination = nil
+            case .sleep:
+                routedPillar = .sleep
                 router.requestedDestination = nil
             case .activeWorkout:
                 // The Today active-workout indicator opens Live through the quick-action Live sheet; once
@@ -176,6 +182,7 @@ struct RootTabView: View {
                 case .fusedRecord: FusedRecordHost()
                 case .rhythm: RhythmHost(onClose: { routedPillar = nil })
                 case .devices: DevicesView()
+                case .sleep: SleepView()
                 // .trends is never presented as a pillar sheet on iPhone (it's a primary tab — the
                 // requestedDestination handler switches `selectedTab` instead), but the switch must stay
                 // exhaustive. Fall back to Trends inside the sheet host if it ever arrives here.
@@ -290,13 +297,12 @@ struct RootTabView: View {
         .tabItem { Label(title, systemImage: icon) }
     }
 
-    // Card-based secondary-tool index. Health/Sleep/Today stay in the primary tab bar and Stress stays
-    // contextual on Today; this screen gives health records, device/data, and account controls clear weight.
+    // Card-based secondary-tool index. Today/Health/Friends remain primary; Sleep and Stress are contextual.
+    // This screen gives health records, device/data, and account controls clear weight.
     private var moreTab: some View {
         NavigationStack {
             ScreenScaffold(title: "More", subtitle: "Records, tools, devices and account",
-                           onRefresh: { await repo.refresh() },
-                           topBackground: liquidScaffoldSky()) {
+                           onRefresh: { await repo.refresh() }) {
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                     SectionHeader("Featured", overline: "Health records and history")
                     ViewThatFits(in: .horizontal) {
@@ -613,35 +619,45 @@ private struct QuickActionSheet: View {
 /// Replaces the hidden native tab bar while preserving every existing tab destination.
 private struct FloatingTabBar: View {
     @Binding var selection: Int
+    let onCoach: () -> Void
     /// Fires when the user taps the ALREADY-active tab (2026-07-02: re-tap should refresh).
     var onReselect: (Int) -> Void = { _ in }
 
     private struct Item: Identifiable { let title: LocalizedStringKey; let icon: String; let tag: Int; var id: Int { tag } }
     private let nav = [Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[0]), icon: "square.grid.2x2", tag: 0),
                        Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[1]), icon: "heart.text.square.fill", tag: 1),
-                       Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[2]), icon: "bed.double", tag: 2),
-                       Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[3]), icon: "person.2.fill", tag: 3),
-                       Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[4]), icon: "ellipsis", tag: 4)]
+                       Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[2]), icon: "person.2.fill", tag: 2),
+                       Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[3]), icon: "ellipsis", tag: 3)]
 
     var body: some View {
-        // One frosted glass bar, four evenly-spaced tabs. The quick-action "+" now lives in the
-        // top-right of each screen's header (balancing the profile avatar on the left).
-        HStack(spacing: 2) {
-            tabButton(nav[0])
-            tabButton(nav[1])
-            tabButton(nav[2])
-            tabButton(nav[3])
-            tabButton(nav[4])
+        // Four regular tabs share one charcoal island; Coach is a separate, elevated action.
+        HStack(spacing: 10) {
+            HStack(spacing: 2) {
+                ForEach(nav) { tabButton($0) }
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 9)
+            .background(Color(hex: "#1C2127"), in: RoundedRectangle(cornerRadius: 25, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 25, style: .continuous)
+                .strokeBorder(StrandPalette.hairlineStrong.opacity(0.8), lineWidth: 0.75))
+
+            Button(action: onCoach) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 58, height: 58)
+                    .background(Color(hex: "#171B24"), in: RoundedRectangle(cornerRadius: 21, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 21, style: .continuous)
+                        .stroke(LinearGradient(colors: [Color(hex: "#58B7FF"), Color(hex: "#8A63FF")],
+                                               startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.4))
+                    .shadow(color: Color(hex: "#6C70FF").opacity(0.28), radius: 10)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Noop Coach")
+            .accessibilityHint("Opens the Noop Coach preview")
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 9)
-        .background(Color(hex: "#1C2127"), in: RoundedRectangle(cornerRadius: 25, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 25, style: .continuous)
-                .strokeBorder(StrandPalette.hairlineStrong.opacity(0.8), lineWidth: 0.75)
-        )
         .shadow(color: .black.opacity(0.34), radius: 14, x: 0, y: 7)
-        .padding(.horizontal, 22)
+        .padding(.horizontal, 16)
         .padding(.bottom, 4)
     }
 
@@ -670,6 +686,26 @@ private struct FloatingTabBar: View {
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
     }
 
+}
+
+private struct NoopCoachPlaceholderView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ScreenScaffold(title: "Noop Coach", subtitle: "Personal guidance is being developed.") {
+            NoopCard(tint: StrandPalette.metricPurple) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(StrandPalette.metricPurple)
+                    Text("Personal guidance based on your sleep, recovery, stress, activity, and health trends is coming soon.")
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                }
+            }
+        }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+    }
 }
 
 #endif

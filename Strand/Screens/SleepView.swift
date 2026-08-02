@@ -128,8 +128,7 @@ struct SleepView: View {
                        // syncing note now own `live` in their own leaves), so a 1 Hz HR tick no longer
                        // re-evaluates this heavy body.
                        onRefresh: { await repo.refresh() },
-                       lazy: true,
-                       topBackground: liquidScaffoldSky()) {
+                       lazy: true) {
             Group {
                 if let resolved {
                     // Each top-level section fades + rises in sequence on first appear (Reduce-Motion safe).
@@ -702,7 +701,7 @@ struct SleepView: View {
         let s = night.stages
         let isPersisted = (night.realSegments?.count ?? 0) >= 2
         let subtitle = isPersisted
-            ? String(localized: "\(durationText(night.timeInBed)) in bed · \(efficiencyText(night)) efficiency · stages approximate (on-device)")
+            ? String(localized: "\(durationText(night.timeInBed)) in bed · \(efficiencyText(night)) efficiency · stages approximate")
             : String(localized: "\(durationText(night.timeInBed)) in bed · \(efficiencyText(night)) efficiency")
         VStack(alignment: .leading, spacing: NoopMetrics.space2) {
             if intervals.count >= 2 {

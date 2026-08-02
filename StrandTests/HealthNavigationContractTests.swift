@@ -4,14 +4,27 @@ import XCTest
 final class HealthNavigationContractTests: XCTestCase {
     func testHealthReplacesTrendsInPrimaryTabs() {
         XCTAssertEqual(HealthNavigationContract.primaryTabs,
-                       ["Today", "Health", "Sleep", "Friends", "More"])
+                       ["Today", "Health", "Friends", "More"])
         XCTAssertEqual(HealthNavigationContract.healthTabIndex, 1)
+        XCTAssertTrue(HealthNavigationContract.sleepIsContextual)
+        XCTAssertFalse(HealthNavigationContract.primaryTabs.contains("Sleep"))
         XCTAssertFalse(HealthNavigationContract.primaryTabs.contains("Trends"))
     }
 
     func testTrendsRemainsASecondaryDestination() {
         XCTAssertTrue(HealthNavigationContract.trendsRemainsSecondary)
         XCTAssertTrue(NavItem.allCases.contains(.trends))
+    }
+
+    func testTonightSleepDistinguishesAlarmAndWakeTarget() {
+        XCTAssertEqual(TonightSleepWakeState.activeAlarm.label, "ALARM ON")
+        XCTAssertEqual(TonightSleepWakeState.wakeTarget.label, "WAKE TARGET")
+        XCTAssertEqual(TonightSleepWakeState.notSet.label, "Not set")
+    }
+
+    func testHistoricalTonightSleepCannotEditAlarm() {
+        XCTAssertFalse(TonightSleepWakeState.historical.canEditAlarm)
+        XCTAssertTrue(TonightSleepWakeState.activeAlarm.canEditAlarm)
     }
 
     func testReduceMotionAndInactiveSceneDisableOrbAnimation() {

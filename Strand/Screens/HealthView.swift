@@ -30,10 +30,7 @@ struct HealthView: View {
                        // alignment/spacing/header); builds the trailing vitals/skin-temp/age sections on
                        // demand instead of all up-front.
                        onRefresh: { await repo.refresh() },
-                       lazy: true,
-                       // The day-of-sky liquid backdrop, matching Today / Sleep / Trends: a fixed,
-                       // full-bleed time-of-day sky behind the scroll content (does not scroll).
-                       topBackground: liquidScaffoldSky()) {
+                       lazy: true) {
             if repo.days.isEmpty {
                 // First run / no history: whether to show the empty state or the full live stack depends
                 // on whether a strap is streaming live HR — a `live`-dependent choice. It's isolated to
@@ -496,7 +493,7 @@ private struct RecoveryContributorsSection: View {
                     }
                 }
             }
-            Text("Baselines are learned on-device over your first 14 days. Until then, typical ranges apply.")
+            Text("Baselines are learned from your first 14 days. Until then, typical ranges apply.")
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)

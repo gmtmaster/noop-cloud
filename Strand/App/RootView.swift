@@ -310,6 +310,7 @@ struct RootView: View {
             case .fusedRecord: selection = .fusedRecord
             case .rhythm: selection = .rhythm
             case .trends: selection = .trends
+            case .sleep: selection = .sleep
             // The Today active-workout indicator routes to the Live surface; LiveView then consumes the
             // one-shot `presentActiveWorkout` flag on appear to open the in-exercise screen.
             case .activeWorkout: selection = .live

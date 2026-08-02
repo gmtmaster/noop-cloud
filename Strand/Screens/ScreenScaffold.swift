@@ -63,7 +63,7 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
         // One app-wide canvas: the shared provider and fallback are the same solid adaptive grey.
         .background(alignment: .top) {
             ZStack(alignment: .top) {
-                StrandPalette.surfaceBase
+                DashboardBackground()
                 topBackground
             }
             .ignoresSafeArea()

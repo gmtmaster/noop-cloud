@@ -64,11 +64,7 @@ private struct LegacyStressView: View {
                        // PERF (scroll): lazy column — byte-identical layout (LazyVStack == eager VStack
                        // alignment/spacing/header). The content is one inner eager VStack, so the staggered
                        // section reveal is unchanged; this only defers building that stack until it scrolls in.
-                       lazy: true,
-                       // The day-of-sky liquid backdrop, matching Today / Health / Live / Sleep / Trends: a
-                       // fixed, full-bleed time-of-day sky behind the scroll content (does not scroll), so the
-                       // Stress screen sits in the same liquid atmosphere as every other tab.
-                       topBackground: liquidScaffoldSky()) {
+                       lazy: true) {
             if let model {
                 content(model)
             } else if !loaded {

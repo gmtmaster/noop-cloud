@@ -279,6 +279,24 @@ private struct SleepPlanStat: View {
     }
 }
 
+enum TonightSleepWakeState: Equatable {
+    case activeAlarm
+    case wakeTarget
+    case notSet
+    case historical
+
+    var label: String {
+        switch self {
+        case .activeAlarm: return "ALARM ON"
+        case .wakeTarget: return "WAKE TARGET"
+        case .notSet: return "Not set"
+        case .historical: return "Historical day"
+        }
+    }
+
+    var canEditAlarm: Bool { self != .historical }
+}
+
 struct TodayView: View {
     @EnvironmentObject var repo: Repository
     @EnvironmentObject var behavior: BehaviorStore
@@ -377,6 +395,9 @@ struct TodayView: View {
     @State private var vitalityToday: Double?
     /// Canonical bounded sleep-planning projection shared with Sleep and Trends.
     @State private var sleepPlanning: SleepPlanningResult?
+    @State private var showTonightSleep = false
+    @State private var showAlarmEditor = false
+    @AppStorage("alarm.lastArmConnected") private var alarmLastArmConnected = false
     /// Distinct days + sleep sessions imported from a Mi Band (Mi Fitness), for the Data Sources row.
     @State private var xiaomiDays = 0
     @State private var xiaomiSleeps = 0
@@ -1265,9 +1286,22 @@ struct TodayView: View {
         return calendar.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: tomorrow)
     }
 
+    private var plannedWakeIsActiveAlarm: Bool {
+        guard behavior.smartAlarmEnabled, alarmLastArmConnected,
+              let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: Date()) else { return false }
+        let weekday = Calendar.current.component(.weekday, from: tomorrow)
+        return behavior.smartAlarmWeekdays.isEmpty || behavior.smartAlarmWeekdays.contains(weekday)
+    }
+
+    private var tonightWakeState: TonightSleepWakeState {
+        if selectedDayOffset != 0 { return .historical }
+        guard plannedWakeDate != nil else { return .notSet }
+        return plannedWakeIsActiveAlarm ? .activeAlarm : .wakeTarget
+    }
+
     @ViewBuilder private var tonightPlanSection: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-            SectionHeader("Tonight's Plan", overline: "Local sleep planner",
+            SectionHeader("Tonight's Plan", overline: "Your sleep plan",
                           trailing: String(localized: "WHOOP-inspired"))
             NoopCard(tint: StrandPalette.restColor) {
                 if let plan = sleepPlanning?.tonight, let wake = plannedWakeDate {
@@ -1443,6 +1477,8 @@ struct TodayView: View {
             // active offload; the off→false edge below re-runs them as a safety net to the coalesced refresh.
             .background(BackfillFlagBridge(flag: $liveBackfillingFlag))
         }
+        .navigationDestination(isPresented: $showTonightSleep) { SleepView() }
+        .navigationDestination(isPresented: $showAlarmEditor) { SmartAlarmView() }
         // Reload when the data refreshes OR the selected day changes, the HR trend and Rest score are
         // day-scoped, so navigating must re-fetch them for the newly selected window.
         .task(id: TodayLoadKey(seq: repo.refreshSeq, offset: selectedDayOffset)) { await loadAll() }
@@ -1765,8 +1801,6 @@ struct TodayView: View {
             heroSection
                 .padding(.vertical, NoopMetrics.space2)
 
-            monitorCards
-
             HStack(alignment: .center) {
                 Text("My Day")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
@@ -1788,17 +1822,95 @@ struct TodayView: View {
             NavigationLink { dailyOutlookDetail } label: { dailyOutlookCard }
                 .buttonStyle(LiquidPressStyle())
 
+            monitorCards
             todaysActivitiesCard
+            tonightSleepCard
             journalWeekCard
 
             // Existing secondary dashboard content remains available below the redesigned primary flow.
             ActiveWorkoutIndicatorSection()
-            metricsSection
-            yourCardsSection
             heartRateTrendSection
             AutoWorkoutCard()
             sourcesSection
         }
+    }
+
+    private var tonightSleepCard: some View {
+        ZStack(alignment: .bottom) {
+            Button { showTonightSleep = true } label: {
+                VStack(alignment: .leading, spacing: 15) {
+                    HStack {
+                        Text("TONIGHT'S SLEEP").strandOverline()
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
+
+                    if selectedDayOffset != 0 {
+                        Text("Sleep planning is available for today.")
+                            .font(StrandFont.body)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    } else if let wake = plannedWakeDate, let plan = sleepPlanning?.tonight {
+                        let bedtime = SleepPlanningEngine.recommendedBedtime(
+                            plannedWake: wake, timeInBedMinutes: plan.timeInBedMinutes)
+                        HStack(alignment: .top, spacing: 12) {
+                            tonightSleepValue(time: bedtime, label: "RECOMMENDED BEDTIME", icon: "moon.fill")
+                            Divider().overlay(StrandPalette.hairline).frame(height: 58)
+                            tonightSleepValue(time: wake,
+                                              label: LocalizedStringKey(tonightWakeState.label),
+                                              icon: plannedWakeIsActiveAlarm ? "alarm.fill" : "sunrise.fill")
+                        }
+                        Text("\(sleepPlanDuration(plan.timeInBedMinutes)) in bed · Sleep Need \(sleepPlanDuration(plan.sleepNeedMinutes))")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Not set").font(StrandFont.title2).foregroundStyle(StrandPalette.textPrimary)
+                            Text("Set a wake time to calculate tonight's bedtime.")
+                                .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        }
+                    }
+
+                    Color.clear.frame(height: selectedDayOffset == 0 ? 42 : 0)
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(StrandPalette.restColor.opacity(0.34), lineWidth: 0.9))
+                .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+            .buttonStyle(LiquidPressStyle())
+            .accessibilityHint("Opens Sleep")
+
+            if tonightWakeState.canEditAlarm {
+                Button { showAlarmEditor = true } label: {
+                    Label(plannedWakeDate == nil ? "Set Alarm" : "Edit Alarm", systemImage: "alarm")
+                        .font(StrandFont.subhead.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(StrandPalette.textPrimary)
+                .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.horizontal, 18)
+                .padding(.bottom, 16)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func tonightSleepValue(time: Date, label: LocalizedStringKey, icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).foregroundStyle(StrandPalette.restColor)
+                Text(time.formatted(date: .omitted, time: .shortened))
+                    .font(StrandFont.number(25)).foregroundStyle(StrandPalette.textPrimary)
+                    .minimumScaleFactor(0.8)
+            }
+            Text(label).strandOverline().lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var monitorCards: some View {
