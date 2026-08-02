@@ -61,6 +61,7 @@ public struct SleepDebtLedger: Equatable, Sendable {
     public var magnitudeMin: Double { abs(balanceMin) }
 }
 
+@available(*, deprecated, message: "Use bounded SleepPlanningEngine")
 public enum SleepDebt {
 
     /// Cap the ledger at the trailing two weeks — recent enough to be actionable,

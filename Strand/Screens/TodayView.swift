@@ -163,8 +163,21 @@ private struct ActiveWorkoutIndicatorSection: View {
     }
 }
 
+private struct SleepPlanStat: View {
+    let label: LocalizedStringKey
+    let value: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.space1) {
+            Text(label).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            Text(value).font(StrandFont.bodyNumber).foregroundStyle(StrandPalette.textPrimary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct TodayView: View {
     @EnvironmentObject var repo: Repository
+    @EnvironmentObject var behavior: BehaviorStore
     // PERF (scroll stutter): TodayView deliberately does NOT observe `LiveState` directly. A connected
     // strap publishes `LiveState` ~1 Hz (heart rate + each R-R packet), and an `@EnvironmentObject live`
     // here would invalidate the ENTIRE Today `body` on every tick, re-evaluating the scene backdrop, the
@@ -257,6 +270,8 @@ struct TodayView: View {
     @State private var stressToday: Double?
     @State private var fitnessAgeToday: Double?
     @State private var vitalityToday: Double?
+    /// Canonical bounded sleep-planning projection shared with Sleep and Trends.
+    @State private var sleepPlanning: SleepPlanningResult?
     /// Distinct days + sleep sessions imported from a Mi Band (Mi Fitness), for the Data Sources row.
     @State private var xiaomiDays = 0
     @State private var xiaomiSleeps = 0
@@ -1177,6 +1192,73 @@ struct TodayView: View {
                             : "Updates")
     }
 
+    private var plannedWakeDate: Date? {
+        let calendar = Calendar.current
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: Date()) else { return nil }
+        let weekday = calendar.component(.weekday, from: tomorrow)
+        let minutes: Int?
+        if behavior.smartAlarmEnabled,
+           behavior.smartAlarmWeekdays.isEmpty || behavior.smartAlarmWeekdays.contains(weekday) {
+            minutes = behavior.smartAlarmMinutes
+        } else if WindDownNudge.isEnabled {
+            minutes = WindDownNudge.wakeMinutes(forWeekday: weekday)
+        } else {
+            minutes = nil
+        }
+        guard let minutes else { return nil }
+        return calendar.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: tomorrow)
+    }
+
+    @ViewBuilder private var tonightPlanSection: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Tonight's Plan", overline: "Local sleep planner",
+                          trailing: String(localized: "WHOOP-inspired"))
+            NoopCard(tint: StrandPalette.restColor) {
+                if let plan = sleepPlanning?.tonight, let wake = plannedWakeDate {
+                    let bedtime = SleepPlanningEngine.recommendedBedtime(
+                        plannedWake: wake, timeInBedMinutes: plan.timeInBedMinutes)
+                    VStack(alignment: .leading, spacing: NoopMetrics.space4) {
+                        VStack(alignment: .leading, spacing: NoopMetrics.space1) {
+                            Text("RECOMMENDED BEDTIME").strandOverline()
+                            Text(bedtime.formatted(date: .omitted, time: .shortened))
+                                .font(StrandFont.display(42)).foregroundStyle(StrandPalette.textPrimary)
+                            Text("Wake at \(wake.formatted(date: .omitted, time: .shortened)) · \(sleepPlanDuration(plan.timeInBedMinutes)) in bed")
+                                .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        }
+                        Divider().overlay(StrandPalette.hairline)
+                        HStack(spacing: NoopMetrics.space2) {
+                            SleepPlanStat(label: "Sleep Need", value: sleepPlanDuration(plan.sleepNeedMinutes))
+                            SleepPlanStat(label: "Recent Debt", value: sleepPlanDuration(plan.recentDebtMinutes))
+                            SleepPlanStat(label: "Efficiency", value: "\(Int((plan.expectedEfficiency * 100).rounded()))%")
+                        }
+                        VStack(alignment: .leading, spacing: NoopMetrics.space1) {
+                            if plan.debtRecoveryMinutes > 0 { Text("+\(sleepPlanDuration(plan.debtRecoveryMinutes)) debt recovery") }
+                            if plan.strainAdjustmentMinutes > 0 { Text("+\(sleepPlanDuration(plan.strainAdjustmentMinutes)) from today's Effort") }
+                            if plan.napCreditMinutes > 0 { Text("−\(sleepPlanDuration(plan.napCreditMinutes)) nap credit") }
+                        }
+                        .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                        Text("Set a target wake time").font(StrandFont.headline)
+                        Text("Turn on a wake alarm or wind-down plan, and NOOP will calculate tonight's recommended bedtime. No wake time is assumed for you.")
+                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        NavigationLink { SmartAlarmView() } label: {
+                            Label("Set wake time", systemImage: "alarm")
+                                .font(StrandFont.subhead.weight(.semibold))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(StrandPalette.restColor)
+                    }
+                }
+            }
+        }
+    }
+
+    private func sleepPlanDuration(_ minutes: Double) -> String {
+        let rounded = max(0, Int(minutes.rounded()))
+        return rounded >= 60 ? "\(rounded / 60)h \(rounded % 60)m" : "\(rounded)m"
+    }
+
     var body: some View {
         ScreenScaffold(title: scaffoldTitle, onRefresh: { await repo.refresh() },
                        // PERF (scroll): lazy column so the scaffold materialises Today's content on demand.
@@ -1261,19 +1343,22 @@ struct TodayView: View {
                     )
                     .staggeredAppear(index: 0)
                 #endif
+                if selectedDayOffset == 0 {
+                    tonightPlanSection.staggeredAppear(index: 1)
+                }
                 // Phase 1 WHOOP-like hierarchy: rings first, then a coaching brief, then compact supporting
                 // signals. The 5-minute HR chart remains on Today, lower between workouts and sources.
-                synthesisSection.staggeredAppear(index: 1)
-                stressSection.staggeredAppear(index: 2)
-                recoveryVitalsSection.staggeredAppear(index: 3)
+                synthesisSection.staggeredAppear(index: 2)
+                stressSection.staggeredAppear(index: 3)
+                recoveryVitalsSection.staggeredAppear(index: 4)
                 // S4: the SEPARATE Readiness block is no longer a home-screen card, it folded into the
                 // Charge-ring tap (chargeBreakdownSheet). A one-word readiness read (Push / Maintain / Rest,
                 // #205) stays on the hero via the Synthesis section's pill row, so the home screen keeps a
                 // glanceable verdict without the full card. Readiness is NOT deleted, only moved behind a tap.
-                metricsSection.staggeredAppear(index: 4)
-                yourCardsSection.staggeredAppear(index: 5)
-                workoutsSection.staggeredAppear(index: 6)
-                heartRateTrendSection.staggeredAppear(index: 7)
+                metricsSection.staggeredAppear(index: 5)
+                yourCardsSection.staggeredAppear(index: 6)
+                workoutsSection.staggeredAppear(index: 7)
+                heartRateTrendSection.staggeredAppear(index: 8)
                 // Opt-in "looks like a workout?" suggestion (default OFF). Renders only when the
                 // Settings toggle is on AND the detector finds a recent unsaved, un-dismissed window.
                 AutoWorkoutCard()
@@ -2940,11 +3025,7 @@ struct TodayView: View {
     }
 
     private func sleepDebtMinutes(for d: DailyMetric) -> Double? {
-        if let debt = repo.importedSleep[d.day]?.debtMin { return debt }
-        guard let asleep = d.totalSleepMin, asleep > 0 else { return nil }
-        let priorSleep = repo.days.filter { $0.day < d.day }.suffix(30).compactMap(\.totalSleepMin)
-        let need = max(450, priorSleep.isEmpty ? 450 : priorSleep.reduce(0, +) / Double(priorSleep.count))
-        return max(0, need - asleep)
+        sleepPlanning?.history.last(where: { $0.day == d.day })?.recentDebtMinutes
     }
 
     private static func durationPhrase(_ minutes: Double) -> String {
@@ -4147,6 +4228,7 @@ struct TodayView: View {
         // #860 retired the launch auto-land, this pass no longer changes `selectedDayOffset`, so there's no
         // re-fire to bail for: the history-wide set + the new-day announce run straight through below.
         await loadDayScoped()
+        sleepPlanning = await repo.sleepPlanningResult(tonightStrain: effortStrain(displayDay))
         // #849: a bare Today RE-MOUNT (tab-away + return, or an Apple-Health import that recreates the view)
         // re-fires this task with TodayView's `@State` reset, so the heavy history-wide pass re-ran in full
         // every time even when NOTHING in the data had changed: hundreds of redundant reads (incl. the

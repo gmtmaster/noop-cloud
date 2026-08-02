@@ -283,7 +283,7 @@ struct TrendsView: View {
                 // (#732); see sleepPerfByDay. resolve() still does the windowing/widening.
                 let rest = resolve { sleepPerfByDay[$0.day] }
                 let localDebt = Dictionary(sleepDebtHistory.compactMap { point in
-                    point.carriedDebtMinutes.map { (point.day, $0) }
+                    point.recentDebtMinutes.map { (point.day, $0) }
                 }, uniquingKeysWith: { _, last in last })
                 let sleepDebt = resolve { localDebt[$0.day] }
                 performanceDashboard(recovery: recovery, strain: strain, rest: rest, hrv: hrv, rhr: rhr,
@@ -888,35 +888,11 @@ struct TrendsView: View {
         }
     }
 
-    private var sleepDebtHistory: [SleepDebtHistoryPoint] {
-        let parts = sleepSessionParts
-        return SleepNeedEngine.history(repo.days.map { day in
-            let split = parts[day.day]
-            return SleepNeedNightInput(day: day.day,
-                mainSleepMinutes: split?.main ?? day.totalSleepMin,
-                napSleepMinutes: split?.naps ?? 0, strain: day.strain, efficiency: day.efficiency,
-                importedWhoopNeedMinutes: repo.importedSleep[day.day]?.needMin,
-                importedWhoopDebtMinutes: repo.importedSleep[day.day]?.debtMin)
-        })
-    }
-
-    private var sleepSessionParts: [String: (main: Double, naps: Double)] {
-        let grouped = Dictionary(grouping: sleepSessions) {
-            Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
-        }
-        return grouped.reduce(into: [:]) { result, pair in
-            let sessions = pair.value.sorted { $0.effectiveStartTs < $1.effectiveStartTs }
-            let main = Set(SleepView.mainNightGroup(sessions, habitualMidsleepSec: habitualMidsleepSec).map(\.startTs))
-            func asleep(_ session: CachedSleepSession) -> Double {
-                let duration = Double(max(0, session.endTs - session.effectiveStartTs)) / 60
-                guard let raw = session.efficiency else { return duration }
-                return duration * min(max(raw > 1 ? raw / 100 : raw, 0), 1)
-            }
-            result[pair.key] = sessions.reduce(into: (main: 0, naps: 0)) { totals, session in
-                if main.contains(session.startTs) { totals.main += asleep(session) }
-                else { totals.naps += asleep(session) }
-            }
-        }
+    private var sleepDebtHistory: [SleepPlanningHistoryPoint] {
+        let inputs = SleepHistoryInputBuilder.build(days: repo.days, sessions: sleepSessions,
+            habitualMidsleepSec: habitualMidsleepSec, importedSleep: repo.importedSleep)
+        return SleepPlanningEngine.evaluate(inputs, tonightStrain: repo.days.last?.strain,
+            tonightNapSleepMinutes: SleepHistoryInputBuilder.tonightNapMinutes(in: inputs)).history
     }
 
     // MARK: Small multiples — physiologic lines + score bars
@@ -1288,7 +1264,7 @@ private struct RoundedBarTrendChart: View {
 }
 
 private struct SleepDebtDetailView: View {
-    let history: [SleepDebtHistoryPoint]
+    let history: [SleepPlanningHistoryPoint]
 
     private static let parser: DateFormatter = {
         let formatter = DateFormatter()
@@ -1300,11 +1276,11 @@ private struct SleepDebtDetailView: View {
 
     private var plotted: [TrendPoint] {
         history.compactMap { point in
-            guard let debt = point.carriedDebtMinutes, let date = Self.parser.date(from: point.day) else { return nil }
+            guard let debt = point.recentDebtMinutes, let date = Self.parser.date(from: point.day) else { return nil }
             return TrendPoint(date: date, value: debt)
         }
     }
-    private var latest: SleepDebtHistoryPoint? { history.last { $0.carriedDebtMinutes != nil } }
+    private var latest: SleepPlanningHistoryPoint? { history.last { $0.recentDebtMinutes != nil } }
     private var recentPlotted: [TrendPoint] { Array(plotted.suffix(30)) }
     private var chartUpperBound: Double {
         let values = recentPlotted.map(\.value).sorted()
@@ -1325,16 +1301,16 @@ private struct SleepDebtDetailView: View {
                 NoopCard(tint: StrandPalette.statusWarning) {
                     VStack(alignment: .leading, spacing: NoopMetrics.space3) {
                         Text("CURRENT ESTIMATE").strandOverline()
-                        Text(duration(latest.carriedDebtMinutes ?? 0))
+                        Text(duration(latest.recentDebtMinutes ?? 0))
                             .font(StrandFont.display(48)).foregroundStyle(StrandPalette.textPrimary)
-                        Text("Surplus sleep repays carried debt gradually. Only the amount added to one night's recommendation is capped. This is an estimate, not a diagnosis or a proprietary WHOOP value.")
+                        Text("Recent sleep debt uses a weighted 14-sleep window. Newer nights matter more, surplus sleep repays debt, and tonight's recovery target is capped. This is a local estimate, not WHOOP's proprietary value.")
                             .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
-                        Text("Confidence: \(confidence(latest.breakdown.confidence))")
+                        Text("Confidence: \(confidence(latest.planBeforeNight.confidence))")
                             .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                     }
                 }
                 if plotted.count >= 2 {
-                    ChartCard(title: "Recent carried debt", trailing: duration(latest.carriedDebtMinutes ?? 0),
+                    ChartCard(title: "Recent rolling debt", trailing: duration(latest.recentDebtMinutes ?? 0),
                               height: NoopMetrics.chartHeight, tint: StrandPalette.statusWarning,
                               chart: {
                         RoundedBarTrendChart(points: chartPoints, valueRange: 0...chartUpperBound,
@@ -1362,7 +1338,7 @@ private struct SleepDebtDetailView: View {
 
     private var recentChanges: some View {
         let changes = history.filter {
-            ($0.nightlyDeficitMinutes ?? 0) > 0 || ($0.repaymentMinutes ?? 0) > 0 || $0.breakdown.napCreditMinutes > 0
+            ($0.deficitMinutes ?? 0) > 0 || ($0.surplusRepaymentMinutes ?? 0) > 0 || $0.planBeforeNight.napCreditMinutes > 0
         }.suffix(10).reversed()
         return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader("What changed it", overline: "Recent nights")
@@ -1372,16 +1348,16 @@ private struct SleepDebtDetailView: View {
                         HStack(spacing: NoopMetrics.space3) {
                             Text(point.day).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                             VStack(alignment: .leading, spacing: 2) {
-                                if let deficit = point.nightlyDeficitMinutes, deficit > 0 {
+                                if let deficit = point.deficitMinutes, deficit > 0 {
                                     Text("Added \(duration(deficit))")
-                                } else if let repayment = point.repaymentMinutes, repayment > 0 {
+                                } else if let repayment = point.surplusRepaymentMinutes, repayment > 0 {
                                     Text("Repaid \(duration(repayment))")
                                 } else {
-                                    Text("Nap reduced tonight's need by \(duration(point.breakdown.napCreditMinutes))")
+                                    Text("Nap reduced tonight's need by \(duration(point.planBeforeNight.napCreditMinutes))")
                                 }
                             }.font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
                             Spacer()
-                            Text(point.carriedDebtMinutes.map(duration) ?? "—")
+                            Text(point.recentDebtMinutes.map(duration) ?? "—")
                                 .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
                         }.padding(NoopMetrics.cardInnerPadding)
                         if point.day != changes.last?.day { Divider().overlay(StrandPalette.hairline) }

@@ -1,33 +1,63 @@
-# NOOP Sleep Need model (version 2)
+# NOOP Sleep Planning model (version 3)
 
-NOOP Sleep Need is a transparent planning estimate. It does not reproduce WHOOP's proprietary algorithm
-and does not change NOOP's Charge, Effort, Rest, Recovery, sleep staging, or canonical sleep totals.
+NOOP Sleep Planning is a transparent, local, WHOOP-inspired estimate. It is not WHOOP's proprietary
+formula and does not change Charge, Effort, Rest, recovery, sleep staging, or canonical sleep totals.
 
-For each cycle, the engine uses only earlier main sleeps plus strain and true naps available for that cycle.
-The baseline is 450 minutes until seven valid main sleeps exist. It then uses the 70th percentile of the
-latest 28 main sleeps, clamped to 450–540 minutes. Confidence is fallback below 7 nights, limited from 7–20,
-and established at 21 or more.
+## Recent sleep debt
 
-Carried debt is updated chronologically against the requirement before prior debt is added:
+Debt uses at most the latest 14 valid main sleeps. Each night is measured against the requirement known
+before that night:
 
-```
-base requirement = max(360, baseline + strain adjustment - nap credit)
+```text
+base requirement = max(360, personalized baseline + strain adjustment - nap credit)
 deficit = max(0, base requirement - main sleep)
-repayment = max(0, main sleep - base requirement) * 0.75
-carried = max(0, previous carried + deficit - repayment)
-tonight debt adjustment = min(carried * 0.50, 120 minutes)
+surplus repayment = max(0, main sleep - base requirement) × 0.75
+raw change = deficit - surplus repayment
+recent debt = max(0, Σ(raw change × 0.90^age))
 ```
 
-The carried balance is deliberately not capped at 240 minutes. Only the amount added to one night's
-recommendation is capped, at 120 minutes. Keeping those concepts separate lets the balance continue to
-reflect short nights while allowing adequate and surplus sleep to reduce it predictably.
+The latest sleep has full weight. Each older sleep has 90% of the weight of the sleep after it, and a
+contribution disappears after 14 valid sleeps. Missing nights do not create debt or advance the window.
+Debt is floored at zero; NOOP does not bank sleep credit. Because the model is bounded, repository history
+older than the configured baseline and debt windows cannot change the current plan.
 
-Strain adds zero minutes through 50 on NOOP's 0–100 scale, rises linearly to 30 minutes at 100, and is
-capped. True nap sleep credits 80%, capped at 120 minutes. Total need cannot fall below 360 minutes.
+## Personalized baseline and confidence
 
-When at least seven prior efficiency samples exist, their median is clamped to 0.75–0.98 and recommended
-time in bed is `Sleep Need / expected efficiency`. Otherwise time in bed is omitted.
+The baseline is 450 minutes until seven prior valid main sleeps exist. It then uses the 70th percentile of
+the latest 28 main sleeps, clamped to 450–540 minutes. Confidence is fallback below 7 prior sleeps, limited
+from 7–20, and established at 21 or more. Each historical calculation uses only earlier sleeps.
 
-Imported WHOOP Sleep Need and debt remain untouched reference values. They are carried alongside, but never
-mixed into, the locally-derived NOOP history. The local series is derived on demand from canonical records;
-there is no migration, cache, or Cloud Sync contract change.
+## Tonight's Sleep Need
+
+Effort is NOOP's native 0–100 scale. Its adjustment follows a smooth quadratic curve from 0 minutes at zero
+Effort to 30 minutes at 100, capped there. This keeps low Effort negligible while progressively recognizing
+moderate and high load.
+
+Qualifying naps receive 80% credit based on estimated asleep time, capped at 120 minutes. Naps are selected
+separately from the main sleep so they are never counted twice.
+
+Recent debt contributes a gradual recovery target:
+
+```text
+debt recovery = min(recent debt × 0.25, 60 minutes)
+Sleep Need = max(360, baseline + strain adjustment - nap credit + debt recovery)
+```
+
+The full recent debt and tonight's recovery target are deliberately separate concepts. A multi-hour debt
+balance never means the user should add all of it to one night.
+
+## Time in Bed and bedtime
+
+Sleep Need is estimated asleep time. Time in Bed accounts for expected sleep efficiency:
+
+```text
+Time in Bed = Sleep Need / expected efficiency
+recommended bedtime = planned wake time - Time in Bed
+```
+
+Expected efficiency is the median of up to 14 recent valid samples once seven exist, clamped to 75–98%.
+Before then, the planner uses a 90% fallback. A bedtime is only shown when the user has explicitly enabled a
+wake alarm or wind-down plan; NOOP does not silently invent a wake time.
+
+Imported WHOOP Sleep Need and Sleep Debt remain untouched reference values. They never replace or alter the
+local planner result.

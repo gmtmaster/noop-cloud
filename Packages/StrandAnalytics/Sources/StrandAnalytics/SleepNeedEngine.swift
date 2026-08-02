@@ -57,6 +57,7 @@ public struct SleepDebtHistoryPoint: Equatable, Sendable {
 }
 
 /// NOOP's versioned, presentation-only Sleep Need and carried-debt model.
+@available(*, deprecated, message: "Use bounded SleepPlanningEngine")
 public enum SleepNeedEngine {
     public static let modelVersion = 2
 

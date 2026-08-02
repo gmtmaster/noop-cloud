@@ -13,8 +13,7 @@ import WhoopStore
 //   2. A uniform grid of fixed StatTiles, each with a sparkline and a "vs typical"
 //      caption: Performance, Efficiency, Consistency, Hours vs Needed, Restorative,
 //      Respiratory, Sleep Debt.
-//   2b. The sleep-debt LEDGER card — a rolling 14-night running balance of (slept −
-//      personal need) with a plain-English read and a diverging per-night delta bar.
+//   2b. Recent Sleep Debt — a bounded, recency-weighted 14-sleep local estimate.
 //   3. "Stages vs typical" NoopCard — Deep/REM/Light as horizontal bars, last-night
 //      minutes with a marker at the personal typical (mean) so highs/lows pop.
 //   4. A 30-day asleep-hours ChartCard trend.
@@ -409,7 +408,7 @@ struct SleepView: View {
         }
     }
 
-    @ViewBuilder private func sleepNeedBreakdownRows(_ need: SleepNeedBreakdown) -> some View {
+    @ViewBuilder private func sleepNeedBreakdownRows(_ need: SleepPlanningBreakdown) -> some View {
         sleepNeedRow("Baseline", need.baselineMinutes, sign: nil)
         if need.debtAdjustmentMinutes > 0 { sleepNeedRow("Recent sleep debt", need.debtAdjustmentMinutes, sign: "+") }
         if need.strainAdjustmentMinutes > 0 { sleepNeedRow("Day strain", need.strainAdjustmentMinutes, sign: "+") }
@@ -1542,19 +1541,16 @@ struct SleepView: View {
         }
     }
 
-    // MARK: - 2b. Sleep-debt ledger (rolling 14-night running balance)
+    // MARK: - 2b. Recent sleep debt
 
-    /// A running balance of (slept − personal need) across the recent fortnight, surfaced
-    /// as one card: the net debt/surplus headline, a plain-English read, and a diverging
-    /// bar of each night's delta (surplus above the line, deficit below). Honest: a simple
-    /// accumulator — a surplus night offsets a deficit one — capped at 14 nights, no-data
-    /// nights skipped. (#242)
+    /// The canonical planner's bounded recent debt plus the exact weighted contributions that form it.
+    /// Newer sleeps matter more, surplus reduces debt, missing sleeps are absent, and credit is floored at zero.
     @ViewBuilder
     private func sleepDebtLedger(_ model: SleepModel) -> some View {
         let ledger = model.sleepDebtLedger
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-            SectionHeader("Sleep-debt ledger", overline: "Last 14 nights",
-                          trailing: String(localized: "running balance"))
+            SectionHeader("Recent Sleep Debt", overline: "Weighted last 14 sleeps",
+                          trailing: String(localized: "local estimate"))
             NoopCard(tint: StrandPalette.restColor) {
                 if ledger.nightCount == 0 {
                     Text("No nights with sleep data yet. Your ledger fills in as you wear the strap to bed.")
@@ -1589,8 +1585,8 @@ struct SleepView: View {
                         Divider().overlay(StrandPalette.hairline)
                         ChartFooter([
                             ("Balance", debtSigned(ledger.balanceMin)),
-                            ("Per-night need", durationText(ledger.needMin)),
-                            ("Nights", "\(ledger.nightCount)"),
+                            ("Tonight recovery", durationText(model.sleepNeed.debtRecoveryMinutes)),
+                            ("Sleeps", "\(ledger.nightCount)"),
                         ])
                     }
                 }
@@ -1841,15 +1837,15 @@ struct SleepView: View {
     /// Compatibility projection for the existing ledger card. Its balance and nightly deltas now come
     /// from the shared NOOP engine; missing nights remain absent instead of becoming artificial debt.
     private var debtLedger: SleepDebtLedger {
-        let points = sleepNeedHistory.compactMap { point -> SleepDebtNight? in
-            guard let actual = point.actualMainSleepMinutes,
-                  let deficit = point.nightlyDeficitMinutes,
-                  let repayment = point.repaymentMinutes else { return nil }
-            return SleepDebtNight(day: point.day, sleptMin: actual, deltaMin: repayment - deficit)
+        let actualByDay = Dictionary(uniqueKeysWithValues: sleepNeedHistory.compactMap { point in
+            point.actualMainSleepMinutes.map { (point.day, $0) }
+        })
+        let points = sleepPlanningResult.recentContributions.map { contribution in
+            SleepDebtNight(day: contribution.day, sleptMin: actualByDay[contribution.day] ?? 0,
+                           deltaMin: -contribution.weightedDebtChangeMinutes)
         }
-        let recent = Array(points.suffix(SleepDebt.defaultWindowNights))
-        return SleepDebtLedger(balanceMin: -(sleepNeedHistory.compactMap(\.carriedDebtMinutes).last ?? 0),
-                               nights: recent, needMin: currentSleepNeed.totalSleepNeedMinutes)
+        return SleepDebtLedger(balanceMin: -sleepPlanningResult.tonight.recentDebtMinutes,
+                               nights: points, needMin: currentSleepNeed.totalSleepNeedMinutes)
     }
 
     // MARK: - Derived model
@@ -2224,8 +2220,8 @@ struct SleepView: View {
     /// Hours vs needed % = main sleep / the date's no-look-ahead NOOP Sleep Need.
     private var hoursVsNeededSeries: Metric {
         let series = sleepNeedHistory.compactMap { point -> Double? in
-            guard let actual = point.actualMainSleepMinutes, point.breakdown.totalSleepNeedMinutes > 0 else { return nil }
-            return actual / point.breakdown.totalSleepNeedMinutes * 100
+            guard let actual = point.actualMainSleepMinutes, point.planBeforeNight.totalSleepNeedMinutes > 0 else { return nil }
+            return actual / point.planBeforeNight.totalSleepNeedMinutes * 100
         }
         return (series.last, mean(series), series)
     }
@@ -2245,49 +2241,23 @@ struct SleepView: View {
 
     /// Carried NOOP sleep debt. Imported WHOOP debt remains an untouched reference in each history point.
     private var sleepDebtSeries: Metric {
-        let series = sleepNeedHistory.compactMap(\.carriedDebtMinutes)
+        let series = sleepNeedHistory.compactMap(\.recentDebtMinutes)
         return (series.last, mean(series), series)
     }
 
-    private var sleepNeedHistory: [SleepDebtHistoryPoint] {
-        let sessionParts = sleepNeedSessionParts
-        return SleepNeedEngine.history(repo.days.map { day in
-            let parts = sessionParts[day.day]
-            return SleepNeedNightInput(day: day.day,
-                mainSleepMinutes: parts?.main ?? day.totalSleepMin,
-                napSleepMinutes: parts?.naps ?? 0, strain: day.strain, efficiency: day.efficiency,
-                importedWhoopNeedMinutes: repo.importedSleep[day.day]?.needMin,
-                importedWhoopDebtMinutes: repo.importedSleep[day.day]?.debtMin)
-        })
+    private var sleepNeedHistory: [SleepPlanningHistoryPoint] {
+        sleepPlanningResult.history
     }
 
-    /// Main/nap split from the same selector used by this screen and sleep analytics. Session duration is
-    /// converted to actual sleep with its stored efficiency; a daily canonical total remains the fallback
-    /// while the full session list is loading or for imported rows without session detail.
-    private var sleepNeedSessionParts: [String: (main: Double, naps: Double)] {
-        guard !allSessions.isEmpty else { return [:] }
-        let grouped = Dictionary(grouping: allSessions) {
-            Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
-        }
-        return grouped.reduce(into: [:]) { result, pair in
-            let sessions = pair.value.sorted { $0.effectiveStartTs < $1.effectiveStartTs }
-            let main = Set(SleepView.mainNightGroup(sessions, habitualMidsleepSec: habitualMidsleepSec).map(\.startTs))
-            func asleep(_ session: CachedSleepSession) -> Double {
-                let duration = Double(max(0, session.endTs - session.effectiveStartTs)) / 60
-                guard let raw = session.efficiency else { return duration }
-                return duration * min(max(raw > 1 ? raw / 100 : raw, 0), 1)
-            }
-            result[pair.key] = sessions.reduce(into: (main: 0, naps: 0)) { totals, session in
-                if main.contains(session.startTs) { totals.main += asleep(session) }
-                else { totals.naps += asleep(session) }
-            }
-        }
+    private var sleepPlanningResult: SleepPlanningResult {
+        let inputs = SleepHistoryInputBuilder.build(days: repo.days, sessions: allSessions,
+            habitualMidsleepSec: habitualMidsleepSec, importedSleep: repo.importedSleep)
+        return SleepPlanningEngine.evaluate(inputs, tonightStrain: repo.days.last?.strain,
+            tonightNapSleepMinutes: SleepHistoryInputBuilder.tonightNapMinutes(in: inputs))
     }
 
-    private var currentSleepNeed: SleepNeedBreakdown {
-        sleepNeedHistory.last?.breakdown ?? SleepNeedEngine.calculate(
-            priorMainSleepMinutes: [], priorEfficiencies: [], carriedDebtMinutes: 0,
-            strain: repo.days.last?.strain, qualifyingNapSleepMinutes: 0)
+    private var currentSleepNeed: SleepPlanningBreakdown {
+        sleepPlanningResult.tonight
     }
 
     // MARK: - Trend points
@@ -2399,14 +2369,14 @@ struct SleepView: View {
     /// uses the LIVE magnitude `m` so the headline crosses from "On target" to "≈…" mid-count exactly
     /// once, matching the final reading. Final-value identical to `debtHeadline(_:)`.
     private func debtHeadline(forMagnitudeMin m: Double, ledger: SleepDebtLedger) -> String {
-        if m < SleepDebt.onTargetBandMin { return String(localized: "On target") }
+        if m < SleepPlanningEngine.Configuration.onTargetDisplayBandMinutes { return String(localized: "On target") }
         return "≈\(durationText(m))"
     }
 
-    /// Short tag under/beside the headline: DEBT / SURPLUS / ON TARGET.
+    /// Recent debt is floored at zero, so there is intentionally no unreachable surplus state.
     private func debtTag(_ ledger: SleepDebtLedger) -> String {
-        if ledger.magnitudeMin < SleepDebt.onTargetBandMin { return String(localized: "balanced") }
-        return ledger.isDebt ? String(localized: "sleep debt") : String(localized: "surplus")
+        if ledger.magnitudeMin < SleepPlanningEngine.Configuration.onTargetDisplayBandMinutes { return String(localized: "balanced") }
+        return String(localized: "sleep debt")
     }
 
     /// Plain-English read of the running balance over the window.
@@ -2415,20 +2385,17 @@ struct SleepView: View {
         let span = nights == 1
             ? String(localized: "the last night")
             : String(localized: "the last \(nights) nights")
-        if ledger.magnitudeMin < SleepDebt.onTargetBandMin {
-            return String(localized: "You're roughly on top of your sleep across \(span). Slept minutes balance out against your need.")
+        if ledger.magnitudeMin < SleepPlanningEngine.Configuration.onTargetDisplayBandMinutes {
+            return String(localized: "You're roughly on top of your sleep across \(span). Newer sleeps carry more weight in this local estimate.")
         }
         let mag = durationText(ledger.magnitudeMin)
-        if ledger.isDebt {
-            return String(localized: "You've banked about \(mag) of sleep debt over \(span). Surplus nights count back against it. An earlier night or two would clear it.")
-        }
-        return String(localized: "You're carrying about \(mag) of surplus over \(span). You've slept past your need on balance. Nicely ahead.")
+        return String(localized: "You have about \(mag) of recent sleep debt across \(span). Newer sleeps count more, and surplus sleep reduces it.")
     }
 
     /// Color the balance by sign + size: surplus/within-band → positive green, modest
     /// debt → warning, heavier debt → critical.
     private func debtBalanceColor(_ ledger: SleepDebtLedger) -> Color {
-        if ledger.magnitudeMin < SleepDebt.onTargetBandMin || !ledger.isDebt {
+        if ledger.magnitudeMin < SleepPlanningEngine.Configuration.onTargetDisplayBandMinutes {
             return StrandPalette.statusPositive
         }
         // A debt: amber up to ~3 h accumulated, red beyond.
@@ -2714,8 +2681,8 @@ private struct SleepModel {
     let restorative: Metric
     let respiratory: Metric
     let sleepDebt: Metric
-    let sleepNeed: SleepNeedBreakdown
-    let sleepDebtHistory: [SleepDebtHistoryPoint]
+    let sleepNeed: SleepPlanningBreakdown
+    let sleepDebtHistory: [SleepPlanningHistoryPoint]
 
     let typicalTotalMin: Double?
     let typicalDeepMin: Double?
@@ -2724,8 +2691,7 @@ private struct SleepModel {
 
     let trendPoints: [TrendPoint]
 
-    /// Rolling 14-night sleep-debt ledger: Σ(slept − personal need) across the recent
-    /// fortnight, with the per-night deltas behind it. Computed once per data change.
+    /// Compatibility display model containing the planner's weighted 14-sleep contributions.
     let sleepDebtLedger: SleepDebtLedger
 }
 
