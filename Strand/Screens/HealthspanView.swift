@@ -36,15 +36,15 @@ enum HealthspanOrbMotion {
         let speed = particleAngularSpeed(index: index)
         let phase = elapsed * speed
         return ParticleState(
-            xDrift: 0.052 * sin(phase + seed),
-            yDrift: 0.046 * sin(phase * 0.73 + seed * 0.71),
-            depth: 0.10 * sin(phase * 0.51 + seed * 1.37)
+            xDrift: 0.080 * sin(phase + seed),
+            yDrift: 0.072 * sin(phase * 0.73 + seed * 0.71),
+            depth: 0.15 * sin(phase * 0.51 + seed * 1.37)
         )
     }
 
     static func particleAngularSpeed(index: Int) -> Double {
         let seed = Double(index) + 1
-        return 0.11 + unit(seed * 3.1) * 0.07
+        return 0.24 + unit(seed * 3.1) * 0.10
     }
 
     static func unit(_ value: Double) -> Double {
@@ -56,9 +56,9 @@ enum HealthspanOrbMotion {
 /// One canonical local-coordinate model for every orb layer. Lighting may be asymmetric, geometry may not.
 struct HealthspanOrbGeometry: Equatable {
     static let baseRadiusFactor: CGFloat = 0.455
-    static let coreRadiusFactor: CGFloat = 0.57
-    static let particleRadiusFactor: CGFloat = 0.94
-    static let glowRadiusFactor: CGFloat = 1.0
+    static let coreRadiusFactor: CGFloat = 0.60
+    static let particleRadiusFactor: CGFloat = 0.95
+    static let glowRadiusFactor: CGFloat = 1.01
 
     let bounds: CGRect
     let center: CGPoint
@@ -366,66 +366,121 @@ private struct NoopAgeOrb: View {
                     // Ambient glow is centered, shell-bound, and filter-scoped so it cannot affect the
                     // particles or rim. It supports the sphere instead of becoming a second flat disk.
                     context.drawLayer { glow in
-                        glow.addFilter(.shadow(color: tint.opacity(0.32),
-                                               radius: geometry.baseRadius * 0.085, x: 0, y: 0))
-                        glow.fill(Path(ellipseIn: geometry.circle(radius: glowRadius)),
-                                  with: .color(tint.opacity(0.08)))
+                        glow.addFilter(.shadow(
+                            color: tint.opacity(0.14),
+                            radius: geometry.baseRadius * 0.045,
+                            x: 0,
+                            y: 0
+                        ))
+
+                        glow.fill(
+                            Path(ellipseIn: geometry.circle(radius: glowRadius)),
+                            with: .color(tint.opacity(0.025))
+                        )
                     }
+
+                    context.fill(
+                        Path(ellipseIn: shellCircle),
+                        with: .color(.black)
+                    )
 
                     // Centered luminous shell. The light source is expressed by the later rim highlight,
                     // never by moving this gradient's geometric center away from the canonical center.
-                    context.fill(Path(ellipseIn: shellCircle), with: .radialGradient(
-                        Gradient(stops: [
-                            .init(color: tint.opacity(0.02), location: 0),
-                            .init(color: tint.opacity(0.08), location: 0.58),
-                            .init(color: tint.opacity(0.46), location: 0.82),
-                            .init(color: tint.opacity(0.82), location: 0.95),
-                            .init(color: tint.opacity(0.30), location: 1)
-                        ]), center: center, startRadius: 0, endRadius: shellRadius))
+                    context.fill(
+                        Path(ellipseIn: shellCircle),
+                        with: .radialGradient(
+                            Gradient(stops: [
+                                .init(color: tint.opacity(0.0), location: 0.00),
+                                .init(color: tint.opacity(0.01), location: 0.66),
+                                .init(color: tint.opacity(0.08), location: 0.76),
+                                .init(color: tint.opacity(0.28), location: 0.88),
+                                .init(color: tint.opacity(0.50), location: 0.94),
+                                .init(color: tint.opacity(0.8), location: 1.00)
+
+                            ]),
+                            center: center,
+                            startRadius: 0,
+                            endRadius: shellRadius
+                        )
+                    )
 
                     // A distinct centered core keeps the text field dark without redefining shell geometry.
-                    context.fill(Path(ellipseIn: geometry.circle(radius: coreRadius)),
-                                 with: .radialGradient(
-                                    Gradient(stops: [
-                                        .init(color: .black, location: 0),
-                                        .init(color: .black.opacity(0.99), location: 0.76),
-                                        .init(color: .black.opacity(0.82), location: 1)
-                                    ]), center: center, startRadius: 0, endRadius: coreRadius))
+                    context.fill(
+                        Path(ellipseIn: geometry.circle(radius: coreRadius)),
+                        with: .radialGradient(
+                            Gradient(stops: [
+                                .init(color: .black, location: 0),
+                                .init(color: .black.opacity(0.995), location: 0.82),
+                                .init(color: .black.opacity(0.94), location: 1)
+                            ]),
+                            center: center,
+                            startRadius: 0,
+                            endRadius: coreRadius
+                        )
+                    )
 
                     context.clip(to: Path(ellipseIn: shellCircle))
-                    for index in 0..<128 {
+                    for index in 0..<320 {
                         let seed = Double(index) + 1
                         let baseDepth = HealthspanOrbMotion.unit(seed * 12.9898) * 2 - 1
                         let theta = HealthspanOrbMotion.unit(seed * 78.233) * .pi * 2
                         // Cube root produces a volume-uniform radial distribution, including the core,
                         // instead of concentrating every point in a thin outer ring.
-                        let radial = 0.10 + pow(HealthspanOrbMotion.unit(seed * 39.425), 1.0 / 3.0) * 0.90
+                        let radial =
+                            0.55
+                            + pow(
+                                HealthspanOrbMotion.unit(seed * 39.425),
+                                0.80
+                            ) * 0.40
+
                         let motion = HealthspanOrbMotion.particle(index: index, elapsed: t)
                         let depth = max(-1, min(1, baseDepth + motion.depth))
-                        let planar = sqrt(max(0, 1 - depth * depth))
-                        let p = geometry.project(normalizedX: cos(theta) * planar * radial + motion.xDrift,
-                                                 normalizedY: sin(theta) * planar * radial + motion.yDrift,
-                                                 scale: scale)
-                        let dot = 0.7 + HealthspanOrbMotion.unit(seed * 91.7) * 1.65 + max(0, depth) * 0.7
-                        let opacity = 0.18 + (depth + 1) * 0.19 + HealthspanOrbMotion.unit(seed * 17.3) * 0.22
+
+                        let p = geometry.project(
+                            normalizedX: cos(theta) * radial + motion.xDrift * 0.35,
+                            normalizedY: sin(theta) * radial + motion.yDrift * 0.35,
+                            scale: scale
+                        )
+                        let random = HealthspanOrbMotion.unit(seed * 91.7)
+
+                        let dot =
+                            0.45
+                            + pow(random, 2.4) * 2.0
+                            + max(0, depth) * 0.35
+
+                        var opacity =
+                            0.22
+                            + random * 0.28
+                            + max(0, depth) * 0.16
+
+                        let twinkle =
+                            0.90
+                            + 0.10 * sin(t * 0.9 + seed * 1.73)
+
+                        opacity *= twinkle
+
                         context.fill(Path(ellipseIn: CGRect(x: p.x - dot, y: p.y - dot,
                                                             width: dot * 2, height: dot * 2)),
                                      with: .color(tint.opacity(opacity)))
                     }
 
                     context.stroke(Path(ellipseIn: shellCircle.insetBy(dx: 1.5, dy: 1.5)),
-                                   with: .color(tint.opacity(0.55)), lineWidth: 1.2)
+                                   with: .color(tint.opacity(0.28)),
+                                   lineWidth: 0.8)
                     var highlight = Path()
                     highlight.addArc(center: center, radius: shellRadius - 3,
                                      startAngle: .degrees(205 + shellPhase * 4),
                                      endAngle: .degrees(315 + shellPhase * 4), clockwise: false)
-                    context.stroke(highlight, with: .color(tint.opacity(0.24)),
-                                   style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
+                    context.stroke(
+                        highlight,
+                        with: .color(tint.opacity(0.10)),
+                        style: StrokeStyle(lineWidth: 1.1, lineCap: .round)
+                    )
                 }
                 VStack(spacing: 4) {
                     Text(String(format: "%.1f", age)).font(StrandFont.display(50)).foregroundStyle(.white)
                     Text("NOOP AGE").strandOverline().foregroundStyle(.white.opacity(0.72))
-                    Text(deltaText).font(StrandFont.subhead).foregroundStyle(tint)
+                    Text(deltaText).font(StrandFont.headline).foregroundStyle(tint)
                     Text(confidence.rawValue.capitalized).font(StrandFont.footnote).foregroundStyle(.white.opacity(0.55))
                 }
             }
@@ -445,4 +500,19 @@ private struct NoopAgeOrb: View {
         if abs(delta) < 0.05 { return "Matches your age" }
         return String(format: "%.1f years %@", abs(delta), delta > 0 ? "younger" : "older")
     }
+}
+
+#Preview("Healthspan Orb") {
+    ZStack {
+        liquidScaffoldSky()
+            .ignoresSafeArea()
+
+        NoopAgeOrb(
+            age: 23.2,
+            chronologicalAge: 27.0,
+            confidence: .established
+        )
+        .frame(width: 360, height: 360)
+    }
+    .preferredColorScheme(.dark)
 }
