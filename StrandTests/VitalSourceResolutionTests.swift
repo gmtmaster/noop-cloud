@@ -111,6 +111,23 @@ final class VitalSourceResolutionTests: XCTestCase {
         XCTAssertEqual(BodyVitalSigns.latestDayLabel(readings), BodyVitalReading.dayLabel("2026-06-12"))
     }
 
+    func testMeasurementContextLabelsFreshAndStaleNights() {
+        let now = localNoon(day: "2026-06-13")
+        XCTAssertEqual(BodyVitalReading.measurementContext("2026-06-13", now: now), "Last night")
+        XCTAssertEqual(BodyVitalReading.measurementContext("2026-06-12", now: now), "Previous night")
+        XCTAssertTrue(BodyVitalReading.measurementContext("2026-06-09", now: now).hasPrefix("Stale"))
+    }
+
+    func testOnlyRealAvailableVitalHasAValue() {
+        let readings = BodyVitalSigns.readings(
+            sourceRows: [SourcedDailyMetric(metric: daily(day: "2026-06-12", respRateBpm: 15.2),
+                                             source: .whoopImport)],
+            temperatureUnit: .celsius,
+            now: localNoon(day: "2026-06-13"))
+        XCTAssertNotNil(readings.first { $0.key == "resp" }?.value)
+        XCTAssertTrue(readings.filter { $0.key != "resp" }.allSatisfy { $0.value == nil })
+    }
+
     // MARK: - Fixtures
 
     private func daily(

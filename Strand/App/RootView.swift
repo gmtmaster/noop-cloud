@@ -420,7 +420,7 @@ struct RootView: View {
         case .sleep: SleepView()
         case .trends: TrendsView()
         case .workouts: WorkoutsView()
-        case .health: HealthView()
+        case .health: HealthspanView()
         case .stress: StressView()
         case .labBook: LabBookView()
         case .rhythm: RhythmHost()

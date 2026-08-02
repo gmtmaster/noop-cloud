@@ -6,7 +6,21 @@ import SwiftUI
 /// Powers HR zones, calories and recovery baselines.
 @MainActor
 final class ProfileStore: ObservableObject {
-    @Published var age: Int { didSet { d.set(age, forKey: K.age) } }
+    @Published var age: Int {
+        didSet {
+            ageIsExplicit = age > 0
+            if age > 0 { d.set(age, forKey: K.age) } else { d.removeObject(forKey: K.age) }
+        }
+    }
+    /// Distinguishes a user-supplied age from the legacy 30-year UI seed.
+    @Published private(set) var ageIsExplicit: Bool
+    /// Optional exact birth date. Nil means not supplied; age-sensitive models must not infer one.
+    @Published var birthDate: Date? {
+        didSet {
+            if let birthDate { d.set(birthDate.timeIntervalSince1970, forKey: K.birthDate) }
+            else { d.removeObject(forKey: K.birthDate) }
+        }
+    }
     @Published var sex: String { didSet { d.set(sex, forKey: K.sex) } }          // "male" | "female" | "nonbinary"
     @Published var weightKg: Double { didSet { d.set(weightKg, forKey: K.weight) } }
     @Published var heightCm: Double { didSet { d.set(heightCm, forKey: K.height) } }
@@ -52,7 +66,7 @@ final class ProfileStore: ObservableObject {
 
     private let d = UserDefaults.standard
     private enum K {
-        static let age = "profile.age", sex = "profile.sex", weight = "profile.weightKg"
+        static let age = "profile.age", birthDate = "profile.birthDate", sex = "profile.sex", weight = "profile.weightKg"
         static let height = "profile.heightCm", hrMax = "profile.hrMaxOverride"
         static let stepScale = "profile.stepTicksPerStep"
         static let waist = "profile.waistCm"
@@ -65,7 +79,10 @@ final class ProfileStore: ObservableObject {
     }
 
     init() {
-        age = d.object(forKey: K.age) as? Int ?? 30
+        let storedAge = d.object(forKey: K.age) as? Int
+        ageIsExplicit = (storedAge ?? 0) > 0
+        age = (storedAge ?? 0) > 0 ? storedAge! : 30
+        birthDate = (d.object(forKey: K.birthDate) as? Double).map(Date.init(timeIntervalSince1970:))
         sex = d.string(forKey: K.sex) ?? "male"
         weightKg = d.object(forKey: K.weight) as? Double ?? 75
         heightCm = d.object(forKey: K.height) as? Double ?? 178
@@ -113,6 +130,21 @@ final class ProfileStore: ObservableObject {
 
     /// Tanaka estimate unless overridden.
     var hrMax: Int { hrMaxOverride > 0 ? hrMaxOverride : Int((208 - 0.7 * Double(age)).rounded()) }
+
+    /// Chronological age at a historical instant. Birth date wins; the legacy explicit age is a fallback.
+    func chronologicalAge(on date: Date) -> Double? {
+        if let birthDate, birthDate <= date {
+            let components = Calendar.current.dateComponents([.year, .day], from: birthDate, to: date)
+            return Double(components.year ?? 0) + Double(components.day ?? 0) / 365.2425
+        }
+        return ageIsExplicit && age > 0 ? Double(age) : nil
+    }
+
+    func clearAge() {
+        age = 30
+        d.removeObject(forKey: K.age)
+        ageIsExplicit = false
+    }
 
     /// Whether the cycle-awareness opt-in applies to this profile (#801). Cycle phase is read from the
     /// MENSTRUAL skin-temperature shift, so the opt-in (the Health card + the Automations toggle) is only

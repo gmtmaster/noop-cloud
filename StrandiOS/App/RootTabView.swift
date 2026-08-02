@@ -52,10 +52,10 @@ struct RootTabView: View {
             // cleanly in the gap between them — replaces the native tab bar: no overlap, no glow. The
             // native TabView still drives content + per-tab nav state; only its bar is hidden.
             TabView(selection: $selectedTab) {
-                tab(TodayView(), "Today", "square.grid.2x2").tag(0)
-                tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis").tag(1)
-                tab(SleepView(), "Sleep", "bed.double").tag(2)
-                tab(FriendsView(), "Friends", "person.2.fill").tag(3)
+                tab(TodayView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[0]), "square.grid.2x2").tag(0)
+                tab(HealthspanView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[1]), "heart.text.square.fill").tag(1)
+                tab(SleepView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[2]), "bed.double").tag(2)
+                tab(FriendsView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[3]), "person.2.fill").tag(3)
                 moreTab.tag(4)
             }
             .tint(StrandPalette.accent)
@@ -121,8 +121,8 @@ struct RootTabView: View {
                 routedPillar = dest
                 router.requestedDestination = nil
             case .trends:
-                // Trends is a primary tab on iPhone (not a pillar sheet) — switch to it.
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 1 }
+                // Trends remains reachable as a secondary destination after Health takes tab 1.
+                routedPillar = .trends
                 router.requestedDestination = nil
             case .activeWorkout:
                 // The Today active-workout indicator opens Live through the quick-action Live sheet; once
@@ -284,6 +284,7 @@ struct RootTabView: View {
                            onRefresh: { await repo.refresh() },
                            topBackground: liquidScaffoldSky()) {
                 moreSection("Insights") {
+                    MoreRow("Trends", "chart.line.uptrend.xyaxis") { TrendsView() }
                     MoreRow("What Moves You", "wand.and.sparkles") { InsightsHubView() }
                     MoreRow("Intelligence", "brain.head.profile") { IntelligenceView() }
                     MoreRow("Coach", "sparkles") { CoachView() }
@@ -536,7 +537,6 @@ private struct QuickActionSheet: View {
 
 // MARK: - Floating tab bar
 
-/// The signature bottom bar: two frosted "glass" islands (Today·Trends / Sleep·More) with the gold
 /// Opaque floating charcoal navigation with a restrained border and no glossy material treatment.
 /// Replaces the hidden native tab bar while preserving every existing tab destination.
 private struct FloatingTabBar: View {
@@ -545,11 +545,11 @@ private struct FloatingTabBar: View {
     var onReselect: (Int) -> Void = { _ in }
 
     private struct Item: Identifiable { let title: LocalizedStringKey; let icon: String; let tag: Int; var id: Int { tag } }
-    private let nav = [Item(title: "Today", icon: "square.grid.2x2", tag: 0),
-                       Item(title: "Trends", icon: "chart.line.uptrend.xyaxis", tag: 1),
-                       Item(title: "Sleep", icon: "bed.double", tag: 2),
-                       Item(title: "Friends", icon: "person.2.fill", tag: 3),
-                       Item(title: "More", icon: "ellipsis", tag: 4)]
+    private let nav = [Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[0]), icon: "square.grid.2x2", tag: 0),
+                       Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[1]), icon: "heart.text.square.fill", tag: 1),
+                       Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[2]), icon: "bed.double", tag: 2),
+                       Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[3]), icon: "person.2.fill", tag: 3),
+                       Item(title: LocalizedStringKey(HealthNavigationContract.primaryTabs[4]), icon: "ellipsis", tag: 4)]
 
     var body: some View {
         // One frosted glass bar, four evenly-spaced tabs. The quick-action "+" now lives in the

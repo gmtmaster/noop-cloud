@@ -44,7 +44,7 @@ struct BodyVitalReading: Identifiable {
     /// line when nothing resolved, so an empty tile still says why instead of a bare dash.
     var stateCaption: String {
         guard let day else { return missingCaption }
-        var parts = [Self.dayLabel(day)]
+        var parts = [Self.measurementContext(day)]
         if let sourceText = Self.sourceLabel(source, key: key) {
             parts.append(sourceText)
         }
@@ -62,10 +62,22 @@ struct BodyVitalReading: Identifiable {
     private var stateText: String {
         switch (banding.band, banding.basis) {
         case (.noData, _):               return String(localized: "No data")
-        case (.inRange, .personal):      return String(localized: "In your range")
-        case (.outOfRange, .personal):   return String(localized: "Off baseline")
-        case (.inRange, .population):    return String(localized: "Typical range")
-        case (.outOfRange, .population): return String(localized: "Outside range")
+        case (.inRange, .personal):      return String(localized: "Within your usual range")
+        case (.outOfRange, .personal):   return String(localized: "Outside your usual range")
+        case (.inRange, .population):
+            if key == "spo2" { return String(localized: "Within labeled reference range") }
+            return banding.nights >= Baselines.minNightsTrust
+                ? String(localized: "Within reference range · personal range unavailable")
+                : banding.nights > 0
+                ? String(localized: "Within reference range · personal range building")
+                : String(localized: "Within reference range · insufficient personal history")
+        case (.outOfRange, .population):
+            if key == "spo2" { return String(localized: "Outside labeled reference range") }
+            return banding.nights >= Baselines.minNightsTrust
+                ? String(localized: "Outside reference range · personal range unavailable")
+                : banding.nights > 0
+                ? String(localized: "Outside reference range · personal range building")
+                : String(localized: "Outside reference range · insufficient personal history")
         }
     }
 
@@ -90,6 +102,18 @@ struct BodyVitalReading: Identifiable {
         if day == BodyVitalSigns.logicalDayKey(Date()) { return String(localized: "Today") }
         guard let date = BodyVitalSigns.dayParser.date(from: day) else { return day }
         return BodyVitalSigns.dayFormatter.string(from: date)
+    }
+
+    static func measurementContext(_ day: String, now: Date = Date()) -> String {
+        let logicalToday = BodyVitalSigns.logicalDayKey(now)
+        guard let valueDate = BodyVitalSigns.dayParser.date(from: day),
+              let todayDate = BodyVitalSigns.dayParser.date(from: logicalToday) else { return dayLabel(day) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let gap = calendar.dateComponents([.day], from: valueDate, to: todayDate).day ?? 0
+        if gap <= 0 { return String(localized: "Last night") }
+        if gap == 1 { return String(localized: "Previous night") }
+        return String(localized: "Stale · \(dayLabel(day))")
     }
 }
 

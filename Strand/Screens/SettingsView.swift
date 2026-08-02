@@ -18,6 +18,9 @@ struct SettingsView: View {
     @EnvironmentObject var live: LiveState
     @EnvironmentObject var profile: ProfileStore
 
+    private static let defaultBirthDate = Calendar.current.date(byAdding: .year, value: -30, to: Date()) ?? Date()
+    private static let earliestBirthDate = Calendar.current.date(from: DateComponents(year: 1900, month: 1, day: 1)) ?? Date.distantPast
+
     /// Profile-photo picker selection (PhotosUI). Cleared back to nil once the bytes are loaded.
     @State private var avatarPickerItem: PhotosPickerItem?
 
@@ -291,14 +294,34 @@ struct SettingsView: View {
         ) {
             VStack(spacing: 0) {
                 FormRow(label: "Age") {
-                    HStack(spacing: 12) {
-                        Text("\(profile.age)")
-                            .font(StrandFont.bodyNumber)
-                            .foregroundStyle(StrandPalette.textPrimary)
-                            .frame(minWidth: 28, alignment: .trailing)
-                        Stepper("Age", value: $profile.age, in: 13...100)
-                            .labelsHidden()
-                            .accessibilityLabel("Age, \(profile.age) years")
+                    Picker("Age", selection: Binding(
+                        get: { profile.ageIsExplicit ? profile.age : 0 },
+                        set: { value in
+                            if value == 0 { profile.clearAge() } else { profile.age = value }
+                        })) {
+                        Text("Not set").tag(0)
+                        ForEach(13...100, id: \.self) { age in
+                            Text("\(age)").tag(age)
+                        }
+                    }
+                    .labelsHidden()
+                    .accessibilityLabel(profile.ageIsExplicit ? "Age, \(profile.age) years" : "Age not set")
+                }
+                rowDivider
+                FormRow(label: "Date of birth") {
+                    if profile.birthDate != nil {
+                        HStack(spacing: 10) {
+                            DatePicker("Date of birth", selection: Binding(
+                                get: { profile.birthDate ?? Self.defaultBirthDate },
+                                set: { profile.birthDate = $0 }),
+                                in: Self.earliestBirthDate...Date(), displayedComponents: .date)
+                                .labelsHidden()
+                            Button("Clear") { profile.birthDate = nil }
+                                .buttonStyle(.plain).foregroundStyle(StrandPalette.textTertiary)
+                        }
+                    } else {
+                        Button("Set date") { profile.birthDate = Self.defaultBirthDate }
+                            .buttonStyle(.plain).foregroundStyle(StrandPalette.accent)
                     }
                 }
                 rowDivider

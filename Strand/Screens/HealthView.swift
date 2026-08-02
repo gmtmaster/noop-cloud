@@ -4,7 +4,7 @@ import StrandDesign
 import StrandAnalytics
 import WhoopStore
 
-/// NOOP — Health Monitor.
+/// NOOP — Health Monitor: current and most-recent physiological status only.
 /// Live heart rate hero (ChartCard with a streaming sparkline + HR-zone footer),
 /// then a uniform LazyVGrid of the body's vital signs (respiratory rate, blood
 /// oxygen, resting HR, HRV, skin temp) as fixed-height StatTiles, each tinted and
@@ -25,7 +25,7 @@ struct HealthView: View {
 
     var body: some View {
         ScreenScaffold(title: "Health Monitor",
-                       subtitle: "Live vitals, streamed from the strap.",
+                       subtitle: "Current health vitals and recent physiological status.",
                        // PERF (scroll): lazy column — byte-identical layout (LazyVStack == eager VStack
                        // alignment/spacing/header); builds the trailing vitals/skin-temp/age sections on
                        // demand instead of all up-front.
@@ -51,41 +51,20 @@ struct HealthView: View {
 
 // MARK: - Content stacks
 
-/// The full Health section stack (live HR hero + the static vitals/age/skin-temp sections). Each section
+/// The focused Health Monitor stack. Long-term age and trajectory live exclusively in Healthspan.
 /// is its own leaf owning exactly what it needs, so only the `HeartRateSection` hero re-renders on a ~1 Hz
 /// HR tick — the static sections depend on `repo`/`profile`/`model` snapshots only. Shared by the
 /// history-present path and the first-run live path so the stack is defined once.
 private struct HealthSectionsStack: View {
     var body: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
-            // Manual "Sync now" + honest sync status (#364). Its own view so the ~1Hz HR stream
-            // doesn't re-render it; depends on `live` (connection/backfill state) + `model`.
-            SyncStatusSection()
             // The live HR section is its own view: it owns `live`/`profile`,
             // so the ~1Hz HR stream re-renders only this subtree — the static
             // vitals grid below does not re-render on each HR tick.
             HeartRateSection()
-            // Fitness Age (weekly, computed by IntelligenceEngine and read back from the
-            // "fitness_age" metricSeries). Its own view depending only on `repo`/`profile`,
-            // so the live HR stream never re-renders it.
-            FitnessAgeSection()
-            // Vitality / Body Age (weekly, computed by IntelligenceEngine from the mortality-
-            // hazard model). Its own view depending only on repo/profile.
-            VitalitySection()
-            // Screen-5 recovery detail: the CONTRIBUTORS to today's recovery as
-            // labelled progress bars (HRV / Resting HR / Sleep / Respiratory), each
-            // scored against the on-device baseline. Depends only on `repo`.
-            RecoveryContributorsSection()
             // The static vitals grid is its own view depending only on `repo`,
             // so it is unaffected by live HR ticks.
             VitalsSection()
-            // v5 skin-temperature suite: the illness "heads-up", body clock, and (opt-in) cycle
-            // awareness, each driven by a pure StrandAnalytics engine result the analytics pass
-            // computed and AppModel publishes. Its own view depending on `model` + `repo`.
-            SkinTempSection()
-            // v5 deep-links: the records logbook + the multi-device fused record, reachable
-            // from their honest Health home as drill-in rows (not their own destinations).
-            HealthHubLinksSection()
         }
     }
 }
@@ -111,9 +90,6 @@ private struct HealthFirstRunContent: View {
     var body: some View {
         if !hasLiveHR {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
-                // Even with no history yet, a freshly-connected strap can be told to sync now (#364) —
-                // so the control is reachable before the screen has any data to show.
-                SyncStatusSection()
                 ComingSoon(what: "No biometrics yet. Import your WHOOP export (and Apple Health if you have it) in Data Sources to fill this in.")
             }
         } else {
@@ -223,6 +199,8 @@ private struct HeartRateSection: View {
     /// Sampled on a fixed 1 Hz clock (#941), so the 180-sample cap is a strict rolling 3 minutes;
     /// resets when the view is recreated, which is fine for a live trace.
     @State private var hrHistory: [LiveHRSample] = []
+    /// Wall-clock receipt time of the latest value actually banked by this screen.
+    @State private var lastSampleAt: Date?
 
     /// The 1 Hz sampling clock for the hero trace (#941, reimplemented from ryanbr's PR). The buffer
     /// used to append only when `displayHR` CHANGED, but AppModel deliberately republishes `bpm` only
@@ -303,8 +281,8 @@ private struct HeartRateSection: View {
             // No scenic starfield / bloom: fill contrast carries the edge (Apple-flat).
             ChartCard(
                 title: "Heart Rate",
-                subtitle: hrIsDerived ? String(localized: "Estimated from R-R interval")
-                    : (hasLiveHR ? String(localized: "Streaming live") : String(localized: "Awaiting strap")),
+                subtitle: hrIsDerived ? String(localized: "Live · estimated from R-R interval")
+                    : (hasLiveHR ? String(localized: "Streaming live") : staleHeartRateLabel),
                 trailing: hasLiveHR ? "\(displayHR!) bpm" : "—",
                 tint: StrandPalette.metricRose
             ) {
@@ -326,9 +304,16 @@ private struct HeartRateSection: View {
             // mirrors the Android chart's existing range check; nil banks nothing (disconnect clears the
             // median on both platforms), so a stale value never flat-lines a dead trace.
             guard let v = displayHR, (30...220).contains(v) else { return }
+            lastSampleAt = now
             hrHistory.append(LiveHRSample(date: now, bpm: Double(v)))
             if hrHistory.count > 180 { hrHistory.removeFirst(hrHistory.count - 180) }
         }
+    }
+
+    private var staleHeartRateLabel: String {
+        guard let lastSampleAt else { return String(localized: "Awaiting a live source") }
+        let seconds = max(0, Int(Date().timeIntervalSince(lastSampleAt)))
+        return String(localized: "Last updated \(seconds) seconds ago")
     }
 
     /// The hero chart body: a tall, time-aware HR line tinted to the current zone, with a
@@ -1172,7 +1157,27 @@ private struct VitalsSection: View {
 private struct LiquidVitalTile: View {
     let reading: BodyVitalReading
 
+    private var metric: MetricDescriptor? {
+        let key: String
+        switch reading.key {
+        case "resp": key = "resp_rate"
+        case "skin": key = "skin_temp"
+        default: key = reading.key
+        }
+        return MetricCatalog.all.first { $0.key == key }
+    }
+
+    @ViewBuilder
     var body: some View {
+        if let metric {
+            NavigationLink { MetricDetailView(metric: metric) } label: { tile }
+                .buttonStyle(.plain)
+        } else {
+            tile
+        }
+    }
+
+    private var tile: some View {
         NoopCard(padding: 14, tint: reading.accent) {
             VStack(alignment: .leading, spacing: 0) {
                 Text("\(reading.label)").strandOverline()
@@ -1211,6 +1216,7 @@ private struct LiquidVitalTile: View {
         .frame(minHeight: NoopMetrics.tileHeight, maxHeight: .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(reading.accessibilityText)
+        .accessibilityHint(metric == nil ? "" : "Opens this metric's history")
     }
 
     /// The vessel's fill (0…1): the vital's value mapped onto its physiological span, matching Today's

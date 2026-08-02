@@ -2465,10 +2465,10 @@ struct TodayView: View {
                           value: dashboardValue(card)) { StressView() }
         case .fitnessAge:
             pinnedCardRow(icon: card.icon, tint: tint, title: card.title, subtitle: card.subtitle,
-                          value: dashboardValue(card)) { HealthView() }
+                          value: dashboardValue(card)) { HealthspanView() }
         case .vitality:
             pinnedCardRow(icon: card.icon, tint: tint, title: card.title, subtitle: card.subtitle,
-                          value: dashboardValue(card)) { HealthView() }
+                          value: dashboardValue(card)) { HealthspanView() }
         case .hrv, .restingHr, .respiratory, .bloodOxygen, .skinTemp:
             // The overnight vitals share the Health detail screen (the vital-signs surface).
             pinnedCardRow(icon: card.icon, tint: tint, title: card.title, subtitle: card.subtitle,
@@ -2478,10 +2478,10 @@ struct TodayView: View {
                           value: dashboardValue(card)) { SleepView() }
         case .steps:
             pinnedCardRow(icon: card.icon, tint: tint, title: card.title, subtitle: card.subtitle,
-                          value: dashboardValue(card)) { HealthView() }
+                          value: dashboardValue(card)) { TrendsView() }
         case .calories:
             pinnedCardRow(icon: card.icon, tint: tint, title: card.title, subtitle: card.subtitle,
-                          value: dashboardValue(card)) { HealthView() }
+                          value: dashboardValue(card)) { TrendsView() }
         case .hydration:
             pinnedCardRow(icon: card.icon, tint: tint, title: card.title, subtitle: card.subtitle,
                           value: dashboardValue(card)) { HydrationView() }
