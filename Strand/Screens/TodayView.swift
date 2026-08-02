@@ -4376,17 +4376,6 @@ struct TodayView: View {
         async let appleDaysA         = repo.appleDailyRows()
         async let xStepsA            = repo.series(key: "steps", source: "xiaomi-band")
         async let xSleepA            = repo.series(key: "sleep_total_min", source: "xiaomi-band")
-        // #753: the pinned Stress card must read its number the SAME way StressView (the detail page) does,
-        // not off the merged stress series' last row. StressView builds `StressModel(days: repo.days,
-        // stored:)` and shows `model.score`, which PREFERS today's stored stress row but otherwise DERIVES
-        // today's score from the live `repo.days` RHR/HRV baseline. The old pinned read
-        // (`exploreSeries("stress").last`) returned the latest *banked* day instead, so when today had no
-        // stored stress row yet the pinned card sat on yesterday's number (e.g. "2") while the detail page
-        // moved to today's freshly-derived value. They diverged because they computed from different sources
-        // AND the pinned card never re-derived. Reading the SAME `repo.series` the detail uses, and building
-        // the SAME StressModel below, ties the pinned card to today's score; both then refresh on the shared
-        // `repo.refreshSeq` task key (loadAll's TodayLoadKey) and stay in sync.
-        async let stressStoredA      = repo.series(key: "stress", source: "my-whoop")
         async let healthspanA        = repo.noopAgeHistory(profile: profile)
 
         // Steps ESTIMATE per day (WHOOP 4.0 motion → calibrated steps). exploreSeries reads the computed
@@ -4403,13 +4392,21 @@ struct TodayView: View {
         let xSteps = await xStepsA
         let xSleep = await xSleepA
         xiaomiDays = Set(xSteps.map(\.day) + xSleep.map(\.day)).count
-        // Your cards (#582 / Design Reset): Stress / Fitness age / Vitality for the pinned home cards.
-        // #753: Stress mirrors StressView. `StressModel(days:stored:).score` is TODAY's score (stored row
-        // preferred, else derived off the live RHR/HRV baseline), so the pinned card never lags the detail
-        // page on a day with no banked stress row. nil (no usable signal) keeps the honest "Calibrating"
-        // placeholder, matching StressView's empty state. Both Healthspan cards consume the one canonical
-        // weekly snapshot rather than the legacy fitness_age / vitality series.
-        stressToday = StressModel(days: repo.days, stored: await stressStoredA)?.score
+        // The pinned card and detail gauge share the latest real hourly DaytimeStress bucket.
+        // This remains presentation-only: neither path changes the existing 0–3 calculation.
+        let stressStart = Calendar.current.startOfDay(for: Date())
+        let stressFrom = Int(stressStart.timeIntervalSince1970)
+        let stressTo = Int(Date().timeIntervalSince1970)
+        let stressHR = await repo.hrSamples(from: stressFrom, to: stressTo, limit: 200_000)
+        if stressHR.count >= DaytimeStress.minHourHRSamples {
+            let stressRR = (try? await repo.storeHandle()?.rrIntervals(
+                deviceId: repo.deviceId, from: stressFrom, to: stressTo, limit: 200_000)) ?? []
+            let offset = TimeZone.current.secondsFromGMT(for: Date())
+            let hourly = DaytimeStress.analyze(hr: stressHR, rr: stressRR, tzOffsetSeconds: offset)
+            stressToday = StressPresentation.summarize(date: stressStart, points: hourly.hours, end: Date()).latest?.value
+        } else {
+            stressToday = nil
+        }
         let healthspan = await healthspanA
         fitnessAgeToday = healthspan.last?.noopAge
         vitalityToday = healthspan.last?.paceOfAging

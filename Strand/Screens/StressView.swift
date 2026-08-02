@@ -27,7 +27,7 @@ import WhoopStore
 // Everything is computed live from `repo.days` (+ the stored series), so the math
 // is fully inspectable — see the "How this is computed" card at the bottom.
 
-struct StressView: View {
+private struct LegacyStressView: View {
     @EnvironmentObject var repo: Repository
 
     /// The stored 0–3 stress series ("my-whoop"), oldest→newest. Empty → derive.
