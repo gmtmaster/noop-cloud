@@ -33,7 +33,7 @@ enum HealthspanOrbMotion {
 
     static func particle(index: Int, elapsed: TimeInterval) -> ParticleState {
         let seed = Double(index) + 1
-        let speed = 0.11 + unit(seed * 3.1) * 0.07
+        let speed = particleAngularSpeed(index: index)
         let phase = elapsed * speed
         return ParticleState(
             xDrift: 0.052 * sin(phase + seed),
@@ -42,9 +42,51 @@ enum HealthspanOrbMotion {
         )
     }
 
+    static func particleAngularSpeed(index: Int) -> Double {
+        let seed = Double(index) + 1
+        return 0.11 + unit(seed * 3.1) * 0.07
+    }
+
     static func unit(_ value: Double) -> Double {
         let raw = sin(value) * 43_758.5453
         return raw - floor(raw)
+    }
+}
+
+/// One canonical local-coordinate model for every orb layer. Lighting may be asymmetric, geometry may not.
+struct HealthspanOrbGeometry: Equatable {
+    static let baseRadiusFactor: CGFloat = 0.455
+    static let coreRadiusFactor: CGFloat = 0.57
+    static let particleRadiusFactor: CGFloat = 0.94
+    static let glowRadiusFactor: CGFloat = 1.0
+
+    let bounds: CGRect
+    let center: CGPoint
+    let baseRadius: CGFloat
+
+    init(size: CGSize) {
+        bounds = CGRect(origin: .zero, size: size)
+        center = CGPoint(x: bounds.midX, y: bounds.midY)
+        baseRadius = min(bounds.width, bounds.height) * Self.baseRadiusFactor
+    }
+
+    func shellRadius(scale: Double) -> CGFloat { baseRadius * CGFloat(scale) }
+    func coreRadius(scale: Double) -> CGFloat { shellRadius(scale: scale) * Self.coreRadiusFactor }
+    func particleRadius(scale: Double) -> CGFloat { shellRadius(scale: scale) * Self.particleRadiusFactor }
+    func glowRadius(scale: Double) -> CGFloat { shellRadius(scale: scale) * Self.glowRadiusFactor }
+
+    func circle(radius: CGFloat) -> CGRect {
+        CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+    }
+
+    func project(normalizedX: Double, normalizedY: Double, scale: Double) -> CGPoint {
+        let radius = particleRadius(scale: scale)
+        return CGPoint(x: center.x + CGFloat(normalizedX) * radius,
+                       y: center.y + CGFloat(normalizedY) * radius)
+    }
+
+    func containsAllLayers(scale: Double) -> Bool {
+        bounds.contains(circle(radius: glowRadius(scale: scale)))
     }
 }
 
@@ -307,44 +349,73 @@ private struct NoopAgeOrb: View {
             let t = animates ? max(0, timeline.date.timeIntervalSince(appearedAt)) : 0
             ZStack {
                 Canvas { context, size in
-                    let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                    let radius = min(size.width, size.height) * 0.435 * HealthspanOrbMotion.shellScale(at: t)
+                    let geometry = HealthspanOrbGeometry(size: size)
+                    let scale = HealthspanOrbMotion.shellScale(at: t)
+                    let center = geometry.center
+                    let shellRadius = geometry.shellRadius(scale: scale)
+                    let coreRadius = geometry.coreRadius(scale: scale)
+                    let glowRadius = geometry.glowRadius(scale: scale)
                     let shellPhase = HealthspanOrbMotion.shellPhase(at: t)
-                    let sphere = CGRect(x: center.x - radius, y: center.y - radius,
-                                      width: radius * 2, height: radius * 2)
+                    let shellCircle = geometry.circle(radius: shellRadius)
 
-                    context.addFilter(.shadow(color: tint.opacity(0.42), radius: 22, x: 0, y: 8))
-                    context.fill(Path(ellipseIn: sphere), with: .radialGradient(
+                    // Ambient glow is centered, shell-bound, and filter-scoped so it cannot affect the
+                    // particles or rim. It supports the sphere instead of becoming a second flat disk.
+                    context.drawLayer { glow in
+                        glow.addFilter(.shadow(color: tint.opacity(0.32),
+                                               radius: geometry.baseRadius * 0.085, x: 0, y: 0))
+                        glow.fill(Path(ellipseIn: geometry.circle(radius: glowRadius)),
+                                  with: .color(tint.opacity(0.08)))
+                    }
+
+                    // Centered luminous shell. The light source is expressed by the later rim highlight,
+                    // never by moving this gradient's geometric center away from the canonical center.
+                    context.fill(Path(ellipseIn: shellCircle), with: .radialGradient(
                         Gradient(stops: [
-                            .init(color: .black, location: 0),
-                            .init(color: .black.opacity(0.98), location: 0.48),
-                            .init(color: tint.opacity(0.13), location: 0.68),
-                            .init(color: tint.opacity(0.72), location: 0.94),
-                            .init(color: tint.opacity(0.24), location: 1)
-                        ]), center: CGPoint(x: center.x - radius * (0.15 + shellPhase * 0.025),
-                                           y: center.y - radius * (0.18 - shellPhase * 0.018)),
-                        startRadius: 0, endRadius: radius))
+                            .init(color: tint.opacity(0.02), location: 0),
+                            .init(color: tint.opacity(0.08), location: 0.58),
+                            .init(color: tint.opacity(0.46), location: 0.82),
+                            .init(color: tint.opacity(0.82), location: 0.95),
+                            .init(color: tint.opacity(0.30), location: 1)
+                        ]), center: center, startRadius: 0, endRadius: shellRadius))
 
-                    context.clip(to: Path(ellipseIn: sphere))
+                    // A distinct centered core keeps the text field dark without redefining shell geometry.
+                    context.fill(Path(ellipseIn: geometry.circle(radius: coreRadius)),
+                                 with: .radialGradient(
+                                    Gradient(stops: [
+                                        .init(color: .black, location: 0),
+                                        .init(color: .black.opacity(0.99), location: 0.76),
+                                        .init(color: .black.opacity(0.82), location: 1)
+                                    ]), center: center, startRadius: 0, endRadius: coreRadius))
+
+                    context.clip(to: Path(ellipseIn: shellCircle))
                     for index in 0..<128 {
                         let seed = Double(index) + 1
                         let baseDepth = HealthspanOrbMotion.unit(seed * 12.9898) * 2 - 1
                         let theta = HealthspanOrbMotion.unit(seed * 78.233) * .pi * 2
-                        let shell = 0.58 + HealthspanOrbMotion.unit(seed * 39.425) * 0.40
+                        // Cube root produces a volume-uniform radial distribution, including the core,
+                        // instead of concentrating every point in a thin outer ring.
+                        let radial = 0.10 + pow(HealthspanOrbMotion.unit(seed * 39.425), 1.0 / 3.0) * 0.90
                         let motion = HealthspanOrbMotion.particle(index: index, elapsed: t)
                         let depth = max(-1, min(1, baseDepth + motion.depth))
                         let planar = sqrt(max(0, 1 - depth * depth))
-                        let x = (cos(theta) * planar * shell + motion.xDrift) * radius
-                        let y = (sin(theta) * planar * shell + motion.yDrift) * radius
-                        let p = CGPoint(x: center.x + x, y: center.y + y * 0.96)
+                        let p = geometry.project(normalizedX: cos(theta) * planar * radial + motion.xDrift,
+                                                 normalizedY: sin(theta) * planar * radial + motion.yDrift,
+                                                 scale: scale)
                         let dot = 0.7 + HealthspanOrbMotion.unit(seed * 91.7) * 1.65 + max(0, depth) * 0.7
                         let opacity = 0.18 + (depth + 1) * 0.19 + HealthspanOrbMotion.unit(seed * 17.3) * 0.22
                         context.fill(Path(ellipseIn: CGRect(x: p.x - dot, y: p.y - dot,
                                                             width: dot * 2, height: dot * 2)),
                                      with: .color(tint.opacity(opacity)))
                     }
-                    context.stroke(Path(ellipseIn: sphere.insetBy(dx: 1.5, dy: 1.5)),
+
+                    context.stroke(Path(ellipseIn: shellCircle.insetBy(dx: 1.5, dy: 1.5)),
                                    with: .color(tint.opacity(0.55)), lineWidth: 1.2)
+                    var highlight = Path()
+                    highlight.addArc(center: center, radius: shellRadius - 3,
+                                     startAngle: .degrees(205 + shellPhase * 4),
+                                     endAngle: .degrees(315 + shellPhase * 4), clockwise: false)
+                    context.stroke(highlight, with: .color(tint.opacity(0.24)),
+                                   style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
                 }
                 VStack(spacing: 4) {
                     Text(String(format: "%.1f", age)).font(StrandFont.display(50)).foregroundStyle(.white)
