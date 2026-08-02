@@ -1149,7 +1149,7 @@ struct TodayView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Profile")
-                .frame(width: 76, minHeight: 44, alignment: .leading)
+                .frame(width: 76, height: 44, alignment: .leading)
                 .contentShape(Rectangle())
                 Spacer(minLength: 0)
                 TodayDeviceHeader()
