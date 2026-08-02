@@ -14,6 +14,40 @@ enum HealthspanAnimationPolicy {
     }
 }
 
+/// Pure motion math shared by Canvas and tests. Seeds stay fixed; elapsed time changes only phase,
+/// so a refresh never reshuffles the field and a static accessibility rendering is always identical.
+enum HealthspanOrbMotion {
+    struct ParticleState: Equatable {
+        let xDrift: Double
+        let yDrift: Double
+        let depth: Double
+    }
+
+    static func shellScale(at elapsed: TimeInterval) -> Double {
+        1 + 0.012 * sin(elapsed * 0.72)
+    }
+
+    static func shellPhase(at elapsed: TimeInterval) -> Double {
+        sin(elapsed * 0.18)
+    }
+
+    static func particle(index: Int, elapsed: TimeInterval) -> ParticleState {
+        let seed = Double(index) + 1
+        let speed = 0.11 + unit(seed * 3.1) * 0.07
+        let phase = elapsed * speed
+        return ParticleState(
+            xDrift: 0.052 * sin(phase + seed),
+            yDrift: 0.046 * sin(phase * 0.73 + seed * 0.71),
+            depth: 0.10 * sin(phase * 0.51 + seed * 1.37)
+        )
+    }
+
+    static func unit(_ value: Double) -> Double {
+        let raw = sin(value) * 43_758.5453
+        return raw - floor(raw)
+    }
+}
+
 /// Presentation-only mapping for the contributor scale. The engine's signed year adjustment remains the
 /// sole source of truth; the cap only prevents one large value from making every other marker unreadable.
 enum HealthspanContributorScale {
@@ -254,6 +288,8 @@ private struct NoopAgeOrb: View {
     let confidence: NoopAgeConfidence
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    @State private var appearedAt = Date()
+    @State private var isVisible = false
 
     private var tint: Color {
         let delta = age - chronologicalAge
@@ -263,14 +299,17 @@ private struct NoopAgeOrb: View {
     }
 
     var body: some View {
-        let animates = HealthspanAnimationPolicy.animates(reduceMotion: reduceMotion, sceneIsActive: scenePhase == .active)
+        let animates = isVisible && HealthspanAnimationPolicy.animates(
+            reduceMotion: reduceMotion, sceneIsActive: scenePhase == .active
+        )
         TimelineView(.animation(minimumInterval: animates ? 1.0 / 24 : 1,
                                 paused: !animates)) { timeline in
-            let t = animates ? timeline.date.timeIntervalSinceReferenceDate : 0
+            let t = animates ? max(0, timeline.date.timeIntervalSince(appearedAt)) : 0
             ZStack {
                 Canvas { context, size in
                     let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                    let radius = min(size.width, size.height) * (0.435 + 0.004 * sin(t * 0.42))
+                    let radius = min(size.width, size.height) * 0.435 * HealthspanOrbMotion.shellScale(at: t)
+                    let shellPhase = HealthspanOrbMotion.shellPhase(at: t)
                     let sphere = CGRect(x: center.x - radius, y: center.y - radius,
                                       width: radius * 2, height: radius * 2)
 
@@ -282,24 +321,24 @@ private struct NoopAgeOrb: View {
                             .init(color: tint.opacity(0.13), location: 0.68),
                             .init(color: tint.opacity(0.72), location: 0.94),
                             .init(color: tint.opacity(0.24), location: 1)
-                        ]), center: CGPoint(x: center.x - radius * 0.15, y: center.y - radius * 0.18),
+                        ]), center: CGPoint(x: center.x - radius * (0.15 + shellPhase * 0.025),
+                                           y: center.y - radius * (0.18 - shellPhase * 0.018)),
                         startRadius: 0, endRadius: radius))
 
                     context.clip(to: Path(ellipseIn: sphere))
                     for index in 0..<128 {
                         let seed = Double(index) + 1
-                        let u = Self.unit(seed * 12.9898) * 2 - 1
-                        let theta = Self.unit(seed * 78.233) * .pi * 2
-                        let shell = 0.58 + Self.unit(seed * 39.425) * 0.40
-                        let planar = sqrt(max(0, 1 - u * u))
-                        let driftX = 0.045 * sin(t * (0.035 + Self.unit(seed * 3.1) * 0.025) + seed)
-                        let driftY = 0.04 * sin(t * (0.027 + Self.unit(seed * 5.7) * 0.022) + seed * 0.71)
-                        let x = (cos(theta) * planar * shell + driftX) * radius
-                        let y = (sin(theta) * planar * shell + driftY) * radius
-                        let depth = u
+                        let baseDepth = HealthspanOrbMotion.unit(seed * 12.9898) * 2 - 1
+                        let theta = HealthspanOrbMotion.unit(seed * 78.233) * .pi * 2
+                        let shell = 0.58 + HealthspanOrbMotion.unit(seed * 39.425) * 0.40
+                        let motion = HealthspanOrbMotion.particle(index: index, elapsed: t)
+                        let depth = max(-1, min(1, baseDepth + motion.depth))
+                        let planar = sqrt(max(0, 1 - depth * depth))
+                        let x = (cos(theta) * planar * shell + motion.xDrift) * radius
+                        let y = (sin(theta) * planar * shell + motion.yDrift) * radius
                         let p = CGPoint(x: center.x + x, y: center.y + y * 0.96)
-                        let dot = 0.7 + Self.unit(seed * 91.7) * 1.65 + max(0, depth) * 0.7
-                        let opacity = 0.18 + (depth + 1) * 0.19 + Self.unit(seed * 17.3) * 0.22
+                        let dot = 0.7 + HealthspanOrbMotion.unit(seed * 91.7) * 1.65 + max(0, depth) * 0.7
+                        let opacity = 0.18 + (depth + 1) * 0.19 + HealthspanOrbMotion.unit(seed * 17.3) * 0.22
                         context.fill(Path(ellipseIn: CGRect(x: p.x - dot, y: p.y - dot,
                                                             width: dot * 2, height: dot * 2)),
                                      with: .color(tint.opacity(opacity)))
@@ -316,13 +355,13 @@ private struct NoopAgeOrb: View {
             }
         }
         .aspectRatio(1, contentMode: .fit)
+        .onAppear {
+            appearedAt = Date()
+            isVisible = true
+        }
+        .onDisappear { isVisible = false }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Noop Age \(String(format: "%.1f", age)), \(deltaText), confidence \(confidence.rawValue)")
-    }
-
-    private static func unit(_ value: Double) -> Double {
-        let raw = sin(value) * 43_758.5453
-        return raw - floor(raw)
     }
 
     private var deltaText: String {

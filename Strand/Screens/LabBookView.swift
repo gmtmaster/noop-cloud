@@ -42,6 +42,7 @@ struct LabBookView: View {
     @State private var showingEditor = false
     /// Whether the first-use disclaimer sheet is open.
     @State private var showingDisclaimer = false
+    @State private var showsImport = false
 
     // Markers CSV import (LabMarkerCsvImport, Phase 2).
     @State private var showingCsvImporter = false   // macOS .fileImporter presentation
@@ -52,7 +53,7 @@ struct LabBookView: View {
     var body: some View {
         ScreenScaffold(
             title: "Lab Book",
-            subtitle: "Your bloods, BP and body numbers. Kept private, on \(Platform.deviceNounPhrase).",
+            subtitle: "Track laboratory biomarkers over time.",
             onRefresh: { await load() },
             // PERF: the column ends in one `categorySection` per marker category (bloods / BP / body / …),
             // each carrying its own sparkline-bearing cards. The LazyVStack path builds the off-screen
@@ -65,16 +66,18 @@ struct LabBookView: View {
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 headerCard
-                importCard
                 if !loaded {
                     ComingSoon(what: "Reading your logbook…", symbol: "books.vertical")
                 } else if markers.isEmpty {
                     emptyState
                 } else {
+                    summaryCard
+                    recentSessionCard
                     ForEach(orderedCategories, id: \.self) { category in
                         categorySection(category)
                     }
                 }
+                importDisclosure
                 disclaimerNote
             }
         }
@@ -106,12 +109,12 @@ struct LabBookView: View {
         }
     }
 
-    // MARK: - Header (count + scope + actions)
+    // MARK: - Header and real-data summary
 
     private var headerCard: some View {
         NoopCard(tint: StrandPalette.metricCyan) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "books.vertical.fill")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(StrandPalette.metricCyan)
@@ -119,9 +122,10 @@ struct LabBookView: View {
                         .background(StrandPalette.metricCyan.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(countLine).font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
-                        Text("All stays on \(Platform.deviceNounPhrase). Nothing is sent anywhere.")
-                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        Text("Your health record").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                        Text("Keep results from your own reports together, privately on \(Platform.deviceNounPhrase).")
+                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 8)
                     Button {
@@ -134,16 +138,72 @@ struct LabBookView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("What Lab Book is (and isn't)")
                 }
-                Text("It's a notebook, not a lab. NOOP lines up the numbers you enter. It doesn't test, read, or judge them. Not medical advice.")
-                    .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 Button {
                     showingEditor = true
                 } label: {
-                    Label("Add a reading", systemImage: "plus")
+                    Label("Add Lab Result", systemImage: "plus")
                 }
                 .buttonStyle(.noopPrimary)
                 .accessibilityLabel("Add a marker reading")
+            }
+        }
+    }
+
+    private var summaryCard: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Overview", overline: "Your recorded data")
+            NoopCard(tint: StrandPalette.metricCyan) {
+                VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                    Text(countLine).font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                    HStack(spacing: NoopMetrics.gap) {
+                        summaryStat("Latest test", latestDayLabel)
+                        Divider().overlay(StrandPalette.hairline)
+                        summaryStat("Markers", "\(Set(markers.map(\.markerKey)).count)")
+                        Divider().overlay(StrandPalette.hairline)
+                        summaryStat("Lab dates", "\(Set(markers.map(\.day)).count)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func summaryStat(_ label: LocalizedStringKey, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).strandOverline().foregroundStyle(StrandPalette.textTertiary)
+            Text(value).font(StrandFont.number(17)).foregroundStyle(StrandPalette.textPrimary)
+                .lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var latestDay: String? { markers.last?.day }
+    private var latestDayLabel: String { latestDay.map(LabBookFormat.dayFromKey) ?? "—" }
+    private var latestSessionRows: [LabMarkerRow] {
+        guard let latestDay else { return [] }
+        return markers.filter { $0.day == latestDay }
+    }
+
+    private var recentSessionCard: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Recent lab date", overline: "Latest recorded results")
+            NoopCard(tint: StrandPalette.metricPurple) {
+                HStack(spacing: 12) {
+                    Image(systemName: "calendar.badge.clock")
+                        .font(.system(size: 18, weight: .semibold)).foregroundStyle(StrandPalette.metricPurple)
+                        .frame(width: 38, height: 38)
+                        .background(StrandPalette.metricPurple.opacity(0.14),
+                                    in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(latestDayLabel).font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                        Text(latestSessionRows.count == 1 ? "1 recorded marker" : "\(latestSessionRows.count) recorded markers")
+                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        if let note = latestSessionRows.compactMap(\.note).first(where: { !$0.isEmpty }) {
+                            Text(note).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                                .lineLimit(2)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                }
             }
         }
     }
@@ -201,6 +261,27 @@ struct LabBookView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        }
+    }
+
+    private var importDisclosure: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            Button {
+                withAnimation(StrandMotion.interactive) { showsImport.toggle() }
+            } label: {
+                HStack {
+                    Label("Import readings", systemImage: "tray.and.arrow.down.fill")
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(StrandPalette.textTertiary)
+                        .rotationEffect(.degrees(showsImport ? 0 : -90))
+                }
+                .frame(minHeight: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(showsImport ? "Expanded" : "Collapsed")
+            if showsImport { importCard }
         }
     }
 
@@ -303,7 +384,7 @@ struct LabBookView: View {
     // MARK: - Empty state (honest)
 
     private var emptyState: some View {
-        NoopCard {
+        NoopCard(tint: StrandPalette.metricCyan) {
             VStack(alignment: .leading, spacing: 10) {
                 Image(systemName: "square.and.pencil")
                     .font(StrandFont.headline)
@@ -316,6 +397,10 @@ struct LabBookView: View {
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Button { showingEditor = true } label: {
+                    Label("Add Lab Result", systemImage: "plus")
+                }
+                .buttonStyle(.noopPrimary)
             }
         }
     }
@@ -358,32 +443,56 @@ struct LabBookView: View {
         return Button {
             detailKey = key
         } label: {
-            NoopCard {
-                HStack(spacing: 12) {
+            NoopCard(tint: StrandPalette.metricCyan) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(displayName(for: key))
                             .font(StrandFont.headline)
                             .foregroundStyle(StrandPalette.textPrimary)
                             .lineLimit(1)
-                        Text(lastTakenCaption(latest))
+                        Text(latest.map { LabBookFormat.dayFromKey($0.day) } ?? String(localized: "No readings yet"))
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textTertiary)
                     }
                     Spacer(minLength: 8)
-                    if numeric.count > 1 {
-                        Sparkline(values: numeric, gradient: Gradient(colors: [StrandPalette.metricCyan.opacity(0.5), StrandPalette.metricCyan]),
-                                  showsHover: false)
-                            .frame(width: 64, height: 28)
-                            .accessibilityHidden(true)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(latestLabel(latest, key: key))
+                            .font(StrandFont.number(18))
+                            .foregroundStyle(StrandPalette.textPrimary)
+                            .lineLimit(1)
+                        Text(trendLabel(numeric))
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(numeric.count >= 2 ? StrandPalette.metricCyan : StrandPalette.textTertiary)
                     }
-                    Text(latestLabel(latest, key: key))
-                        .font(StrandFont.number(18))
-                        .foregroundStyle(StrandPalette.textPrimary)
-                        .lineLimit(1)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(StrandPalette.textTertiary)
                         .accessibilityHidden(true)
+                    }
+                    if numeric.count > 1 {
+                        Sparkline(values: numeric,
+                                  gradient: Gradient(colors: [StrandPalette.metricCyan.opacity(0.45),
+                                                              StrandPalette.metricCyan]),
+                                  showsHover: false)
+                            .frame(height: 34)
+                            .accessibilityHidden(true)
+                    }
+                    HStack(spacing: 8) {
+                        Text(series.count == 1 ? "1 reading" : "\(series.count) readings")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        if let reference = latest?.referenceText, !reference.isEmpty {
+                            Text("Recorded range: \(reference)")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textSecondary)
+                                .lineLimit(1)
+                        } else {
+                            Text("No reference range")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                        }
+                        Spacer(minLength: 0)
+                    }
                 }
             }
         }
@@ -392,6 +501,19 @@ struct LabBookView: View {
         .buttonStyle(LiquidPressStyle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(displayName(for: key)), latest \(latestLabel(latest, key: key)), \(series.count) readings")
+    }
+
+    static func trendDescription(values: [Double]) -> String {
+        guard values.count >= 2, let first = values.first, let last = values.last else {
+            return "Insufficient history"
+        }
+        if last > first { return "Trending up" }
+        if last < first { return "Trending down" }
+        return "Holding steady"
+    }
+
+    private func trendLabel(_ values: [Double]) -> String {
+        Self.trendDescription(values: values)
     }
 
     // MARK: - Disclaimer (always visible footnote + link)
@@ -601,6 +723,7 @@ private struct MarkerDetailView: View {
                        // materialise its whole list before the trend chart is on screen.
                        lazy: true) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
+                latestHero
                 trendSection
                 if !numericReadings.isEmpty { compareSection }
                 historySection
@@ -618,6 +741,29 @@ private struct MarkerDetailView: View {
         .frame(width: 520, height: 720)
         #endif
         .background(StrandPalette.surfaceBase)
+    }
+
+    private var latestHero: some View {
+        NoopCard(tint: StrandPalette.metricCyan) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("LATEST RESULT").strandOverline().foregroundStyle(StrandPalette.metricCyan)
+                if let latest = readings.last {
+                    Text(valueLabel(latest))
+                        .font(StrandFont.display(42)).foregroundStyle(StrandPalette.textPrimary)
+                    Text(LabBookFormat.dayFromKey(latest.day))
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                    if let reference = latest.referenceText, !reference.isEmpty {
+                        HStack(spacing: 6) {
+                            SourceBadge("recorded reference range", tint: StrandPalette.textTertiary)
+                            Text(reference).font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                        }
+                    } else {
+                        Text("No reference range was recorded for this result.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Trend (descriptive arithmetic, never interpretation)

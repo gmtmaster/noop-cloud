@@ -1,6 +1,75 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Account & personalization" : {
+
+    },
+    "Add Lab Result" : {
+
+    },
+    "Connections, sources and backup" : {
+
+    },
+    "Device & data" : {
+
+    },
+    "Featured" : {
+
+    },
+    "Health records and history" : {
+
+    },
+    "Insights & tools" : {
+
+    },
+    "Lab dates" : {
+
+    },
+    "Latest recorded results" : {
+
+    },
+    "Latest test" : {
+
+    },
+    "LATEST RESULT" : {
+
+    },
+    "No reference range" : {
+
+    },
+    "No reference range was recorded for this result." : {
+
+    },
+    "Profile, preferences and reminders" : {
+
+    },
+    "Recent lab date" : {
+
+    },
+    "Records, tools, devices and account" : {
+
+    },
+    "Review your long-term metric history." : {
+
+    },
+    "Sessions and guided tools" : {
+
+    },
+    "Track laboratory biomarkers over time." : {
+
+    },
+    "Training tools" : {
+
+    },
+    "Understand your patterns" : {
+
+    },
+    "Your health record" : {
+
+    },
+    "Your recorded data" : {
+
+    },
     "" : {
       "localizations" : {
         "de" : {

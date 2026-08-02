@@ -2,6 +2,23 @@
 import SwiftUI
 import StrandDesign
 
+/// Testable contract for the iPhone More information architecture. Primary-tab/contextual duplicates are
+/// deliberately absent while every secondary destination remains represented by a card group.
+enum MoreInformationArchitecture {
+    static let featured = ["Lab Book", "Trends"]
+    static let insights = ["What Moves You", "Intelligence", "Coach", "Insights", "Explore", "Compare"]
+    static let trainingTools = ["Live", "Workouts", "Breathe", "Intervals"]
+    static let deviceAndData = ["Devices", "Data Sources", "Your Data, Fused", "Apple Health", "Mi Band",
+                                "Backup & Sync", "Cloud Sync", "Shortcuts Export"]
+    static let account = ["Profile", "Settings", "Alarms", "Automations", "Siri & Shortcuts"]
+    static let advanced = ["Rhythm", "Test Centre"]
+    static let topLevelDuplicates = ["Health", "Stress", "Sleep", "Today"]
+
+    static var allVisible: [String] {
+        featured + insights + trainingTools + deviceAndData + account + advanced
+    }
+}
+
 /// iOS navigation shell. macOS uses a `NavigationSplitView` sidebar (`RootView`); on iPhone the
 /// natural analogue is a `TabView` with the most-used screens as tabs and everything else under a
 /// "More" list. Every screen is the same `StrandDesign`-built view the macOS app uses.
@@ -273,70 +290,86 @@ struct RootTabView: View {
         .tabItem { Label(title, systemImage: icon) }
     }
 
-    // The "More" tab is the app's catch-all index. It was a plain SwiftUI `List` with system large-title
-    // + system title-case section headers, so it didn't match any other page (which all use ScreenScaffold
-    // + SectionHeader's UPPERCASE overline + the 28pt section rhythm). Rebuilt on the shared page chrome:
-    // ScreenScaffold for the title1 "More" + subtitle, a `SectionHeader` overline per group, and the group's
-    // rows in a single grouped NoopCard with hairline dividers — the same row idiom Settings/Health use.
+    // Card-based secondary-tool index. Health/Sleep/Today stay in the primary tab bar and Stress stays
+    // contextual on Today; this screen gives health records, device/data, and account controls clear weight.
     private var moreTab: some View {
         NavigationStack {
-            ScreenScaffold(title: "More", subtitle: "Everything else, one tap away",
+            ScreenScaffold(title: "More", subtitle: "Records, tools, devices and account",
                            onRefresh: { await repo.refresh() },
                            topBackground: liquidScaffoldSky()) {
-                moreSection("Insights") {
-                    MoreRow("Trends", "chart.line.uptrend.xyaxis") { TrendsView() }
+                VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
+                    SectionHeader("Featured", overline: "Health records and history")
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: NoopMetrics.gap) {
+                            MoreFeatureCard(title: "Lab Book", description: "Track laboratory biomarkers over time.",
+                                            icon: "books.vertical.fill", tint: StrandPalette.metricCyan) { LabBookView() }
+                            MoreFeatureCard(title: "Trends", description: "Review your long-term metric history.",
+                                            icon: "chart.xyaxis.line", tint: StrandPalette.metricPurple) { TrendsView() }
+                        }
+                        VStack(spacing: NoopMetrics.gap) {
+                            MoreFeatureCard(title: "Lab Book", description: "Track laboratory biomarkers over time.",
+                                            icon: "books.vertical.fill", tint: StrandPalette.metricCyan) { LabBookView() }
+                            MoreFeatureCard(title: "Trends", description: "Review your long-term metric history.",
+                                            icon: "chart.xyaxis.line", tint: StrandPalette.metricPurple) { TrendsView() }
+                        }
+                    }
+
+                    moreGroup("Insights & tools", overline: "Understand your patterns") {
                     MoreRow("What Moves You", "wand.and.sparkles") { InsightsHubView() }
                     MoreRow("Intelligence", "brain.head.profile") { IntelligenceView() }
                     MoreRow("Coach", "sparkles") { CoachView() }
                     MoreRow("Insights", "lightbulb.fill") { InsightsView() }
                     MoreRow("Explore", "square.grid.2x2.fill") { MetricExplorerView() }
                     MoreRow("Compare", "rectangle.split.2x1.fill") { CompareView() }
-                }
-                moreSection("Body") {
+                    }
+
+                    moreGroup("Training tools", overline: "Sessions and guided tools") {
                     MoreRow("Live", "waveform.path.ecg") { LiveView() }
                     MoreRow("Workouts", "figure.run") { WorkoutsView() }
-                    MoreRow("Health", "heart.text.square.fill") { HealthView() }
-                    MoreRow("Lab Book", "books.vertical.fill") { LabBookView() }
-                    MoreRow("Stress", "bolt.heart.fill") { StressView() }
                     MoreRow("Breathe", "wind") { BreathingView() }
                     MoreRow("Intervals", "timer") { IntervalTimerView() }
-                    // Experimental beat-to-beat regularity visualization — self-gates on its own consent.
-                    MoreRow("Rhythm", "waveform.path") { RhythmHost() }
-                }
-                moreSection("Data") {
+                    }
+
+                    moreGroup("Device & data", overline: "Connections, sources and backup") {
+                    MoreRow("Devices", "applewatch.radiowaves.left.and.right") { DevicesView() }
+                    MoreRow("Data Sources", "externaldrive.fill") { DataSourcesView() }
                     MoreRow("Your Data, Fused", "square.stack.3d.up.fill") { FusedRecordHost() }
                     MoreRow("Apple Health", "heart.fill") { AppleHealthView() }
                     MoreRow("Mi Band", "figure.walk.motion") { XiaomiBandView() }
-                    MoreRow("Data Sources", "externaldrive.fill") { DataSourcesView() }
                     MoreRow("Backup & Sync", "externaldrive.fill.badge.icloud") { BackupSyncView() }
                     MoreRow("Cloud Sync", "icloud.and.arrow.up.fill") { CloudSyncSettingsView() }
-                    // #155: HealthKit-free Apple Health path for sideloaded installs (Siri Shortcut
-                    // reads the opt-in Documents/noop_sync.txt drop file).
                     MoreRow("Shortcuts Export", "square.and.arrow.up.fill") { ShortcutExportSettingsView() }
-                }
-                moreSection("App") {
-                    // #805/#811: the v7.3.1 #766 alarm consolidation moved Smart Alarm under a single
-                    // "Alarms" sidebar entry (RootView .smartAlarm) but the regression dropped the row
-                    // from the iPhone More list, leaving Alarms unreachable on iPhone. Restore it here
-                    // (route to SmartAlarmView, the cross-platform iOS/macOS surface).
-                    //
-                    // Notifications (RootView .notifications) is deliberately NOT added: that screen is
-                    // macOS-only (it picks which Mac apps tap your wrist via NSWorkspace, imports AppKit,
-                    // and project.yml excludes Screens/NotificationSettingsView.swift from the iOS target),
-                    // so it can't compile or apply on iPhone. iPhone's wrist-alert controls live on the
-                    // Automations screen instead. Its absence from the iPhone More list is correct.
+                    }
+
+                    moreGroup("Account & personalization", overline: "Profile, preferences and reminders") {
+                    MoreRow("Profile", "person.crop.circle") { CloudProfileView() }
+                    MoreRow("Settings", "gearshape.fill") { SettingsView() }
                     MoreRow("Alarms", "alarm.fill") { SmartAlarmView() }
                     MoreRow("Automations", "wand.and.stars") { AutomationsView() }
-                    // The Test Centre (the diagnostics + bug-report hub) gets a first-class home here, not
-                    // just buried in Settings, so the feedback loop is one tap from the More tab.
-                    MoreRow("Test Centre", "stethoscope") { TestCentreView() }
                     MoreRow("Siri & Shortcuts", "mic.fill") { SiriShortcutsSettingsView() }
-                    MoreRow("Settings", "gearshape.fill") { SettingsView() }
+                    }
+
+                    moreSection("Advanced") {
+                        MoreRow("Rhythm", "waveform.path") { RhythmHost() }
+                        MoreRow("Test Centre", "stethoscope") { TestCentreView() }
+                    }
                 }
             }
             .toolbar(.hidden, for: .tabBar)   // we draw our own FloatingTabBar
         }
         .tabItem { Label("More", systemImage: "ellipsis.circle.fill") }
+    }
+
+    @ViewBuilder
+    private func moreGroup<Rows: View>(_ title: LocalizedStringKey, overline: LocalizedStringKey,
+                                       @ViewBuilder rows: @escaping () -> Rows) -> some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader(title, overline: overline)
+            NoopCard(padding: 0) {
+                VStack(spacing: 0) { rows() }
+                    .clipShape(RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous))
+            }
+        }
     }
 
     /// One titled, COLLAPSIBLE group in the More index (S2): the app's overline (UPPERCASE) becomes a
@@ -391,6 +424,45 @@ struct RootTabView: View {
                 }
             }
         }
+    }
+}
+
+private struct MoreFeatureCard<Destination: View>: View {
+    let title: LocalizedStringKey
+    let description: LocalizedStringKey
+    let icon: String
+    let tint: Color
+    @ViewBuilder let destination: () -> Destination
+
+    var body: some View {
+        NavigationLink {
+            destination()
+                .background(StrandPalette.surfaceBase.ignoresSafeArea())
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.hidden, for: .navigationBar)
+        } label: {
+            NoopCard(tint: tint) {
+                VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                    HStack {
+                        Image(systemName: icon)
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(tint)
+                            .frame(width: 38, height: 38)
+                            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                        Spacer(minLength: NoopMetrics.space2)
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    Text(title).font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                    Text(description).font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, minHeight: 116, alignment: .leading)
+            }
+        }
+        .buttonStyle(LiquidPressStyle())
+        .accessibilityElement(children: .combine)
     }
 }
 
