@@ -111,6 +111,8 @@ enum MetricCatalog {
         d("vo2max_est", String(localized: "VO₂ Max (estimated)"), "Heart", "", "my-whoop", "lungs", 1, true),
         d("vitality", String(localized: "Vitality"), "Heart", "", "my-whoop", "sparkles", 0, true),
         d("body_age", String(localized: "Body Age"), "Heart", "yrs", "my-whoop", "figure.stand", 0, false),
+        d("noop_age", String(localized: "Noop Age"), "Heart", "yrs", "my-whoop", "circle.hexagongrid.fill", 1, false),
+        d("noop_pace", String(localized: "Pace of Aging"), "Heart", "x", "my-whoop", "speedometer", 1, false),
 
         // ── Charge (was Recovery)
         d("recovery", String(localized: "Charge"), "Charge", "%", "my-whoop", "heart.circle", 0, true,

@@ -2,71 +2,136 @@ import XCTest
 @testable import StrandAnalytics
 
 final class NoopAgeEngineTests: XCTestCase {
-    private func week(_ index: Int, age: Double? = 40, rhr: Double = 60,
-                      hrv: Double = 55, debt: Double? = 30, workouts: Int = 3) -> NoopAgeWeekInput {
-        NoopAgeWeekInput(weekEndDay: String(format: "2026-01-%02d", 3 + index * 7),
-            chronologicalAge: age, sex: "male", restingHR: Array(repeating: rhr, count: 7),
-            strain: [35, 50, 60, 0, 45, 0, 0], hrv: Array(repeating: hrv, count: 7),
-            sleepMinutes: [470, 480, 475, 485, 470, 480, 475], recentSleepDebtMinutes: debt,
-            recovery: [65, 70, 68, 72, 69, 66, 71], workoutCount: workouts)
+    private let start = "2026-01-01"
+
+    private func day(_ index: Int, healthy: Bool = true, complete: Bool = true) -> HealthspanDay {
+        HealthspanDay(day: add(start, index), sleepMinutes: complete ? (healthy ? 480 : 330) : nil,
+            sleepStartMinute: complete ? (healthy ? 1_380 : Double((index * 113) % 1_440)) : nil,
+            wakeMinute: complete ? (healthy ? 420 : Double((index * 157) % 1_440)) : nil,
+            steps: complete ? (healthy ? 10_000 : 2_000) : nil,
+            zone1to3Minutes: complete ? (healthy ? 25 : 0) : nil,
+            zone4to5Minutes: complete ? (healthy ? 3 : 0) : nil,
+            strengthMinutes: complete ? (healthy ? 8 : 0) : nil,
+            restingHR: complete ? (healthy ? 55 : 85) : nil,
+            vo2Max: complete ? (healthy ? 48 : 25) : nil,
+            leanMassPercent: nil)
     }
 
-    func testHistoricalResultDoesNotChangeWhenFutureWeeksAreAdded() {
-        let first = NoopAgeEngine.evaluate((0..<4).map { week($0) }).first
-        let extended = NoopAgeEngine.evaluate((0..<7).map { week($0, rhr: $0 > 3 ? 85 : 60) }).first
-        XCTAssertEqual(first, extended)
+    private func result(_ days: [HealthspanDay], cutoff: String? = nil) -> NoopAgeWeekResult {
+        let end = cutoff ?? days.last!.day
+        return NoopAgeEngine.evaluate(days: days, weekEndDays: [end]) { _ in 40 }.last!
     }
 
-    func testSelectedWeekUsesOnlyPrefixData() {
-        let base = NoopAgeEngine.evaluate((0..<5).map { week($0) })
-        let changedFuture = NoopAgeEngine.evaluate((0..<6).map { week($0, rhr: $0 == 5 ? 95 : 60) })
-        XCTAssertEqual(base[4], changedFuture[4])
+    func testSevenCompleteDaysProduceMaturityShrunkCalibratingAge() {
+        let r = result((0..<7).map { day($0) })
+        XCTAssertEqual(r.confidence, .calibrating)
+        XCTAssertNotNil(r.noopAge)
+        XCTAssertLessThanOrEqual(abs(r.noopAge! - 40), 0.6) // 20% of ±3-year cap
+        XCTAssertNil(r.paceOfAging)
     }
 
-    func testMissingMetricsLowerConfidenceWithoutCrash() {
-        let sparse = NoopAgeWeekInput(weekEndDay: "2026-01-03", chronologicalAge: 40, sex: "male",
-            restingHR: [60, 61, 59, 60], strain: [], hrv: [], sleepMinutes: [],
-            recentSleepDebtMinutes: nil, recovery: [], workoutCount: 0)
-        let result = NoopAgeEngine.evaluate([sparse])[0]
-        XCTAssertNotNil(result.noopAge)
-        XCTAssertEqual(result.confidence, .developing)
+    func testThirtyGoodDaysAreDevelopingButPaceStillUnavailable() {
+        let r = result((0..<30).map { day($0) })
+        XCTAssertEqual(r.confidence, .developing)
+        XCTAssertNil(r.paceOfAging)
     }
 
-    func testMissingAgeOrRHRIsInsufficient() {
-        XCTAssertNil(NoopAgeEngine.evaluate([week(0, age: nil)])[0].noopAge)
-        let short = NoopAgeWeekInput(weekEndDay: "2026-01-03", chronologicalAge: 40, sex: "male",
-            restingHR: [60, 61, 59], strain: [], hrv: [], sleepMinutes: [],
-            recentSleepDebtMinutes: nil, recovery: [], workoutCount: 0)
-        XCTAssertEqual(NoopAgeEngine.evaluate([short])[0].confidence, .insufficient)
+    func testEstablishedRequiresAbout180DaysAndAdequateCoverage() {
+        XCTAssertEqual(result((0..<179).map { day($0) }).confidence, .developing)
+        let established = result((0..<180).map { day($0) })
+        XCTAssertEqual(established.confidence, .established, "\(established.coverage)")
     }
 
-    func testAgeAdjustmentIsBounded() {
-        let result = NoopAgeEngine.evaluate([week(0, rhr: 120, hrv: 5, debt: 10_000, workouts: 0)])[0]
-        XCTAssertGreaterThanOrEqual(result.noopAge!, 30)
-        XCTAssertLessThanOrEqual(result.noopAge!, 50)
+    func testSparseLongCalendarSpanDoesNotInflateConfidence() {
+        var sparse = (0..<5).map { day($0) }
+        sparse.append(contentsOf: (175..<180).map { day($0) })
+        XCTAssertEqual(result(sparse).confidence, .insufficient)
     }
 
-    func testSmoothingPreventsFullWeeklyJump() {
-        let results = NoopAgeEngine.evaluate([week(0, rhr: 50), week(1, rhr: 50), week(2, rhr: 100)])
-        XCTAssertLessThan(abs(results[2].noopAge! - results[1].noopAge!),
-                          abs(results[2].rawAge! - results[1].rawAge!))
+    func testPaceRequiresOlderComparisonAndUsesProjectedAgeFormula() {
+        let days = (0..<90).map { day($0, healthy: $0 >= 60) }
+        let r = result(days)
+        XCTAssertNotNil(r.paceOfAging)
+        XCTAssertTrue(NoopAgeEngine.Configuration.minimumPace...NoopAgeEngine.Configuration.maximumPace ~= r.paceOfAging!)
+        // A much healthier recent state than the mixed long-term state should slow/reverse projected aging.
+        XCTAssertLessThan(r.paceOfAging!, 1)
     }
 
-    func testPaceRequiresFourWeeksAndStaysBounded() {
-        let results = NoopAgeEngine.evaluate((0..<8).map { week($0, rhr: 45 + Double($0) * 7) })
-        XCTAssertNil(results[2].paceOfAging)
-        XCTAssertNotNil(results[3].paceOfAging)
-        for value in results.compactMap(\.paceOfAging) {
-            XCTAssertTrue(NoopAgeEngine.Configuration.minimumPace...NoopAgeEngine.Configuration.maximumPace ~= value)
+    func testRecentBehaviorMovesPaceMoreThanLongTermAge() {
+        let baseline = result((0..<90).map { day($0, healthy: false) })
+        let changed = result((0..<90).map { day($0, healthy: $0 >= 60) })
+        XCTAssertLessThan(abs(changed.noopAge! - baseline.noopAge!), 3)
+        XCTAssertLessThan(changed.paceOfAging!, baseline.paceOfAging!)
+    }
+
+    func testHard180DayWindowExcludesAncientData() {
+        let recent = (20..<200).map { day($0) }
+        let ancient = (0..<20).map { day($0, healthy: false) }
+        XCTAssertEqual(result(recent).rawAge!, result(ancient + recent).rawAge!, accuracy: 1e-12)
+    }
+
+    func testHistoricalSnapshotHasStrictNoLookAhead() {
+        let prefix = (0..<90).map { day($0) }
+        let cutoff = prefix.last!.day
+        let before = result(prefix, cutoff: cutoff)
+        let after = result(prefix + (90..<150).map { day($0, healthy: false) }, cutoff: cutoff)
+        XCTAssertEqual(before, after)
+    }
+
+    func testMissingOptionalMetricsRenormalizeWithoutZeroFabrication() {
+        let sparse = (0..<30).map { i in
+            HealthspanDay(day: add(start, i), sleepMinutes: 480, sleepStartMinute: 1_380,
+                wakeMinute: 420, steps: 9_000, restingHR: 58)
         }
+        let r = result(sparse)
+        XCTAssertNotNil(r.noopAge)
+        XCTAssertTrue(r.coverage.unavailableContributorKeys.contains("vo2max"))
+        XCTAssertFalse(r.ageContributors.contains { $0.key == "vo2max" })
     }
 
-    func testContributorDirectionsMatchAdjustments() {
-        let result = NoopAgeEngine.evaluate([week(0, rhr: 85, debt: 240, workouts: 0)])[0]
-        XCTAssertTrue(result.contributors.allSatisfy {
-            ($0.adjustmentYears <= 0 && $0.impact == .helping) ||
-            ($0.adjustmentYears > 0 && $0.impact == .holdingBack)
-        })
-        XCTAssertEqual(result.contributors.first { $0.key == "sleep_debt" }?.impact, .holdingBack)
+    func testOneAbnormalDayHasLimitedEffect() {
+        let normal = (0..<90).map { day($0) }
+        var outlier = normal
+        outlier[89] = day(89, healthy: false)
+        XCTAssertLessThan(abs(result(outlier).noopAge! - result(normal).noopAge!), 0.5)
+    }
+
+    func testSustainedChangeMovesAgeGraduallyAcrossWeeklySnapshots() {
+        let days = (0..<120).map { day($0, healthy: $0 < 90) }
+        let cutoffs = stride(from: 83, through: 118, by: 7).map { add(start, $0) }
+        let r = NoopAgeEngine.evaluate(days: days, weekEndDays: cutoffs) { _ in 40 }
+        let changes = zip(r, r.dropFirst()).map { abs($1.noopAge! - $0.noopAge!) }
+        XCTAssertTrue(changes.allSatisfy { $0 < 2 })
+        XCTAssertGreaterThan(r.last!.noopAge!, r.first!.noopAge!)
+    }
+
+    func testLabBookHasNoInputPathAndCannotChangeResult() {
+        let days = (0..<60).map { day($0) }
+        let before = result(days)
+        // HealthspanDay intentionally has no lab-marker field; unrelated values cannot enter the engine.
+        let unrelatedLabBookValues = ["hs_crp": 4.2, "vitamin_d": 31.0]
+        XCTAssertFalse(unrelatedLabBookValues.isEmpty)
+        XCTAssertEqual(before, result(days))
+    }
+
+    func testResultKeepsFullPrecisionAndVersionedCoefficientSet() {
+        let r = result((0..<60).map { day($0) })
+        XCTAssertEqual(r.modelVersion, "noop-healthspan-v2")
+        XCTAssertNotEqual(r.noopAge, (r.noopAge! * 10).rounded() / 10)
+    }
+
+    func testCanonicalProjectionMatchesResultAndNeverUsesLegacyAgeKeys() {
+        let r = result((0..<90).map { day($0) })
+        let values = NoopAgeEngine.canonicalMetricValues(r)
+        XCTAssertEqual(values["noop_age"], r.noopAge)
+        XCTAssertEqual(values["noop_pace"], r.paceOfAging)
+        XCTAssertTrue(Set(values.keys).isDisjoint(with: ["fitness_age", "body_age", "vitality"]))
+    }
+
+    private func add(_ day: String, _ amount: Int) -> String {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let f = DateFormatter(); f.calendar = calendar
+        f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "yyyy-MM-dd"
+        let d = f.date(from: day)!; return f.string(from: calendar.date(byAdding: .day, value: amount, to: d)!)
     }
 }

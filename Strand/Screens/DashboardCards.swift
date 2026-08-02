@@ -48,8 +48,8 @@ enum DashboardCard: String, CaseIterable, Identifiable {
         case .respiratory: return String(localized: "Respiratory")
         case .steps:       return String(localized: "Steps")
         case .stress:      return String(localized: "Stress")
-        case .fitnessAge:  return String(localized: "Fitness Age")
-        case .vitality:    return String(localized: "Vitality")
+        case .fitnessAge:  return String(localized: "Noop Age")
+        case .vitality:    return String(localized: "Pace of Aging")
         case .bloodOxygen: return String(localized: "Blood Oxygen")
         case .skinTemp:    return String(localized: "Skin Temp")
         case .sleep:       return String(localized: "Sleep")
@@ -69,7 +69,7 @@ enum DashboardCard: String, CaseIterable, Identifiable {
         case .steps:       return String(localized: "Today")
         case .stress:      return String(localized: "Autonomic load")
         case .fitnessAge:  return String(localized: "Updated weekly")
-        case .vitality:    return String(localized: "Wellness score")
+        case .vitality:    return String(localized: "Recent 30 days vs. long-term")
         case .bloodOxygen: return String(localized: "Blood oxygen")
         case .skinTemp:    return String(localized: "Skin temperature")
         case .sleep:       return String(localized: "Last night")
@@ -107,7 +107,7 @@ enum DashboardCard: String, CaseIterable, Identifiable {
         case .steps:       return ""
         case .stress:      return ""
         case .fitnessAge:  return "yrs"
-        case .vitality:    return ""
+        case .vitality:    return "x"
         case .bloodOxygen: return ""    // value carries the % itself
         case .skinTemp:    return ""    // value carries the ° itself
         case .sleep:       return ""    // value carries the h/m itself

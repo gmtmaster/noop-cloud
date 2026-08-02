@@ -97,8 +97,8 @@ enum HealthspanContributorScale {
 
     static func sorted(_ contributors: [NoopAgeContributor]) -> [NoopAgeContributor] {
         contributors.sorted {
-            sortsBefore(lhsLabel: $0.label, lhsAdjustment: $0.adjustmentYears,
-                        rhsLabel: $1.label, rhsAdjustment: $1.adjustmentYears)
+            sortsBefore(lhsLabel: $0.label, lhsAdjustment: $0.recentAdjustmentYears ?? $0.adjustmentYears,
+                        rhsLabel: $1.label, rhsAdjustment: $1.recentAdjustmentYears ?? $1.adjustmentYears)
         }
     }
 
@@ -139,7 +139,8 @@ struct HealthspanView: View {
                 missingAge
             } else if let result = selected, let age = result.noopAge {
                 weekNavigation(result.weekEndDay)
-                NoopAgeOrb(age: age, chronologicalAge: chronologicalAge(for: result.weekEndDay) ?? age,
+                NoopAgeOrb(age: result.confidence == .calibrating ? age.rounded() : age,
+                           chronologicalAge: chronologicalAge(for: result.weekEndDay) ?? age,
                            confidence: result.confidence)
                     .frame(maxWidth: 380)
                     .frame(maxWidth: .infinity)
@@ -147,7 +148,7 @@ struct HealthspanView: View {
                 contributorCard(result)
                 modelNote
             } else {
-                ComingSoon(what: "Noop Age needs at least four nights of resting heart rate in a week. Keep wearing your device and check back after more history lands.", symbol: "heart.circle")
+                ComingSoon(what: "Noop Age is calibrating. Keep wearing your device through sleep and daily activity so enough reliable coverage can build.", symbol: "heart.circle")
             }
         }
         .task(id: repo.refreshSeq) { await load() }
@@ -183,7 +184,7 @@ struct HealthspanView: View {
 
     private func paceSection(_ result: NoopAgeWeekResult) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("Pace of Aging", overline: "Recent modeled trajectory")
+            SectionHeader("Pace of Aging", overline: "Recent 30 days vs. long-term")
             NoopCard(tint: paceColor(result.paceOfAging)) {
                 VStack(spacing: 12) {
                     Text(result.paceOfAging.map { String(format: "%.1fx", $0) } ?? "—")
@@ -204,8 +205,8 @@ struct HealthspanView: View {
                     HStack { Text("Slower"); Spacer(); Text("1.0x stable"); Spacer(); Text("Faster") }
                         .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
                     Text(result.paceOfAging == nil
-                         ? "At least four weekly Noop Age points are needed."
-                         : "A bounded trend in your modeled fitness and health estimate—not literal biological aging speed.")
+                         ? "Building an older comparison baseline."
+                         : "A projected six-month trajectory from your recent 30 days—not literal biological aging speed.")
                         .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
                 }
             }
@@ -213,10 +214,12 @@ struct HealthspanView: View {
     }
 
     private func contributorCard(_ result: NoopAgeWeekResult) -> some View {
-        let sorted = HealthspanContributorScale.sorted(result.contributors.filter { abs($0.adjustmentYears) >= 0.05 })
+        let sorted = HealthspanContributorScale.sorted(result.contributors.filter {
+            abs($0.recentAdjustmentYears ?? $0.adjustmentYears) >= 0.05
+        })
         let visible = showsAllContributors ? sorted : Array(sorted.prefix(5))
         return VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("What Is Moving Your Noop Age", overline: "Weekly contributors",
+            SectionHeader("What Is Moving Your Noop Age", overline: "Recent 30 days vs. long-term",
                           trailing: result.confidence.rawValue.capitalized)
             NoopCard(tint: StrandPalette.chargeColor) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -277,15 +280,17 @@ private struct ContributorImpactRow: View {
     let item: NoopAgeContributor
 
     private var color: Color {
-        if abs(item.adjustmentYears) < 0.1 { return StrandPalette.textTertiary }
-        return item.adjustmentYears < 0 ? StrandPalette.statusPositive : HealthspanOrbPalette.worsening
+        if abs(displayAdjustment) < 0.1 { return StrandPalette.textTertiary }
+        return displayAdjustment < 0 ? StrandPalette.statusPositive : HealthspanOrbPalette.worsening
     }
+
+    private var displayAdjustment: Double { item.recentAdjustmentYears ?? item.adjustmentYears }
 
     private var effectText: String {
         let direction: String
-        if abs(item.adjustmentYears) < 0.1 { direction = "near neutral" }
-        else { direction = item.adjustmentYears < 0 ? "reducing the estimate" : "raising the estimate" }
-        return "\(HealthspanContributorScale.effect(for: item.adjustmentYears)) · \(direction)"
+        if abs(displayAdjustment) < 0.1 { direction = "near neutral" }
+        else { direction = displayAdjustment < 0 ? "reducing the trajectory" : "raising the trajectory" }
+        return "\(HealthspanContributorScale.effect(for: displayAdjustment)) · \(direction)"
     }
 
     var body: some View {
@@ -298,7 +303,7 @@ private struct ContributorImpactRow: View {
             }
             GeometryReader { proxy in
                 let center = proxy.size.width / 2
-                let position = HealthspanContributorScale.position(for: item.adjustmentYears)
+                let position = HealthspanContributorScale.position(for: displayAdjustment)
                 let length = abs(position) * center
                 ZStack(alignment: .leading) {
                     Capsule().fill(StrandPalette.surfaceInset).frame(height: 4)
@@ -309,7 +314,7 @@ private struct ContributorImpactRow: View {
                         .shadow(color: color.opacity(0.45), radius: 4)
                         .offset(x: max(0, min(proxy.size.width - 9, center + position * center - 4.5)))
                 }
-                .animation(StrandMotion.interactive, value: item.adjustmentYears)
+                .animation(StrandMotion.interactive, value: displayAdjustment)
             }
             .frame(height: 14)
         }

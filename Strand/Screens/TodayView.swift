@@ -2622,7 +2622,7 @@ struct TodayView: View {
         case .fitnessAge:
             return withUnit(fitnessAgeToday.map { "\(Int($0.rounded()))" } ?? "—")
         case .vitality:
-            return vitalityToday.map { "\(Int($0.rounded()))" } ?? "—"
+            return vitalityToday.map { String(format: "%.1f", $0) } ?? "—"
         case .hydration:
             // "<total> / <goal> L" in litres to 1 dp (the string bakes in the " L" itself). Always shows a
             // value (a fresh day reads "0.0 / 3.2 L"); the goal is always derivable from the profile.
@@ -4387,8 +4387,7 @@ struct TodayView: View {
         // the SAME StressModel below, ties the pinned card to today's score; both then refresh on the shared
         // `repo.refreshSeq` task key (loadAll's TodayLoadKey) and stay in sync.
         async let stressStoredA      = repo.series(key: "stress", source: "my-whoop")
-        async let fitnessAgeSeriesA  = repo.exploreSeries(key: "fitness_age", source: "my-whoop")
-        async let vitalitySeriesA    = repo.exploreSeries(key: "vitality", source: "my-whoop")
+        async let healthspanA        = repo.noopAgeHistory(profile: profile)
 
         // Steps ESTIMATE per day (WHOOP 4.0 motion → calibrated steps). exploreSeries reads the computed
         // "-noop" metricSeries the IntelligenceEngine writes, exactly like the Explore "steps_est" metric.
@@ -4408,10 +4407,12 @@ struct TodayView: View {
         // #753: Stress mirrors StressView. `StressModel(days:stored:).score` is TODAY's score (stored row
         // preferred, else derived off the live RHR/HRV baseline), so the pinned card never lags the detail
         // page on a day with no banked stress row. nil (no usable signal) keeps the honest "Calibrating"
-        // placeholder, matching StressView's empty state. Fitness age / Vitality keep their merged reads.
+        // placeholder, matching StressView's empty state. Both Healthspan cards consume the one canonical
+        // weekly snapshot rather than the legacy fitness_age / vitality series.
         stressToday = StressModel(days: repo.days, stored: await stressStoredA)?.score
-        fitnessAgeToday = (await fitnessAgeSeriesA).last?.value
-        vitalityToday = (await vitalitySeriesA).last?.value
+        let healthspan = await healthspanA
+        fitnessAgeToday = healthspan.last?.noopAge
+        vitalityToday = healthspan.last?.paceOfAging
         // Hydration card (opt-in): today's stored total + the sex/Effort goal. Only loaded when the
         // feature is on, so a disabled feature does zero work and the card stays hidden.
         await reloadHydration()
