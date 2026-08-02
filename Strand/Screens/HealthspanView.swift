@@ -214,9 +214,11 @@ struct HealthspanView: View {
     }
 
     private func contributorCard(_ result: NoopAgeWeekResult) -> some View {
-        let sorted = HealthspanContributorScale.sorted(result.contributors.filter {
-            abs($0.recentAdjustmentYears ?? $0.adjustmentYears) >= 0.05
-        })
+        let availability = HealthspanContributorAvailability.resolve(result)
+        let sorted = availability == .valid
+            ? HealthspanContributorScale.sorted(result.contributors.filter {
+                abs($0.recentAdjustmentYears ?? $0.adjustmentYears) >= 0.05
+            }) : []
         let visible = showsAllContributors ? sorted : Array(sorted.prefix(5))
         return VStack(alignment: .leading, spacing: 12) {
             SectionHeader("What Is Moving Your Noop Age", overline: "Recent 30 days vs. long-term",
@@ -232,7 +234,7 @@ struct HealthspanView: View {
                         ContributorImpactRow(item: item)
                     }
                     if sorted.isEmpty {
-                        Text("No strong contributor stood out this week.")
+                        Text(contributorEmptyText(availability))
                             .font(StrandFont.body).foregroundStyle(StrandPalette.textSecondary)
                     }
                     if sorted.count > 5 {
@@ -249,6 +251,17 @@ struct HealthspanView: View {
         }
     }
 
+    private func contributorEmptyText(_ availability: HealthspanContributorAvailability) -> String {
+        switch availability {
+        case .buildingPaceBaseline:
+            return "Building your recent-vs-long-term contributor baseline."
+        case .insufficientComparableData:
+            return "Not enough comparable data to identify trajectory contributors yet."
+        case .valid:
+            return "No strong contributor stood out for this period."
+        }
+    }
+
     private var modelNote: some View {
         Text("Noop Age is a deterministic, WHOOP-inspired functional fitness comparison built from your available data. It is not WHOOP’s formula, a biological age, diagnosis, lifespan estimate, or disease-risk score.")
             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
@@ -256,7 +269,7 @@ struct HealthspanView: View {
 
     private func load() async {
         history = await repo.noopAgeHistory(profile: profile)
-        selectedIndex = max(0, history.count - 1)
+        selectedIndex = HealthspanSelection.newestIndex(count: history.count)
     }
     private func chronologicalAge(for day: String) -> Double? {
         guard let date = Self.parser.date(from: day) else { return profile.ageIsExplicit ? Double(profile.age) : nil }
@@ -340,9 +353,11 @@ private struct NoopAgeOrb: View {
 
     private var tint: Color {
         let delta = age - chronologicalAge
-        if delta <= -1 { return HealthspanOrbPalette.improving }
-        if delta >= 1 { return HealthspanOrbPalette.worsening }
-        return HealthspanOrbPalette.neutral
+        switch HealthspanDirection.classify(delta: delta) {
+        case .improving: return HealthspanOrbPalette.improving
+        case .worsening: return HealthspanOrbPalette.worsening
+        case .neutral: return HealthspanOrbPalette.neutral
+        }
     }
 
     var body: some View {

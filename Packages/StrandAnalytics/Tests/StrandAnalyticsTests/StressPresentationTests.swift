@@ -41,6 +41,27 @@ final class StressPresentationTests: XCTestCase {
         XCTAssertEqual(StressPresentation.nearestSample(to: base.addingTimeInterval(3000), in: samples)?.value, 2)
     }
 
+    func testLineBreaksAcrossLongGapWithoutInventingSamples() {
+        let samples = StressPresentation.samples(from: [point(0, 0.4), point(3600, 0.6), point(3 * 3600, 2.2)])
+        let segments = StressPresentation.lineSegments(samples)
+        XCTAssertEqual(segments.map(\.count), [2, 1])
+        XCTAssertEqual(segments.flatMap { $0 }, samples)
+    }
+
+    func testCurrentUsesLatestNotMaximumAndMissingIsNil() {
+        let day = StressPresentation.summarize(date: base, points: [point(0, 3), point(3600, 0.4)])
+        let current = StressPresentation.current(in: day, now: base.addingTimeInterval(3700))
+        XCTAssertEqual(current?.sample.value, 0.4)
+        XCTAssertEqual(current?.zone, .low)
+        XCTAssertNil(StressPresentation.current(in: nil, now: base))
+    }
+
+    func testScrubSelectionDoesNotMutateCanonicalLatest() {
+        let day = StressPresentation.summarize(date: base, points: [point(0, 3), point(3600, 0.4)])
+        _ = StressPresentation.nearestSample(to: base, in: day.samples)
+        XCTAssertEqual(day.latest?.value, 0.4)
+    }
+
     func testStaleness() {
         let sample = StressPresentation.Sample(timestamp: base, value: 1)
         XCTAssertFalse(StressPresentation.isStale(sample, now: base.addingTimeInterval(89 * 60)))

@@ -6,6 +6,8 @@ public enum StressPresentation {
     public static let scale: ClosedRange<Double> = 0...3
     public static let expectedDayDuration: TimeInterval = 16 * 60 * 60
     public static let maximumAttributedInterval: TimeInterval = 60 * 60
+    /// Display paths break beyond the expected hourly cadence plus 50% tolerance.
+    public static let maximumConnectedGap: TimeInterval = 90 * 60
     public static let qualifiedCoverage = 0.60
     public static let maximumBaselineDays = 8
     public static let minimumBaselineDays = 3
@@ -65,11 +67,24 @@ public enum StressPresentation {
         }
     }
 
+    public struct Current: Equatable, Sendable {
+        public let sample: Sample
+        public let zone: Zone
+        public let isStale: Bool
+
+        public init(sample: Sample, now: Date) {
+            self.sample = sample
+            self.zone = Zone(score: sample.value)
+            self.isStale = StressPresentation.isStale(sample, now: now)
+        }
+    }
+
     public struct Baseline: Equatable, Sendable {
         public let validDayCount: Int
         public let lowProportion: Double
         public let mediumProportion: Double
         public let highProportion: Double
+        public let coverage: Double
         public var isQualified: Bool { validDayCount >= minimumBaselineDays }
 
         public func proportion(for zone: Zone) -> Double {
@@ -112,6 +127,25 @@ public enum StressPresentation {
         samples.min { abs($0.timestamp.timeIntervalSince(date)) < abs($1.timestamp.timeIntervalSince(date)) }
     }
 
+    public static func current(in day: Day?, now: Date) -> Current? {
+        day?.latest.map { Current(sample: $0, now: now) }
+    }
+
+    /// Contiguous real-sample runs for display. No synthetic samples are created.
+    public static func lineSegments(_ samples: [Sample]) -> [[Sample]] {
+        guard !samples.isEmpty else { return [] }
+        var result: [[Sample]] = [], current: [Sample] = [samples[0]]
+        for sample in samples.dropFirst() {
+            if sample.timestamp.timeIntervalSince(current.last!.timestamp) > maximumConnectedGap {
+                result.append(current); current = [sample]
+            } else {
+                current.append(sample)
+            }
+        }
+        result.append(current)
+        return result
+    }
+
     public static func isStale(_ sample: Sample?, now: Date) -> Bool {
         guard let sample else { return true }
         return now.timeIntervalSince(sample.timestamp) > staleAfter
@@ -134,6 +168,7 @@ public enum StressPresentation {
         return Baseline(validDayCount: days.count,
                         lowProportion: median(days.map { $0.distribution.proportion(for: .low) }),
                         mediumProportion: median(days.map { $0.distribution.proportion(for: .medium) }),
-                        highProportion: median(days.map { $0.distribution.proportion(for: .high) }))
+                        highProportion: median(days.map { $0.distribution.proportion(for: .high) }),
+                        coverage: median(days.map(\.distribution.coverage)))
     }
 }

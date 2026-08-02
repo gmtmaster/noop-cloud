@@ -10,6 +10,10 @@ weekly snapshots with strict cutoff filtering. Today and Healthspan consume thos
 values are projected to `noop_age` and `noop_pace` for Trends. The older `fitness_age`, `body_age`, `vitality`,
 `FitnessAgeEngine`, and `VitalityEngine` remain available under their legacy names but do not feed Healthspan.
 
+Snapshots close on local Saturday. The currently forming Sunday–Saturday week is excluded; at local Sunday
+midnight the prior Saturday becomes the newest completed cutoff. Day arithmetic uses the user's local calendar
+before producing the stable `yyyy-MM-dd` model key.
+
 ### Windows and aggregation
 
 - Noop Age uses a hard trailing 180-day window ending at each weekly cutoff, or all available history when

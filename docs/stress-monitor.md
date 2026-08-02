@@ -6,6 +6,8 @@ Stress Monitor displays a non-diagnostic physiological activation proxy. It does
 
 The interactive daily timeline consumes the existing `DaytimeStress` calculation. Raw heart-rate and R–R observations are grouped into local waking-hour buckets (06:00–22:00). An hour requires at least 300 heart-rate samples. Mean heart rate and, when available, RMSSD are compared with that day's quiet waking reference and mapped to the existing 0–3 logistic scale. This redesign does not change that calculation.
 
+Today and Stress Monitor call the same canonical day loader and use its latest timestamped valid bucket. The Today cache never substitutes a maximum, threshold, chart bound, imported daily score, or missing-value fallback for that current observation.
+
 The older daily score path remains distinct: a stored `my-whoop/stress` value is preferred, with a 30-day resting-heart-rate/HRV fallback. Imported wearable daily stress values are daily aggregates and are not presented as intraday observations.
 
 ## Scale and zones
@@ -33,6 +35,8 @@ If the minimum is not met, the UI says that it is building the weekday baseline 
 ## Interaction, sleep, and freshness
 
 The gauge defaults to the latest valid hourly observation for the selected day. Dragging the timeline selects the nearest real observation; no values are interpolated. Selection remains pinned until **Return to latest** is tapped, so repository refreshes do not unexpectedly replace the inspected value.
+
+The chart draws thin straight segments between adjacent real hourly observations. It breaks the path when timestamps are more than 90 minutes apart; this is display-only and creates no selectable or analytical samples.
 
 For today, an observation more than 90 minutes old is labeled stale. Past days are labeled as historical rather than live. Sleep shading is displayed only for real stored sleep sessions overlapping the selected local day.
 

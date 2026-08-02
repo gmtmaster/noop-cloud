@@ -6,8 +6,7 @@ import WhoopStore
 enum NoopAgeInputBuilder {
     static func evaluate(days: [HealthspanDay], chronologicalAge: Double?, birthDate: Date? = nil) -> [NoopAgeWeekResult] {
         guard let first = days.map(\.day).min() else { return [] }
-        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
-        let latest = saturdayKey(onOrBefore: dayFormatter.string(from: yesterday))
+        let latest = HealthspanWeekCutoff.latestCompletedWeekEnd(now: Date(), calendar: .current)
         var cutoffs: [String] = [], cursor = saturdayKey(onOrAfter: first)
         while cursor <= latest {
             cutoffs.append(cursor)

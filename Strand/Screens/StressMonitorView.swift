@@ -40,6 +40,16 @@ struct StressView: View {
             }
         }
         .task(id: LoadKey(day: selectedDay, refresh: repo.refreshSeq)) { await loadDay() }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                if !Task.isCancelled, isToday,
+                   let refreshed = await repo.canonicalStressSummary(for: selectedDay, now: Date(), calendar: calendar) {
+                    // A pinned scrub remains the displayed point; Latest mode advances naturally.
+                    summary = refreshed
+                }
+            }
+        }
     }
 
     private var daySelector: some View {
@@ -188,17 +198,7 @@ struct StressView: View {
     }
 
     @MainActor private func readSummary(for date: Date) async -> StressPresentation.Day? {
-        let bounds = dayBounds(date)
-        let from = Int(bounds.start.timeIntervalSince1970), to = Int(min(bounds.end, Date()).timeIntervalSince1970)
-        guard to > from else { return nil }
-        let hr = await repo.hrSamples(from: from, to: to, limit: 200_000)
-        guard hr.count >= DaytimeStress.minHourHRSamples else { return nil }
-        let rr = (try? await repo.storeHandle()?.rrIntervals(deviceId: repo.deviceId, from: from, to: to, limit: 200_000)) ?? []
-        let noon = calendar.date(byAdding: .hour, value: 12, to: bounds.start) ?? bounds.start
-        let offset = calendar.timeZone.secondsFromGMT(for: noon)
-        let result = DaytimeStress.analyze(hr: hr, rr: rr, tzOffsetSeconds: offset)
-        let end = calendar.isDate(date, inSameDayAs: today) ? Date() : nil
-        return StressPresentation.summarize(date: calendar.startOfDay(for: date), points: result.hours, end: end)
+        await repo.canonicalStressSummary(for: date, now: Date(), calendar: calendar)
     }
 
     private func dayBounds(_ date: Date) -> DateInterval {
@@ -231,8 +231,9 @@ struct StressView: View {
 
     private func zoneRow(_ zone: StressPresentation.Zone, day: StressPresentation.Day,
                          baseline: StressPresentation.Baseline) -> some View {
-        let current = day.distribution.proportion(for: zone), typical = baseline.proportion(for: zone)
-        let delta = current - typical
+        let typical = baseline.proportion(for: zone)
+        let typicalDuration = baseline.coverage * StressPresentation.expectedDayDuration * typical
+        let deltaDuration = day.distribution.duration(for: zone) - typicalDuration
         return HStack {
             Circle().fill(zoneColor(zone)).frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 2) {
@@ -240,9 +241,9 @@ struct StressView: View {
                 Text(duration(day.distribution.duration(for: zone))).font(StrandFont.headline)
             }
             Spacer()
-            Text("\(abs(Int((delta * 100).rounded()))) pts \(delta >= 0 ? "more" : "less") than typical")
+            Text("\(duration(abs(deltaDuration))) \(deltaDuration >= 0 ? "more" : "less") than typical")
                 .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
-                .accessibilityLabel("\(abs(Int((delta * 100).rounded()))) percentage points \(delta >= 0 ? "more" : "less") than typical")
+                .accessibilityLabel("\(duration(abs(deltaDuration))) \(deltaDuration >= 0 ? "more" : "less") than typical")
         }
     }
 
@@ -252,6 +253,28 @@ struct StressView: View {
     }
 
     private struct LoadKey: Equatable { let day: Date; let refresh: Int }
+}
+
+@MainActor
+extension Repository {
+    /// One canonical intraday read shared by Today and Stress Monitor.
+    func canonicalStressSummary(for date: Date, now: Date, calendar input: Calendar) async -> StressPresentation.Day? {
+        let calendar = input
+        let start = calendar.startOfDay(for: date)
+        guard let nextDay = calendar.date(byAdding: .day, value: 1, to: start) else { return nil }
+        let end = min(nextDay, now)
+        guard end > start else { return nil }
+        let from = Int(start.timeIntervalSince1970), to = Int(end.timeIntervalSince1970)
+        let hr = await hrSamples(from: from, to: to, limit: 200_000)
+        guard hr.count >= DaytimeStress.minHourHRSamples else { return nil }
+        let rr = (try? await storeHandle()?.rrIntervals(
+            deviceId: deviceId, from: from, to: to, limit: 200_000)) ?? []
+        let noon = calendar.date(byAdding: .hour, value: 12, to: start) ?? start
+        let offset = calendar.timeZone.secondsFromGMT(for: noon)
+        let result = DaytimeStress.analyze(hr: hr, rr: rr, tzOffsetSeconds: offset)
+        return StressPresentation.summarize(date: start, points: result.hours,
+                                            end: calendar.isDate(date, inSameDayAs: now) ? now : nil)
+    }
 }
 
 private func zoneColor(_ zone: StressPresentation.Zone) -> Color {
@@ -304,24 +327,48 @@ private struct StressTimeline: View {
         GeometryReader { geo in
             let start = Calendar.current.startOfDay(for: samples.first?.timestamp ?? Date()).addingTimeInterval(6 * 3600)
             let span = StressPresentation.expectedDayDuration
+            let axisWidth: CGFloat = 30
+            let plotWidth = max(1, geo.size.width - axisWidth)
             ZStack(alignment: .topLeading) {
+                ForEach(0...3, id: \.self) { value in
+                    let y = geo.size.height * (1 - CGFloat(value) / 3)
+                    Text("\(value).0")
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .offset(x: 0, y: min(max(y - 6, 0), geo.size.height - 12))
+                    Rectangle().fill(StrandPalette.hairline.opacity(value == 0 ? 0.8 : 0.45))
+                        .frame(width: plotWidth, height: 1).offset(x: axisWidth, y: y)
+                }
+                Rectangle().fill(zoneColor(.high).opacity(0.025))
+                    .frame(width: plotWidth, height: geo.size.height / 3).offset(x: axisWidth)
+                Rectangle().fill(zoneColor(.medium).opacity(0.018))
+                    .frame(width: plotWidth, height: geo.size.height / 3)
+                    .offset(x: axisWidth, y: geo.size.height / 3)
                 ForEach(Array(sleep.enumerated()), id: \.offset) { _, interval in
-                    let x1 = x(interval.start, start: start, width: geo.size.width, span: span)
-                    let x2 = x(interval.end, start: start, width: geo.size.width, span: span)
+                    let x1 = axisWidth + x(interval.start, start: start, width: plotWidth, span: span)
+                    let x2 = axisWidth + x(interval.end, start: start, width: plotWidth, span: span)
                     Rectangle().fill(StrandPalette.accent.opacity(0.08))
                         .frame(width: max(0, x2 - x1)).offset(x: x1)
                 }
                 Canvas { context, size in
-                    for sample in samples {
-                        let sx = x(sample.timestamp, start: start, width: size.width, span: span)
-                        let sy = size.height * (1 - sample.value / 3)
-                        let endX = min(size.width, sx + size.width / 16)
-                        var segment = Path(); segment.move(to: CGPoint(x: sx, y: sy)); segment.addLine(to: CGPoint(x: endX, y: sy))
-                        context.stroke(segment, with: .color(zoneColor(.init(score: sample.value))), style: .init(lineWidth: 3, lineCap: .round))
+                    for run in StressPresentation.lineSegments(samples) {
+                        for pair in zip(run, run.dropFirst()) {
+                            let a = CGPoint(x: axisWidth + x(pair.0.timestamp, start: start, width: plotWidth, span: span),
+                                            y: size.height * (1 - pair.0.value / 3))
+                            let b = CGPoint(x: axisWidth + x(pair.1.timestamp, start: start, width: plotWidth, span: span),
+                                            y: size.height * (1 - pair.1.value / 3))
+                            var path = Path(); path.move(to: a); path.addLine(to: b)
+                            context.stroke(path,
+                                with: .linearGradient(
+                                    Gradient(colors: [zoneColor(.init(score: pair.0.value)),
+                                                      zoneColor(.init(score: pair.1.value))]),
+                                    startPoint: a, endPoint: b),
+                                style: .init(lineWidth: 2.25, lineCap: .round, lineJoin: .round))
+                        }
                     }
                 }
                 if let selected {
-                    let sx = x(selected.timestamp, start: start, width: geo.size.width, span: span)
+                    let sx = axisWidth + x(selected.timestamp, start: start, width: plotWidth, span: span)
                     Rectangle().fill(Color.white.opacity(0.5)).frame(width: 1).offset(x: sx)
                     Circle().fill(zoneColor(.init(score: selected.value))).overlay(Circle().stroke(.white, lineWidth: 2))
                         .frame(width: 12, height: 12).offset(x: sx - 6, y: geo.size.height * (1 - selected.value / 3) - 6)
@@ -329,7 +376,8 @@ private struct StressTimeline: View {
             }
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0).onChanged { gesture in
-                let date = start.addingTimeInterval(Double(gesture.location.x / max(geo.size.width, 1)) * span)
+                let plotX = min(max(gesture.location.x - axisWidth, 0), plotWidth)
+                let date = start.addingTimeInterval(Double(plotX / plotWidth) * span)
                 if let sample = StressPresentation.nearestSample(to: date, in: samples) { onSelect(sample) }
             })
         }
@@ -348,8 +396,10 @@ private struct ZoneStackedBar: View {
             GeometryReader { geo in
                 HStack(spacing: 2) {
                     ForEach(StressPresentation.Zone.allCases, id: \.self) { zone in
-                        zoneColor(zone).frame(width: max(0, geo.size.width * distribution.proportion(for: zone) - 2))
+                        zoneColor(zone).frame(width: max(0, geo.size.width * distribution.duration(for: zone) /
+                                                        StressPresentation.expectedDayDuration - 2))
                     }
+                    StrandPalette.surfaceRaised.frame(width: max(0, geo.size.width * (1 - distribution.coverage) - 2))
                 }.clipShape(Capsule())
             }.frame(height: 12)
         }
@@ -364,8 +414,9 @@ private struct TypicalStackedBar: View {
             GeometryReader { geo in
                 HStack(spacing: 2) {
                     ForEach(StressPresentation.Zone.allCases, id: \.self) { zone in
-                        zoneColor(zone).opacity(0.65).frame(width: max(0, geo.size.width * baseline.proportion(for: zone) - 2))
+                        zoneColor(zone).opacity(0.65).frame(width: max(0, geo.size.width * baseline.proportion(for: zone) * baseline.coverage - 2))
                     }
+                    StrandPalette.surfaceRaised.frame(width: max(0, geo.size.width * (1 - baseline.coverage) - 2))
                 }.clipShape(Capsule())
             }.frame(height: 12)
         }

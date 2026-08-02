@@ -372,6 +372,7 @@ struct TodayView: View {
     // Design Reset / #582, the pinned "Your cards" values (Stress / Fitness age / Vitality), surfaced
     // on Today so the buried Explore features sit on the home screen. Loaded in loadAll; nil hides the row.
     @State private var stressToday: Double?
+    @State private var stressLatestTimestamp: Date?
     @State private var fitnessAgeToday: Double?
     @State private var vitalityToday: Double?
     /// Canonical bounded sleep-planning projection shared with Sleep and Trends.
@@ -1445,6 +1446,12 @@ struct TodayView: View {
         // Reload when the data refreshes OR the selected day changes, the HR trend and Rest score are
         // day-scoped, so navigating must re-fetch them for the newly selected window.
         .task(id: TodayLoadKey(seq: repo.refreshSeq, offset: selectedDayOffset)) { await loadAll() }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                if !Task.isCancelled { await reloadCurrentStress() }
+            }
+        }
         .task(id: repo.refreshSeq) { journalEntries = await repo.journalEntries(days: 14) }
         // #989: hydration writes don't bump refreshSeq, so the card needs its own triggers, a logged /
         // edited / deleted drink (hydrationSeq) and the Settings feature toggle both re-read just the two
@@ -1833,12 +1840,17 @@ struct TodayView: View {
 
     private var stressMonitorSummary: (status: String, value: String, tint: Color) {
         guard let stress = stressToday else {
-            return (String(localized: "CALIBRATING"), "—", StrandPalette.textTertiary)
+            return (String(localized: "UNAVAILABLE"), "—", StrandPalette.textTertiary)
         }
-        switch stress {
-        case ..<1.0: return (String(localized: "LOW"), String(format: "%.1f", stress), StrandPalette.statusPositive)
-        case ..<2.0: return (String(localized: "MEDIUM"), String(format: "%.1f", stress), StrandPalette.statusWarning)
-        default:     return (String(localized: "HIGH"), String(format: "%.1f", stress), StrandPalette.metricRose)
+        let zone = StressPresentation.Zone(score: stress)
+        let stale = stressLatestTimestamp.map {
+            StressPresentation.isStale(.init(timestamp: $0, value: stress), now: Date())
+        } ?? true
+        let status = stale ? String(localized: "STALE") : zone.rawValue.uppercased()
+        switch zone {
+        case .low: return (status, String(format: "%.1f", stress), StrandPalette.accent)
+        case .medium: return (status, String(format: "%.1f", stress), StrandPalette.statusPositive)
+        case .high: return (status, String(format: "%.1f", stress), StrandPalette.statusWarning)
         }
     }
 
@@ -4302,6 +4314,9 @@ struct TodayView: View {
         // reload identical data. If the cache is somehow absent (defensive), fall through and reload.
         if repo.todayHistoryWideLoadedSeq == currentSeq, let cached = repo.todayHistoryWideCache {
             restoreHistoryWide(cached)
+            // Raw HR banking can advance without a repository refresh sequence. Never reuse the
+            // history-wide cached Stress value as "current"; refresh the canonical timestamped read.
+            await reloadCurrentStress()
             // #989: hydration is excluded from the snapshot (a drink logged since would be stale), so a
             // restore re-reads it live, one cheap row.
             await reloadHydration()
@@ -4392,21 +4407,7 @@ struct TodayView: View {
         let xSteps = await xStepsA
         let xSleep = await xSleepA
         xiaomiDays = Set(xSteps.map(\.day) + xSleep.map(\.day)).count
-        // The pinned card and detail gauge share the latest real hourly DaytimeStress bucket.
-        // This remains presentation-only: neither path changes the existing 0–3 calculation.
-        let stressStart = Calendar.current.startOfDay(for: Date())
-        let stressFrom = Int(stressStart.timeIntervalSince1970)
-        let stressTo = Int(Date().timeIntervalSince1970)
-        let stressHR = await repo.hrSamples(from: stressFrom, to: stressTo, limit: 200_000)
-        if stressHR.count >= DaytimeStress.minHourHRSamples {
-            let stressRR = (try? await repo.storeHandle()?.rrIntervals(
-                deviceId: repo.deviceId, from: stressFrom, to: stressTo, limit: 200_000)) ?? []
-            let offset = TimeZone.current.secondsFromGMT(for: Date())
-            let hourly = DaytimeStress.analyze(hr: stressHR, rr: stressRR, tzOffsetSeconds: offset)
-            stressToday = StressPresentation.summarize(date: stressStart, points: hourly.hours, end: Date()).latest?.value
-        } else {
-            stressToday = nil
-        }
+        await reloadCurrentStress()
         let healthspan = await healthspanA
         fitnessAgeToday = healthspan.last?.noopAge
         vitalityToday = healthspan.last?.paceOfAging
@@ -4434,6 +4435,7 @@ struct TodayView: View {
             xiaomiDays: xiaomiDays,
             xiaomiSleeps: xiaomiSleeps,
             stressToday: stressToday,
+            stressLatestTimestamp: stressLatestTimestamp,
             fitnessAgeToday: fitnessAgeToday,
             vitalityToday: vitalityToday
         )
@@ -4452,6 +4454,7 @@ struct TodayView: View {
         xiaomiDays = c.xiaomiDays
         xiaomiSleeps = c.xiaomiSleeps
         stressToday = c.stressToday
+        stressLatestTimestamp = c.stressLatestTimestamp
         fitnessAgeToday = c.fitnessAgeToday
         vitalityToday = c.vitalityToday
         // Hydration is deliberately NOT part of the snapshot (#989): logging a drink never bumps
@@ -4469,6 +4472,13 @@ struct TodayView: View {
             hydrationTotalML = nil
             hydrationGoalML = nil
         }
+    }
+
+    private func reloadCurrentStress() async {
+        let now = Date()
+        let day = await repo.canonicalStressSummary(for: now, now: now, calendar: .current)
+        stressToday = day?.latest?.value
+        stressLatestTimestamp = day?.latest?.timestamp
     }
 
     /// #932: restore the day-scoped outputs from a same-(seq, day) cache on a re-mount, so the selected day
@@ -4987,6 +4997,7 @@ struct TodayHistoryWideCache {
     let xiaomiDays: Int
     let xiaomiSleeps: Int
     let stressToday: Double?
+    let stressLatestTimestamp: Date?
     let fitnessAgeToday: Double?
     let vitalityToday: Double?
     // Hydration total/goal intentionally absent (#989): mutations don't bump refreshSeq, so a cached
