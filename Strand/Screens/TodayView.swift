@@ -3341,12 +3341,15 @@ struct TodayView: View {
             // edge, INSIDE the ring frame so it adds no stacked height, keeping the #762 self-sizing row
             // untouched). It opens the Charge breakdown sheet (the existing ChargeBreakdownSection), built
             // lazily on tap. No new badge/dot/tier sits under the ring (that would re-load the #762 stack).
-            heroRingColumn(section: .charge, domain: .charge, provenanceKey: "recovery",
-                           onRingTap: { showChargeBreakdown = true }) {
+            heroRingColumn(
+                section: .charge,
+                domain: .charge,
+                onRingTap: { showChargeBreakdown = true }
+            ) {
                 chargeRing(score: score, d: d, diameter: ring)
             }
             heroRingColumn(section: .effort, domain: .effort) { effortRing(d: d, diameter: ring) }
-            heroRingColumn(section: .rest, domain: .rest, provenanceKey: "sleep_performance") { restRing(diameter: ring) }
+            heroRingColumn(section: .rest, domain: .rest) { restRing(diameter: ring) }
         }
         .frame(maxWidth: .infinity, alignment: .center)
         // Zero-impact width reader: a clear background that publishes the row's width up via preference. It
@@ -3391,7 +3394,8 @@ struct TodayView: View {
     /// of the row width.
     @ViewBuilder
     private func heroRingColumn<RingBody: View>(
-        section: ScoreSection, domain: DomainTheme, provenanceKey: String? = nil,
+        section: ScoreSection,
+        domain: DomainTheme,
         onRingTap: (() -> Void)? = nil,
         @ViewBuilder ring: () -> RingBody
     ) -> some View {
@@ -3449,22 +3453,7 @@ struct TodayView: View {
             // Apple Watch (M1): a watch-sourced score reads "Apple Watch" with its confidence bound to the
             // shared ScoreStatePill dot/label, and a calibrating watch score shows "Needs more data" rather
             // than a bare ring, the honest "the watch can't support this yet" state, never a fake number.
-            if let key = provenanceKey {
-                if ringHasValue(key), isWatchSourced(key) {
-                    VStack(spacing: 4) {
-                        SourceBadge("\(watchProvenanceLabel(key))", tint: StrandPalette.metricCyan)
-                        ScoreStatePill(watchScoreState(key))
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Source: Apple Watch")
-                } else if watchNeedsMoreData(key) {
-                    SourceBadge("Needs more data", tint: StrandPalette.textTertiary)
-                        .accessibilityLabel("Apple Watch. Needs more data to score this yet.")
-                } else if ringHasValue(key), let label = provenanceLabel(key) {
-                    SourceBadge("\(label)", tint: provenanceTint(key))
-                        .accessibilityLabel("Source: \(label)")
-                }
-            }
+
         }
     }
 
