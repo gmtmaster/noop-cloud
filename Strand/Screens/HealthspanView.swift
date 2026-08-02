@@ -14,11 +14,45 @@ enum HealthspanAnimationPolicy {
     }
 }
 
+/// Presentation-only mapping for the contributor scale. The engine's signed year adjustment remains the
+/// sole source of truth; the cap only prevents one large value from making every other marker unreadable.
+enum HealthspanContributorScale {
+    static let visualCapYears = 2.0
+
+    static func sorted(_ contributors: [NoopAgeContributor]) -> [NoopAgeContributor] {
+        contributors.sorted {
+            sortsBefore(lhsLabel: $0.label, lhsAdjustment: $0.adjustmentYears,
+                        rhsLabel: $1.label, rhsAdjustment: $1.adjustmentYears)
+        }
+    }
+
+    static func sortsBefore(lhsLabel: String, lhsAdjustment: Double,
+                            rhsLabel: String, rhsAdjustment: Double) -> Bool {
+        if abs(lhsAdjustment) == abs(rhsAdjustment) { return lhsLabel < rhsLabel }
+        return abs(lhsAdjustment) > abs(rhsAdjustment)
+    }
+
+    /// -1 is the helping edge, 0 is neutral, and +1 is the holding-back edge.
+    static func position(for adjustmentYears: Double) -> Double {
+        max(-1, min(1, adjustmentYears / visualCapYears))
+    }
+
+    static func effect(for adjustmentYears: Double) -> String {
+        switch abs(adjustmentYears) {
+        case ..<0.1: return "Neutral"
+        case ..<0.35: return "Slight"
+        case ..<0.8: return "Moderate"
+        default: return "Strong"
+        }
+    }
+}
+
 struct HealthspanView: View {
     @EnvironmentObject private var repo: Repository
     @EnvironmentObject private var profile: ProfileStore
     @State private var history: [NoopAgeWeekResult] = []
     @State private var selectedIndex = 0
+    @State private var showsAllContributors = false
 
     private var selected: NoopAgeWeekResult? { history.indices.contains(selectedIndex) ? history[selectedIndex] : nil }
 
@@ -31,6 +65,7 @@ struct HealthspanView: View {
                 weekNavigation(result.weekEndDay)
                 NoopAgeOrb(age: age, chronologicalAge: chronologicalAge(for: result.weekEndDay) ?? age,
                            confidence: result.confidence)
+                    .frame(maxWidth: 380)
                     .frame(maxWidth: .infinity)
                 paceSection(result)
                 contributorCard(result)
@@ -40,6 +75,7 @@ struct HealthspanView: View {
             }
         }
         .task(id: repo.refreshSeq) { await load() }
+        .onChange(of: selectedIndex) { _, _ in showsAllContributors = false }
     }
 
     private var missingAge: some View {
@@ -101,32 +137,34 @@ struct HealthspanView: View {
     }
 
     private func contributorCard(_ result: NoopAgeWeekResult) -> some View {
-        let helping = result.contributors.filter { $0.impact == .helping && abs($0.adjustmentYears) >= 0.1 }
-        let holding = result.contributors.filter { $0.impact == .holdingBack && abs($0.adjustmentYears) >= 0.1 }
+        let sorted = HealthspanContributorScale.sorted(result.contributors.filter { abs($0.adjustmentYears) >= 0.05 })
+        let visible = showsAllContributors ? sorted : Array(sorted.prefix(5))
         return VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("What moved it", overline: "Weekly contributors",
+            SectionHeader("What Is Moving Your Noop Age", overline: "Weekly contributors",
                           trailing: result.confidence.rawValue.capitalized)
             NoopCard(tint: StrandPalette.chargeColor) {
                 VStack(alignment: .leading, spacing: 14) {
-                    contributorGroup("Helping", items: helping.prefix(3), color: StrandPalette.statusPositive)
-                    if !helping.isEmpty && !holding.isEmpty { Divider().overlay(StrandPalette.hairline) }
-                    contributorGroup("Holding you back", items: holding.prefix(3), color: StrandPalette.statusWarning)
-                    if helping.isEmpty && holding.isEmpty {
+                    HStack {
+                        Text("HELPING").strandOverline().foregroundStyle(StrandPalette.statusPositive)
+                        Spacer()
+                        Text("HOLDING BACK").strandOverline().foregroundStyle(HealthspanOrbPalette.worsening)
+                    }
+                    ForEach(visible, id: \.key) { item in
+                        ContributorImpactRow(item: item)
+                    }
+                    if sorted.isEmpty {
                         Text("No strong contributor stood out this week.")
                             .font(StrandFont.body).foregroundStyle(StrandPalette.textSecondary)
                     }
-                }
-            }
-        }
-    }
-
-    private func contributorGroup<S: Sequence>(_ title: LocalizedStringKey, items: S, color: Color) -> some View where S.Element == NoopAgeContributor {
-        VStack(alignment: .leading, spacing: 8) {
-            if items.contains(where: { _ in true }) {
-                Text(title).strandOverline().foregroundStyle(color)
-                ForEach(Array(items), id: \.key) { item in
-                    Label(item.label, systemImage: item.impact == .helping ? "arrow.down.right" : "arrow.up.right")
-                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                    if sorted.count > 5 {
+                        Button(showsAllContributors ? "Show less" : "Show all") {
+                            withAnimation(StrandMotion.interactive) { showsAllContributors.toggle() }
+                        }
+                        .buttonStyle(.plain)
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.accent)
+                        .frame(maxWidth: .infinity)
+                    }
                 }
             }
         }
@@ -159,6 +197,57 @@ struct HealthspanView: View {
     private static let label: DateFormatter = { let f = DateFormatter(); f.locale = .current; f.setLocalizedDateFormatFromTemplate("MMM d"); return f }()
 }
 
+private struct ContributorImpactRow: View {
+    let item: NoopAgeContributor
+
+    private var color: Color {
+        if abs(item.adjustmentYears) < 0.1 { return StrandPalette.textTertiary }
+        return item.adjustmentYears < 0 ? StrandPalette.statusPositive : HealthspanOrbPalette.worsening
+    }
+
+    private var effectText: String {
+        let direction: String
+        if abs(item.adjustmentYears) < 0.1 { direction = "near neutral" }
+        else { direction = item.adjustmentYears < 0 ? "reducing the estimate" : "raising the estimate" }
+        return "\(HealthspanContributorScale.effect(for: item.adjustmentYears)) · \(direction)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(item.label).font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                Spacer(minLength: 8)
+                Text(effectText).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    .lineLimit(1).minimumScaleFactor(0.72)
+            }
+            GeometryReader { proxy in
+                let center = proxy.size.width / 2
+                let position = HealthspanContributorScale.position(for: item.adjustmentYears)
+                let length = abs(position) * center
+                ZStack(alignment: .leading) {
+                    Capsule().fill(StrandPalette.surfaceInset).frame(height: 4)
+                    Rectangle().fill(StrandPalette.hairlineStrong).frame(width: 1, height: 14).offset(x: center)
+                    Capsule().fill(color.opacity(0.76)).frame(width: length, height: 5)
+                        .offset(x: position < 0 ? center - length : center)
+                    Circle().fill(color).frame(width: 9, height: 9)
+                        .shadow(color: color.opacity(0.45), radius: 4)
+                        .offset(x: max(0, min(proxy.size.width - 9, center + position * center - 4.5)))
+                }
+                .animation(StrandMotion.interactive, value: item.adjustmentYears)
+            }
+            .frame(height: 14)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(item.label), \(effectText)")
+    }
+}
+
+private enum HealthspanOrbPalette {
+    static let improving = Color(red: 0.02, green: 0.84, blue: 0.50)
+    static let neutral = Color(red: 0.95, green: 0.65, blue: 0.18)
+    static let worsening = Color(red: 1.00, green: 0.38, blue: 0.10)
+}
+
 private struct NoopAgeOrb: View {
     let age: Double
     let chronologicalAge: Double
@@ -168,9 +257,9 @@ private struct NoopAgeOrb: View {
 
     private var tint: Color {
         let delta = age - chronologicalAge
-        if delta <= -1 { return StrandPalette.statusPositive }
-        if delta >= 1 { return StrandPalette.statusWarning }
-        return StrandPalette.chargeColor
+        if delta <= -1 { return HealthspanOrbPalette.improving }
+        if delta >= 1 { return HealthspanOrbPalette.worsening }
+        return HealthspanOrbPalette.neutral
     }
 
     var body: some View {
@@ -181,21 +270,42 @@ private struct NoopAgeOrb: View {
             ZStack {
                 Canvas { context, size in
                     let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                    let radius = min(size.width, size.height) * (0.42 + 0.008 * sin(t * 0.7))
-                    context.addFilter(.shadow(color: tint.opacity(0.55), radius: 26))
-                    context.fill(Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius,
-                                                        width: radius * 2, height: radius * 2)),
-                                 with: .radialGradient(Gradient(colors: [tint.opacity(0.7), tint.opacity(0.24), .clear]),
-                                                       center: center, startRadius: 2, endRadius: radius))
-                    for index in 0..<72 {
-                        let seed = Double(index) * 12.9898
-                        let angle = seed + t * (0.025 + Double(index % 5) * 0.004)
-                        let radial = radius * (0.15 + 0.78 * abs(sin(seed * 0.37)))
-                        let p = CGPoint(x: center.x + cos(angle) * radial, y: center.y + sin(angle) * radial)
-                        let dot = 1.0 + Double(index % 3) * 0.55
-                        context.fill(Path(ellipseIn: CGRect(x: p.x - dot, y: p.y - dot, width: dot * 2, height: dot * 2)),
-                                     with: .color(.white.opacity(0.28 + Double(index % 4) * 0.1)))
+                    let radius = min(size.width, size.height) * (0.435 + 0.004 * sin(t * 0.42))
+                    let sphere = CGRect(x: center.x - radius, y: center.y - radius,
+                                      width: radius * 2, height: radius * 2)
+
+                    context.addFilter(.shadow(color: tint.opacity(0.42), radius: 22, x: 0, y: 8))
+                    context.fill(Path(ellipseIn: sphere), with: .radialGradient(
+                        Gradient(stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black.opacity(0.98), location: 0.48),
+                            .init(color: tint.opacity(0.13), location: 0.68),
+                            .init(color: tint.opacity(0.72), location: 0.94),
+                            .init(color: tint.opacity(0.24), location: 1)
+                        ]), center: CGPoint(x: center.x - radius * 0.15, y: center.y - radius * 0.18),
+                        startRadius: 0, endRadius: radius))
+
+                    context.clip(to: Path(ellipseIn: sphere))
+                    for index in 0..<128 {
+                        let seed = Double(index) + 1
+                        let u = Self.unit(seed * 12.9898) * 2 - 1
+                        let theta = Self.unit(seed * 78.233) * .pi * 2
+                        let shell = 0.58 + Self.unit(seed * 39.425) * 0.40
+                        let planar = sqrt(max(0, 1 - u * u))
+                        let driftX = 0.045 * sin(t * (0.035 + Self.unit(seed * 3.1) * 0.025) + seed)
+                        let driftY = 0.04 * sin(t * (0.027 + Self.unit(seed * 5.7) * 0.022) + seed * 0.71)
+                        let x = (cos(theta) * planar * shell + driftX) * radius
+                        let y = (sin(theta) * planar * shell + driftY) * radius
+                        let depth = u
+                        let p = CGPoint(x: center.x + x, y: center.y + y * 0.96)
+                        let dot = 0.7 + Self.unit(seed * 91.7) * 1.65 + max(0, depth) * 0.7
+                        let opacity = 0.18 + (depth + 1) * 0.19 + Self.unit(seed * 17.3) * 0.22
+                        context.fill(Path(ellipseIn: CGRect(x: p.x - dot, y: p.y - dot,
+                                                            width: dot * 2, height: dot * 2)),
+                                     with: .color(tint.opacity(opacity)))
                     }
+                    context.stroke(Path(ellipseIn: sphere.insetBy(dx: 1.5, dy: 1.5)),
+                                   with: .color(tint.opacity(0.55)), lineWidth: 1.2)
                 }
                 VStack(spacing: 4) {
                     Text(String(format: "%.1f", age)).font(StrandFont.display(50)).foregroundStyle(.white)
@@ -205,9 +315,14 @@ private struct NoopAgeOrb: View {
                 }
             }
         }
-        .frame(width: 330, height: 330)
+        .aspectRatio(1, contentMode: .fit)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Noop Age \(String(format: "%.1f", age)), \(deltaText), confidence \(confidence.rawValue)")
+    }
+
+    private static func unit(_ value: Double) -> Double {
+        let raw = sin(value) * 43_758.5453
+        return raw - floor(raw)
     }
 
     private var deltaText: String {

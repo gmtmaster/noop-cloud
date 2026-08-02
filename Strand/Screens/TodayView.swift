@@ -51,6 +51,110 @@ private struct HRChartFrameKey: PreferenceKey {
     }
 }
 
+enum TodayDeviceHeaderTone: Equatable { case connected, disconnected, unknown }
+
+struct TodayDeviceHeaderPresentation: Equatable {
+    let tone: TodayDeviceHeaderTone
+    let batteryText: String?
+
+    static func make(hasActiveDevice: Bool, connected: Bool, batteryPct: Double?) -> Self {
+        let tone: TodayDeviceHeaderTone = hasActiveDevice ? (connected ? .connected : .disconnected) : .unknown
+        let validBattery = batteryPct.flatMap { (0...100).contains($0) ? Int($0.rounded()) : nil }
+        return Self(tone: tone, batteryText: validBattery.map { "\($0)%" })
+    }
+}
+
+private struct TodayDeviceHeader: View {
+    @EnvironmentObject private var app: AppModel
+
+    var body: some View {
+        if let registry = app.deviceRegistry {
+            TodayActiveDeviceHeader(registry: registry)
+        } else {
+            TodayActiveDeviceHeaderButton(device: nil)
+        }
+    }
+}
+
+private struct TodayActiveDeviceHeader: View {
+    @ObservedObject var registry: DeviceRegistry
+
+    var body: some View {
+        TodayActiveDeviceHeaderButton(
+            device: registry.devices.first(where: { $0.id == registry.activeDeviceId && $0.status == .active })
+        )
+    }
+}
+
+private struct TodayActiveDeviceHeaderButton: View {
+    let device: PairedDevice?
+    @EnvironmentObject private var live: LiveState
+    @EnvironmentObject private var router: NavRouter
+
+    private var presentation: TodayDeviceHeaderPresentation {
+        TodayDeviceHeaderPresentation.make(hasActiveDevice: device != nil,
+                                           connected: live.connected,
+                                           batteryPct: live.batteryPct)
+    }
+
+    private var tint: Color {
+        switch presentation.tone {
+        case .connected: return StrandPalette.statusPositive
+        case .disconnected: return StrandPalette.statusCritical
+        case .unknown: return StrandPalette.textTertiary
+        }
+    }
+
+    private var icon: String {
+        guard let device else { return "waveform.path.ecg.rectangle" }
+        if device.sourceKind == .ftms { return "figure.run.treadmill" }
+        if device.sourceKind == .huami { return "waveform.path.ecg.rectangle" }
+        if device.sourceKind == .liveAppleWatch { return "applewatch" }
+        if device.sourceKind == .oura { return "circle.circle" }
+        if device.brand.localizedCaseInsensitiveContains("whoop") { return "applewatch.side.right" }
+        return "heart.circle"
+    }
+
+    private var accessibilityText: String {
+        let name = device?.displayName ?? String(localized: "No active device")
+        let state: String
+        switch presentation.tone {
+        case .connected: state = String(localized: "connected")
+        case .disconnected: state = String(localized: "disconnected")
+        case .unknown: state = String(localized: "status unknown")
+        }
+        guard let battery = presentation.batteryText else { return "\(name), \(state)" }
+        return live.connected ? "\(name), \(state), battery \(battery)" : "\(name), \(state), last battery \(battery)"
+    }
+
+    var body: some View {
+        Button {
+            StrandHaptic.selection.play()
+            router.openDevices()
+        } label: {
+            HStack(spacing: 5) {
+                ZStack(alignment: .bottomTrailing) {
+                    Image(systemName: icon)
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Circle().fill(tint).frame(width: 7, height: 7)
+                        .overlay(Circle().stroke(StrandPalette.surfaceBase, lineWidth: 1.5))
+                        .offset(x: 3, y: 2)
+                }
+                if let battery = presentation.batteryText {
+                    Text(battery).font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .monospacedDigit().foregroundStyle(StrandPalette.textSecondary)
+                }
+            }
+            .frame(minWidth: 48, minHeight: 44, alignment: .trailing)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityText)
+        .accessibilityHint("Open Devices")
+    }
+}
+
 // MARK: - Active-workout-in-progress indicator (Today)
 //
 // A "workout in progress" card the Today dashboard shows whenever a manual workout is active. Tapping it
@@ -969,25 +1073,19 @@ struct TodayView: View {
         let f = DateFormatter(); f.dateFormat = "EEE d MMM"; f.locale = Locale(identifier: "en_US_POSIX"); return f
     }()
 
-    /// The selected day as a small locale-aware numeric date ("28/06/2026" or "6/28/2026" per region). The
-    /// top bar shows just this now, no "Today" / "Yesterday" word and no prev/next arrows. Day-change is by
-    /// horizontal swipe or by tapping to open the picker, and the rotating hint below teaches both.
-    private var dayNavDateText: String {
-        // At offset 0 date off the row the resolver actually surfaces (`repo.today?.day`, same as
-        // `selectedDayKey`) so the top-bar date matches Android (which dates off `today?.day`) and the
-        // data on screen, including the pre-04:00 case where `repo.today` is still the logical day's row
-        // but raw `selectedLogicalDay` formatting could read a calendar day ahead (#15). Past offsets, and
-        // a not-yet-banked today, fall back to the logical day.
-        if selectedDayOffset == 0, let day = repo.today?.day, let date = Self.dayParser.date(from: day) {
-            return date.formatted(date: .numeric, time: .omitted)
-        }
-        return selectedLogicalDay.formatted(date: .numeric, time: .omitted)
+    static func compactDayLabel(offset: Int, date: Date, locale: Locale = .current) -> String {
+        guard offset != 0 else { return String(localized: "TODAY") }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return formatter.string(from: date).uppercased(with: locale)
     }
 
-    /// Periodic one-word hint shown in place of the date for ~1.5s every ~10s (nil = show the date). With the
-    /// arrows gone the day-nav affordances are otherwise invisible, so this teaches them in the accent colour.
-    @State private var dayNavHint: String? = nil
-    private static let dayNavHints = ["Swipe", "Tap"]
+    static func canNavigateForward(offset: Int) -> Bool { offset > 0 }
+
+    private var compactDayLabel: String {
+        Self.compactDayLabel(offset: selectedDayOffset, date: selectedLogicalDay)
+    }
     #endif
 
     /// #829 follow-up: the named coordinate space the day-swipe drag and the HR-chart frame reader share,
@@ -1040,109 +1138,66 @@ struct TodayView: View {
         )
     }
 
-    /// Compact WHOOP-style top bar: a profile/settings button (left), the centred ‹ Today › day-nav
-    /// (bold, tappable to jump to a date), and the strap-battery badge (right).
-    /// Apple-style large-title header: a tappable "Today ⌄" + full date on the left (taps to change day),
-    /// then updates / quick-add / and an OBVIOUS menu avatar (opens Settings) on the right.
+    /// True-centred three-part iOS header. The side slots have equal width, so the day selector stays at the
+    /// physical centre even when a battery percentage appears on the active-device side.
     @ViewBuilder private var todayTopBar: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Button { showDayPicker = true } label: {
-                // Just the date, small (locale numeric), no relative word and no prev/next arrows. Every ~10s
-                // it swaps for ~1.5s to a one-word "Swipe" / "Tap" hint in the accent colour so users learn
-                // they can change the day by swiping across or tapping here. fixedSize makes it claim its own
-                // width so a tight top bar never compresses it, and the trailing icon cluster keeps its room.
-                Text(dayNavHint ?? dayNavDateText)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(dayNavHint != nil ? StrandPalette.accent : StrandPalette.textPrimary)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .contentTransition(.opacity)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .layoutPriority(1)
-            .accessibilityLabel("\(dayNavLabel). Swipe or tap to change day")
-            .popover(isPresented: $showDayPicker) {
-                // Cap at the LOGICAL day (not raw Date()) so the calendar never offers a day ahead of the
-                // data in the 00:00-04:00 window, matching the visible date + a11y label (#16).
-                DatePicker("", selection: dayPickerBinding, in: ...Repository.logicalDay(Date()),
-                           displayedComponents: [.date])
-                    .datePickerStyle(.graphical).labelsHidden().padding(12)
-                    // #840, give the graphical picker an explicit size so the iPad popover bubble doesn't
-                    // clip the calendar grid (anchored to a 13pt label it otherwise sizes too small).
-                    .frame(minWidth: 320, minHeight: 360)
-            }
-
-            Spacer(minLength: 8)
-
-            // Uniform 36pt circular icon set: recording-status light, updates bell, quick-add (+), menu.
-            HStack(spacing: 8) {
-                // Recording status, a colour-coded light (green recording / amber synced / red not
-                // recording), replacing the old full-width banner. Taps to Devices to connect. Its OWN
-                // subview observes LiveState so a ~1 Hz HR tick re-renders just this 36pt dot, not all of
-                // Today (the scroll-stutter fix, see the @EnvironmentObject note at the top of the type).
-                RecordingStatusLight(selectedDayOffset: selectedDayOffset) {
-                    StrandHaptic.selection.play(); router.openDevices()
-                }
-                // Updates bell.
-                Button { showUpdatesInbox = true } label: {
-                    Image(systemName: updateStore.unreadCount > 0 ? "bell.badge" : "bell")
-                        .font(.system(size: 15, weight: .medium))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(StrandPalette.textSecondary)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(StrandPalette.surfaceInset))
-                        .overlay(alignment: .topTrailing) {
-                            if updateStore.unreadCount > 0 {
-                                Text("\(min(updateStore.unreadCount, 99))")
-                                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                                    .monospacedDigit()
-                                    .foregroundStyle(StrandPalette.goldDeepText)
-                                    .padding(.horizontal, 3.5).padding(.vertical, 1)
-                                    .frame(minWidth: 14)
-                                    .background(Capsule().fill(StrandPalette.statusCritical))
-                                    .offset(x: 2, y: -1)
-                            }
-                        }
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Updates")
-                // Quick-action + (the accented primary, gold, same 36 size as the rest).
-                Button { router.requestQuickActions() } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(StrandPalette.goldDeepText)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(StrandPalette.accent))
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Quick actions")
-                .accessibilityHint("Start a workout, log your journal, or breathe")
-                // Profile, the avatar, same 36 size.
+        ZStack {
+            HStack {
                 Button { showProfile = true } label: {
                     ProfileAvatarView(imageData: profile.avatarImageData, size: 36)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Profile")
+                .frame(width: 76, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+                Spacer(minLength: 0)
+                TodayDeviceHeader()
+                    .frame(width: 76, alignment: .trailing)
             }
+
+            HStack(spacing: 3) {
+                Button {
+                    withAnimation(StrandMotion.interactive) {
+                        selectedDayOffset = Self.clampedDayOffset(current: selectedDayOffset, delta: 1,
+                                                                  maxOffset: earliestDayOffset)
+                    }
+                } label: {
+                    Image(systemName: "chevron.left").frame(width: 28, height: 44)
+                }
+                .disabled(selectedDayOffset >= earliestDayOffset)
+                .accessibilityLabel("Previous day")
+
+                Button { showDayPicker = true } label: {
+                    Text(compactDayLabel)
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .tracking(0.5).lineLimit(1).minimumScaleFactor(0.8)
+                        .frame(minWidth: 54, minHeight: 44)
+                }
+                .accessibilityLabel("\(dayNavLabel). Choose date")
+                .popover(isPresented: $showDayPicker) {
+                    DatePicker("", selection: dayPickerBinding, in: ...Repository.logicalDay(Date()),
+                               displayedComponents: [.date])
+                        .datePickerStyle(.graphical).labelsHidden().padding(12)
+                        .frame(minWidth: 320, minHeight: 360)
+                }
+
+                Button {
+                    withAnimation(StrandMotion.interactive) {
+                        selectedDayOffset = Self.clampedDayOffset(current: selectedDayOffset, delta: -1,
+                                                                  maxOffset: earliestDayOffset)
+                    }
+                } label: {
+                    Image(systemName: "chevron.right").frame(width: 28, height: 44)
+                }
+                .disabled(!Self.canNavigateForward(offset: selectedDayOffset))
+                .accessibilityLabel("Next day")
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(StrandPalette.textPrimary)
+            .buttonStyle(.plain)
         }
         .frame(height: 46)
-        // Cycle the swipe/tap hint: roughly every 10s flash a one-word hint for ~1.5s, alternating "Swipe" /
-        // "Tap", then return to the date. One async loop, auto-cancelled when Today goes away (no leaked timer).
-        .task {
-            var i = 0
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                if Task.isCancelled { break }
-                withAnimation(.easeInOut(duration: 0.3)) { dayNavHint = Self.dayNavHints[i % Self.dayNavHints.count] }
-                i += 1
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                withAnimation(.easeInOut(duration: 0.3)) { dayNavHint = nil }
-            }
-        }
     }
 
     /// Cloud Profile presented as a sheet from the top-bar profile button.
