@@ -2034,33 +2034,53 @@ struct TodayView: View {
         let copy = synthesisCopy(d: day, score: score)
         let drivers = dailyInsightDrivers(d: day, score: score)
         return ScreenScaffold(title: "Daily Outlook", subtitle: LocalizedStringKey(selectedDayOverline), lazy: true) {
-            NoopCard(tint: synthesisCardColor(score: score)) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("TODAY'S FOCUS").strandOverline()
-                    Text(copy.status)
-                        .font(StrandFont.title2)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                    Text(copy.detail)
-                        .font(StrandFont.body)
-                        .foregroundStyle(StrandPalette.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
+            outlookHero(day: day, score: score, status: copy.status, detail: copy.detail)
+
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                SectionHeader("Today's Priorities", overline: "Your plan")
+                ForEach(Array(outlookPriorities(day: day, score: score).enumerated()), id: \.offset) { index, item in
+                    outlookPriority(item, index: index)
                 }
             }
-            outlookSection("Recovery", icon: "gauge.with.dots.needle.50percent",
-                           value: score.map { "\(Int($0.rounded()))% · \(StrandPalette.recoveryState($0).capitalized)" }
-                                  ?? String(localized: "Still building"),
-                           detail: recoveryOutlookDetail(day))
-            outlookSection("Sleep", icon: "moon.zzz.fill",
-                           value: day?.totalSleepMin.map { hoursMinutes(Int(($0 * 60).rounded())) }
-                                  ?? String(localized: "No sleep session yet"),
-                           detail: sleepOutlookDetail(day))
-            outlookSection("Effort", icon: "figure.run",
-                           value: day?.strain.map { UnitFormatter.effortDisplay($0, scale: effortScale) }
-                                  ?? String(localized: "Still building"),
-                           detail: String(localized: "Your Effort reflects the activity and cardiovascular load already recorded for this day."))
-            outlookSection("Signals", icon: "waveform.path.ecg",
-                           value: day?.avgHrv.map { "HRV \(Int($0.rounded())) ms" } ?? String(localized: "No HRV reading"),
-                           detail: signalOutlookDetail(day))
+
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                SectionHeader("The Readiness Story", overline: "Recovery · sleep · effort")
+                NoopCard(tint: synthesisCardColor(score: score)) {
+                    VStack(spacing: 0) {
+                        outlookRelationshipMetric("Recovery", icon: "heart.circle.fill",
+                            value: score.map { "\(Int($0.rounded()))%" } ?? "—",
+                            caption: score.map { StrandPalette.recoveryState($0).capitalized } ?? String(localized: "Building"),
+                            tint: synthesisCardColor(score: score))
+                        outlookConnector
+                        outlookRelationshipMetric("Sleep", icon: "moon.stars.fill",
+                            value: day?.totalSleepMin.map { hoursMinutes(Int(($0 * 60).rounded())) } ?? "—",
+                            caption: sleepRelationshipCaption(day), tint: StrandPalette.restColor)
+                        outlookConnector
+                        outlookRelationshipMetric("Effort so far", icon: "figure.run",
+                            value: day?.strain.map { UnitFormatter.effortDisplay($0, scale: effortScale) } ?? "—",
+                            caption: effortRelationshipCaption(day, score: score), tint: StrandPalette.effortColor)
+                    }
+                }
+            }
+
+            NoopCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Text("SIGNAL CONTEXT").strandOverline()
+                        Spacer()
+                        Image(systemName: "waveform.path.ecg")
+                            .foregroundStyle(StrandPalette.accent)
+                    }
+                    Text(signalOutlookDetail(day))
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Divider().overlay(StrandPalette.hairline)
+                    Text(recoveryOutlookDetail(day))
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                    Text(sleepOutlookDetail(day))
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                }
+            }
             if !drivers.isEmpty {
                 NoopCard {
                     VStack(alignment: .leading, spacing: 10) {
@@ -2072,6 +2092,140 @@ struct TodayView: View {
                 }
             }
         }
+    }
+
+    private func outlookHero(day: DailyMetric?, score: Double?, status: LocalizedStringKey,
+                             detail: LocalizedStringKey) -> some View {
+        let tint = synthesisCardColor(score: score)
+        return ZStack(alignment: .bottomTrailing) {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(LinearGradient(colors: [tint.opacity(0.34), StrandPalette.surfaceRaised],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+            Circle().fill(tint.opacity(0.12)).frame(width: 190, height: 190).offset(x: 58, y: 62)
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Label("TODAY'S READINESS", systemImage: "sparkles")
+                        .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                    Spacer()
+                    Text(selectedDayOffset == 0 ? "LIVE" : "HISTORY")
+                        .font(StrandFont.footnote).foregroundStyle(tint)
+                }
+                HStack(alignment: .center, spacing: 20) {
+                    ZStack {
+                        RecoveryRing(score: score ?? 0, diameter: 118, lineWidth: 10,
+                                     showsLabel: false, showsWordmark: false, showsHover: false)
+                        VStack(spacing: 0) {
+                            Text(score.map { "\(Int($0.rounded()))" } ?? "—")
+                                .font(.system(size: 42, weight: .bold, design: .rounded))
+                                .foregroundStyle(StrandPalette.textPrimary)
+                            Text(score == nil ? "BUILDING" : "%")
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(status).font(StrandFont.title2).foregroundStyle(StrandPalette.textPrimary)
+                        Text(detail).font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Text(outlookOneLine(day: day, score: score))
+                    .font(StrandFont.body.weight(.semibold)).foregroundStyle(StrandPalette.textPrimary)
+                    .padding(.top, 2)
+            }
+            .padding(22)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(tint.opacity(0.32), lineWidth: 1))
+        .accessibilityElement(children: .combine)
+    }
+
+    private struct OutlookPriority {
+        let icon: String; let title: String; let detail: String; let tint: Color
+    }
+
+    private func outlookPriorities(day: DailyMetric?, score: Double?) -> [OutlookPriority] {
+        var result: [OutlookPriority] = []
+        if let score {
+            if score >= 67 {
+                result.append(.init(icon: "figure.run", title: String(localized: "Use your capacity"),
+                    detail: String(localized: "Recovery supports a more demanding day. Let your recorded Effort build progressively."), tint: StrandPalette.statusPositive))
+            } else if score < 34 {
+                result.append(.init(icon: "leaf.fill", title: String(localized: "Protect recovery"),
+                    detail: String(localized: "Keep exertion easy and leave room for rest; your overnight signals are asking for less load."), tint: StrandPalette.statusWarning))
+            } else {
+                result.append(.init(icon: "scale.3d", title: String(localized: "Stay adaptable"),
+                    detail: String(localized: "You have workable capacity, but today is better suited to controlled effort than an all-out push."), tint: StrandPalette.accent))
+            }
+        } else {
+            result.append(.init(icon: "applewatch.radiowaves.left.and.right", title: String(localized: "Complete the picture"),
+                detail: String(localized: "Wear your device and sync overnight signals to build today's recovery guidance."), tint: StrandPalette.accent))
+        }
+        if let sleep = day?.totalSleepMin, sleep < 7 {
+            result.append(.init(icon: "moon.zzz.fill", title: String(localized: "Make sleep the anchor"),
+                detail: String(localized: "Last sleep was under seven hours. Protect tonight's wind-down and recommended bedtime."), tint: StrandPalette.restColor))
+        } else {
+            result.append(.init(icon: "bed.double.fill", title: String(localized: "Keep sleep consistent"),
+                detail: String(localized: "Use tonight's sleep plan to preserve the recovery pattern behind today's outlook."), tint: StrandPalette.restColor))
+        }
+        if let stress = stressToday, stress >= 2 {
+            result.append(.init(icon: "wind", title: String(localized: "Create a downshift"),
+                detail: String(localized: "Current stress is high. Recheck after a quiet break or a short breathing session."), tint: StrandPalette.statusWarning))
+        }
+        return Array(result.prefix(3))
+    }
+
+    private func outlookPriority(_ item: OutlookPriority, index: Int) -> some View {
+        NoopCard(tint: item.tint) {
+            HStack(alignment: .top, spacing: 14) {
+                Text("\(index + 1)").font(StrandFont.captionNumber).foregroundStyle(item.tint)
+                    .frame(width: 30, height: 30).background(item.tint.opacity(0.14), in: Circle())
+                Image(systemName: item.icon).foregroundStyle(item.tint).frame(width: 24, height: 30)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.title).font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                    Text(item.detail).font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func outlookRelationshipMetric(_ title: LocalizedStringKey, icon: String, value: String,
+                                           caption: String, tint: Color) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon).font(.system(size: 19, weight: .semibold)).foregroundStyle(tint)
+                .frame(width: 42, height: 42).background(tint.opacity(0.13), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).strandOverline()
+                Text(caption).font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+            }
+            Spacer()
+            Text(value).font(StrandFont.title2).foregroundStyle(StrandPalette.textPrimary)
+        }
+        .padding(.vertical, 5)
+    }
+
+    private var outlookConnector: some View {
+        HStack { Rectangle().fill(StrandPalette.hairline).frame(width: 1, height: 18).padding(.leading, 20); Spacer() }
+    }
+
+    private func outlookOneLine(day: DailyMetric?, score: Double?) -> String {
+        guard let score else { return String(localized: "Today's story will sharpen as overnight data arrives.") }
+        let effort = day?.strain.map { UnitFormatter.effortDisplay($0, scale: effortScale) }
+        if score >= 67 { return effort.map { String(localized: "Ready to build from \($0) Effort so far.") } ?? String(localized: "You have room to build meaningful Effort today.") }
+        if score < 34 { return String(localized: "Recovery—not performance—is today's main objective.") }
+        return String(localized: "A balanced day: build load deliberately and reassess how you feel.")
+    }
+
+    private func sleepRelationshipCaption(_ day: DailyMetric?) -> String {
+        guard let sleep = day?.totalSleepMin else { return String(localized: "Awaiting last sleep") }
+        return sleep < 7 ? String(localized: "A limiting input today") : String(localized: "Supporting today's capacity")
+    }
+
+    private func effortRelationshipCaption(_ day: DailyMetric?, score: Double?) -> String {
+        guard day?.strain != nil else { return String(localized: "No recorded load yet") }
+        guard let score else { return String(localized: "Accumulating today") }
+        return score < 34 ? String(localized: "Keep the curve gentle") : String(localized: "Build within readiness")
     }
 
     private func outlookSection(_ title: LocalizedStringKey, icon: String, value: String,

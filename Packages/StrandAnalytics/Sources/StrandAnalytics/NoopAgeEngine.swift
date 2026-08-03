@@ -62,11 +62,40 @@ public enum NoopAgeEngine {
     public enum Configuration {
         public static let modelVersion = "noop-healthspan-v2"
         public static let longTermDays = 180, recentDays = 30
+        public static let minimumRecentPaceWearDays = 21
+        public static let minimumOlderPaceWearDays = 28
+        public static let minimumPaceWeeks = 8
+        public static let minimumPaceDomains = 2
         public static let recencyHalfLifeDays = 75.0
         public static let minimumPace = -1.0, maximumPace = 3.0
         public static let lnHazardPerYear = log(1.10)
         public static let domainOverlapShrink = 0.82
         public static let maximumTotalAdjustmentYears = 10.0
+    }
+
+    /// The exact, inspectable coverage gates behind Pace of Aging. Counts are scoped to a completed
+    /// weekly cutoff: `recentWearDays` is inside the trailing 30 calendar days, while `olderWearDays`
+    /// is strictly before that window. A wear day has evidence from at least two of sleep, RHR and
+    /// activity. Weeks count only when they contain at least one such wear day.
+    public struct PaceEligibility: Equatable, Sendable {
+        public let recentWearDays: Int
+        public let olderWearDays: Int
+        public let validWeeks: Int
+        public let recentDomains: Int
+        public let olderDomains: Int
+        public init(recentWearDays: Int, olderWearDays: Int, validWeeks: Int,
+                    recentDomains: Int, olderDomains: Int) {
+            self.recentWearDays = recentWearDays; self.olderWearDays = olderWearDays
+            self.validWeeks = validWeeks; self.recentDomains = recentDomains
+            self.olderDomains = olderDomains
+        }
+        public var isEligible: Bool {
+            recentWearDays >= Configuration.minimumRecentPaceWearDays &&
+            olderWearDays >= Configuration.minimumOlderPaceWearDays &&
+            validWeeks >= Configuration.minimumPaceWeeks &&
+            recentDomains >= Configuration.minimumPaceDomains &&
+            olderDomains >= Configuration.minimumPaceDomains
+        }
     }
 
     /// The canonical projection consumed by Today/Healthspan directly and persisted for Trends.
@@ -103,7 +132,7 @@ public enum NoopAgeEngine {
             let smoothed = previous.map { $0 + maturity * (rawAge - $0) }
                 ?? age + maturity * (rawAge - age)
 
-            let paceReady = paceCoverage(prefix, recent: recent, cutoff: cutoff)
+            let paceReady = paceEligibility(days: prefix, cutoff: cutoff).isEligible
             let projectedAdjustment = clamp(totalAdjustment(recentContrib), -cap, cap)
             let projectedAge = age + 0.5 + projectedAdjustment
             let pace = paceReady ? clamp((projectedAge - smoothed) / 0.5,
@@ -209,17 +238,25 @@ public enum NoopAgeEngine {
         return .insufficient
     }
 
-    private static func paceCoverage(_ prefix: [HealthspanDay], recent: [HealthspanDay], cutoff: String) -> Bool {
+    public static func paceEligibility(days: [HealthspanDay], cutoff: String) -> PaceEligibility {
+        let prefix = days.filter { $0.day <= cutoff }
+        let recentStart = addingDays(cutoff, -(Configuration.recentDays - 1))
+        let recent = prefix.filter { $0.day >= recentStart }
+        let older = prefix.filter { $0.day < recentStart }
+        let recentWear = recent.filter(isWearDay)
+        let olderWear = older.filter(isWearDay)
+        let validWear = prefix.filter(isWearDay)
         let recentC = coverage(recent, ending: cutoff)
-        let boundary = addingDays(cutoff, -30)
-        let older = prefix.filter { $0.day < boundary }
-        let olderWear = older.filter { ($0.restingHR != nil ? 1 : 0) + ($0.sleepMinutes != nil ? 1 : 0) +
-            ($0.steps != nil || $0.zone1to3Minutes != nil ? 1 : 0) >= 2 }.count
         let olderDomains = [older.contains { $0.sleepMinutes != nil }, older.contains { $0.restingHR != nil },
                             older.contains { $0.steps != nil || $0.zone1to3Minutes != nil }].filter { $0 }.count
-        let allWeeks = Set(prefix.map { weekKey($0.day) }).count
-        return recentC.validWearDays >= 21 && olderWear >= 28 && allWeeks >= 8 &&
-            recentC.representedDomains >= 2 && olderDomains >= 2
+        return PaceEligibility(recentWearDays: recentWear.count, olderWearDays: olderWear.count,
+            validWeeks: Set(validWear.map { weekKey($0.day) }).count,
+            recentDomains: recentC.representedDomains, olderDomains: olderDomains)
+    }
+
+    private static func isWearDay(_ day: HealthspanDay) -> Bool {
+        (day.restingHR != nil ? 1 : 0) + (day.sleepMinutes != nil ? 1 : 0) +
+        (day.steps != nil || day.zone1to3Minutes != nil ? 1 : 0) >= 2
     }
 
     private static func aggregate(_ days: [HealthspanDay], ending: String, weekly: Bool = false,

@@ -4,8 +4,9 @@ import WhoopProtocol
 
 final class DaytimeStressTests: XCTestCase {
 
-    /// Fill one local hour-of-day with `n` 1 Hz HR samples at `bpm` (UTC, tz offset 0).
-    private func hourHR(_ hour: Int, bpm: Int, n: Int = DaytimeStress.minHourHRSamples) -> [HRSample] {
+    /// Fill enough of one local hour to qualify at the rolling engine's temporal-coverage gate.
+    private func hourHR(_ hour: Int, bpm: Int,
+                        n: Int = DaytimeStress.configuration.windowSeconds + 1) -> [HRSample] {
         let base = hour * 3_600
         return (0..<n).map { HRSample(ts: base + $0, bpm: bpm) }
     }
@@ -50,15 +51,13 @@ final class DaytimeStressTests: XCTestCase {
         XCTAssertTrue(r.hours.contains { $0.hour == 9 })
     }
 
-    func testSustainedHighFlagsAfterThreeConsecutiveHighHours() {
-        // A calm morning, then three increasingly tense afternoon hours that finish HIGH.
-        var hr: [HRSample] = []
-        for h in [8, 9, 10] { hr += hourHR(h, bpm: 58) }   // calm baseline hours
-        hr += hourHR(13, bpm: 120)
-        hr += hourHR(14, bpm: 125)
-        hr += hourHR(15, bpm: 130)
+    func testSustainedHighFlagsAfterConfiguredContinuousDuration() {
+        // A continuous calm baseline followed by 30 minutes elevated: no clock-hour gaps.
+        let base = 8 * 3_600
+        var hr = (0..<90 * 60).map { HRSample(ts: base + $0, bpm: 58) }
+        hr += (0..<20 * 60).map { HRSample(ts: base + 90 * 60 + $0, bpm: 135) }
         let r = DaytimeStress.analyze(hr: hr, rr: [])
-        XCTAssertTrue(r.sustainedHigh, "three trailing HIGH hours should flag sustained stress")
+        XCTAssertTrue(r.sustainedHigh, "a continuous high run should clear the duration gate")
         XCTAssertGreaterThanOrEqual(r.sustainedRun, DaytimeStress.sustainedHours)
     }
 
@@ -128,8 +127,38 @@ final class DaytimeStressTests: XCTestCase {
     }
 
     /// R-R for one hour with a controllable beat-to-beat jitter (drives RMSSD).
-    private func hourRRVariable(_ hour: Int, rrMs: Int, jitter: Int, n: Int = 60) -> [RRInterval] {
+    private func hourRRVariable(_ hour: Int, rrMs: Int, jitter: Int, n: Int = 80) -> [RRInterval] {
         let base = hour * 3_600
-        return (0..<n).map { RRInterval(ts: base + $0 * 50, rrMs: rrMs + ($0 % 2 == 0 ? jitter : -jitter)) }
+        return (0..<n).map { RRInterval(ts: base + $0 * 4, rrMs: rrMs + ($0 % 2 == 0 ? jitter : -jitter)) }
+    }
+
+    func testFiveMinuteEventAppearsWithoutWaitingForHourBoundary() {
+        var hr = (0..<20 * 60).map { HRSample(ts: 9 * 3_600 + $0, bpm: 62) }
+        hr += (0..<5 * 60).map { HRSample(ts: 9 * 3_600 + 20 * 60 + $0, bpm: 100) }
+        let result = DaytimeStress.analyze(hr: hr, rr: [])
+        let before = result.scored.last { $0.startTs < 9 * 3_600 + 20 * 60 }!.level!
+        let during = result.scored.last!.level!
+        XCTAssertGreaterThan(during, before + 0.35)
+        XCTAssertLessThanOrEqual(result.scored.last!.startTs - (9 * 3_600 + 20 * 60), 5 * 60)
+    }
+
+    func testIsolatedOpticalSpikeIsTrimmed() {
+        var hr = (0..<10 * 60).map { HRSample(ts: 10 * 3_600 + $0, bpm: 65) }
+        hr[hr.count - 20] = HRSample(ts: hr[hr.count - 20].ts, bpm: 210)
+        let result = DaytimeStress.analyze(hr: hr, rr: [])
+        XCTAssertLessThan(result.scored.map { $0.level! }.max() ?? 3, 2.0)
+    }
+
+    func testMotionAttenuatesHRDrivenElevation() {
+        let base = 12 * 3_600
+        let calm = (0..<10 * 60).map { HRSample(ts: base + $0, bpm: 62) }
+        let raised = (0..<5 * 60).map { HRSample(ts: base + 10 * 60 + $0, bpm: 105) }
+        let still = DaytimeStress.analyze(hr: calm + raised, rr: [])
+        let movingGravity = (0..<5 * 60).map { i in
+            GravitySample(ts: base + 10 * 60 + i,
+                          x: i.isMultiple(of: 2) ? 0.25 : -0.25, y: 0, z: 1)
+        }
+        let moving = DaytimeStress.analyze(hr: calm + raised, rr: [], gravity: movingGravity)
+        XCTAssertLessThan(moving.scored.last!.level!, still.scored.last!.level!)
     }
 }

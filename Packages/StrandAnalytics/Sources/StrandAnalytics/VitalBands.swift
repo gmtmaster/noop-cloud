@@ -16,6 +16,16 @@ import Foundation
 /// APPROXIMATE — informational, not a diagnosis.
 public enum VitalBands {
 
+    public struct TypicalRange: Equatable, Sendable {
+        public let lower: Double
+        public let upper: Double
+        public init(lower: Double, upper: Double) { self.lower = lower; self.upper = upper }
+
+        public func contains(_ value: Double) -> Bool { lower...upper ~= value }
+    }
+
+    public enum RangePosition: Equatable, Sendable { case within, below, above }
+
     public enum Band: String, Equatable, Sendable { case inRange, outOfRange, noData }
 
     /// How the band was judged — drives the tile's caption wording.
@@ -37,6 +47,28 @@ public enum VitalBands {
     /// own normal nights. `Baselines.deviation`'s own `inNormalRange` (|z| <= 1) would flag
     /// roughly a third of normal nights, which is far too noisy for a passive at-a-glance tile.
     public static let sigmaK: Double = 2.0
+
+    /// Presentation range from the same trusted Winsorized EWMA baseline used by Health Monitor banding.
+    /// `spread` is an EWMA absolute deviation, so 1.253 converts it to an approximate Gaussian sigma.
+    /// No range is exposed before 14 valid nights or after the baseline becomes stale.
+    public static func typicalRange(history: [Double?], cfg: MetricCfg) -> TypicalRange? {
+        let state = Baselines.foldHistory(history, cfg: cfg)
+        guard state.trusted else { return nil }
+        let radius = sigmaK * 1.253 * state.spread
+        return TypicalRange(lower: max(cfg.minVal, state.baseline - radius),
+                            upper: min(cfg.maxVal, state.baseline + radius))
+    }
+
+    public static func position(value: Double, in range: TypicalRange) -> RangePosition {
+        if value < range.lower { return .below }
+        if value > range.upper { return .above }
+        return .within
+    }
+
+    /// SpO2 keeps its existing absolute reference classification. This config is used only to display
+    /// personal historical context after 14 nights; it never overrides the existing <95% warning gate.
+    public static let spo2TypicalCfg = MetricCfg(
+        minVal: 70, maxVal: 100, floorSpread: 0.5, halfLifeB: 14, halfLifeS: 21)
 
     /// Band a single vital `value`.
     ///

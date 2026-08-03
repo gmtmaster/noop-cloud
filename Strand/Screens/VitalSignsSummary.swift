@@ -18,6 +18,7 @@ struct BodyVitalReading: Identifiable {
     let day: String?
     let source: DailyMetricSource?
     let missingCaption: String
+    let typicalRange: VitalBands.TypicalRange?
     /// Trailing values for this vital (oldest → newest), so the tile can draw a metric-tinted
     /// sparkline with a glowing "now" end-cap like Today's Key-Metrics tiles. Presentation-only:
     /// the resolved value, banding and source are unchanged — this is just the trend for the trail.
@@ -54,7 +55,24 @@ struct BodyVitalReading: Identifiable {
 
     var accessibilityText: String {
         guard let v = formattedValue else { return String(localized: "\(label): no data") }
-        return String(localized: "\(label): \(v), \(stateCaption)")
+        return String(localized: "\(label): \(v), \(typicalRangeText), \(stateCaption)")
+    }
+
+    var typicalRangePosition: VitalBands.RangePosition? {
+        guard let value, let typicalRange else { return nil }
+        return VitalBands.position(value: value, in: typicalRange)
+    }
+
+    var typicalRangeText: String {
+        guard value != nil else { return String(localized: "No data") }
+        guard let range = typicalRange else { return String(localized: "Building typical range") }
+        let bounds = "\(format(range.lower))–\(format(range.upper)) \(unit)"
+        switch typicalRangePosition {
+        case .within: return String(localized: "within \(bounds)")
+        case .below: return String(localized: "below \(bounds)")
+        case .above: return String(localized: "above \(bounds)")
+        case nil: return String(localized: "Building typical range")
+        }
     }
 
     /// Which yardstick judged the value: your own baseline vs the typical adult range. String(localized:)
@@ -188,14 +206,17 @@ enum BodyVitalSigns {
         let skin = skinRow?.value
         let skinIsAbsolute = skin.map(VitalBands.isAbsoluteSkinTemp) ?? true
         let skinResult: VitalBands.Result
+        let skinHistory: [Double?]
         if let skin {
+            skinHistory = VitalBands.skinTempHistory(matching: skin, in: history(before: skinRow?.day, skinPoints))
             skinResult = VitalBands.band(
                 value: skin,
-                history: VitalBands.skinTempHistory(matching: skin, in: history(before: skinRow?.day, skinPoints)),
+                history: skinHistory,
                 populationRange: skinIsAbsolute ? 33...36 : (-0.6)...0.6,
                 cfg: skinIsAbsolute ? Baselines.metricCfg["skin_temp"]! : VitalBands.skinTempDeviationCfg
             )
         } else {
+            skinHistory = []
             skinResult = VitalBands.Result(band: .noData, basis: .population, nights: 0)
         }
 
@@ -226,6 +247,7 @@ enum BodyVitalSigns {
                 day: respRow?.day,
                 source: respRow?.source,
                 missingCaption: String(localized: "No respiratory-rate value"),
+                typicalRange: VitalBands.typicalRange(history: history(before: respRow?.day, respPoints), cfg: Baselines.respCfg),
                 sparkline: trail(respPoints)
             ),
             BodyVitalReading(
@@ -246,6 +268,7 @@ enum BodyVitalSigns {
                 day: spo2Row?.day,
                 source: spo2Row?.source,
                 missingCaption: String(localized: "No SpO₂ import or Health value"),
+                typicalRange: VitalBands.typicalRange(history: history(before: spo2Row?.day, spo2Points), cfg: VitalBands.spo2TypicalCfg),
                 sparkline: trail(spo2Points)
             ),
             BodyVitalReading(
@@ -264,6 +287,7 @@ enum BodyVitalSigns {
                 day: rhrRow?.day,
                 source: rhrRow?.source,
                 missingCaption: String(localized: "No resting HR value"),
+                typicalRange: VitalBands.typicalRange(history: history(before: rhrRow?.day, rhrPoints), cfg: Baselines.restingHRCfg),
                 sparkline: trail(rhrPoints)
             ),
             BodyVitalReading(
@@ -282,6 +306,7 @@ enum BodyVitalSigns {
                 day: hrvRow?.day,
                 source: hrvRow?.source,
                 missingCaption: String(localized: "No HRV value"),
+                typicalRange: VitalBands.typicalRange(history: history(before: hrvRow?.day, hrvPoints), cfg: Baselines.hrvCfg),
                 sparkline: trail(hrvPoints)
             ),
             BodyVitalReading(
@@ -295,6 +320,8 @@ enum BodyVitalSigns {
                 day: skinRow?.day,
                 source: skinRow?.source,
                 missingCaption: String(localized: "No nightly skin-temp value"),
+                typicalRange: VitalBands.typicalRange(history: skinHistory,
+                    cfg: skinIsAbsolute ? Baselines.metricCfg["skin_temp"]! : VitalBands.skinTempDeviationCfg),
                 // Keep the trail on the displayed value's kind — absolute °C and ±deviation must not
                 // mix on one sparkline (matches the banding partition above).
                 sparkline: trail(skinPoints.filter { VitalBands.isAbsoluteSkinTemp($0.value) == skinIsAbsolute })

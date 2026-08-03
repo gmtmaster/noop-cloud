@@ -2,13 +2,6 @@ import SwiftUI
 import StrandAnalytics
 import StrandDesign
 
-enum HealthNavigationContract {
-    static let primaryTabs = ["Today", "Health", "Friends", "More"]
-    static let healthTabIndex = 1
-    static let sleepIsContextual = true
-    static let trendsRemainsSecondary = true
-}
-
 enum HealthspanAnimationPolicy {
     static func animates(reduceMotion: Bool, sceneIsActive: Bool) -> Bool {
         !reduceMotion && sceneIsActive
@@ -128,6 +121,7 @@ struct HealthspanView: View {
     @EnvironmentObject private var repo: Repository
     @EnvironmentObject private var profile: ProfileStore
     @State private var history: [NoopAgeWeekResult] = []
+    @State private var healthspanDays: [HealthspanDay] = []
     @State private var selectedIndex = 0
     @State private var showsAllContributors = false
 
@@ -184,11 +178,12 @@ struct HealthspanView: View {
     }
 
     private func paceSection(_ result: NoopAgeWeekResult) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let eligibility = NoopAgeEngine.paceEligibility(days: healthspanDays, cutoff: result.weekEndDay)
+        return VStack(alignment: .leading, spacing: 12) {
             SectionHeader("Pace of Aging", overline: "Recent 30 days vs. long-term")
             NoopCard(tint: paceColor(result.paceOfAging)) {
                 VStack(spacing: 12) {
-                    Text(result.paceOfAging.map { String(format: "%.1fx", $0) } ?? "—")
+                    Text(HealthspanPacePresentation.value(result.paceOfAging))
                         .font(StrandFont.display(42)).foregroundStyle(StrandPalette.textPrimary)
                     GeometryReader { proxy in
                         ZStack(alignment: .leading) {
@@ -205,10 +200,16 @@ struct HealthspanView: View {
                     }.frame(height: 18)
                     HStack { Text("Slower"); Spacer(); Text("1.0x stable"); Spacer(); Text("Faster") }
                         .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
-                    Text(result.paceOfAging == nil
-                         ? "Building an older comparison baseline."
-                         : "A projected six-month trajectory from your recent 30 days—not literal biological aging speed.")
-                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    if result.paceOfAging == nil {
+                        Text("Calibrating Pace of Aging")
+                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        Text(HealthspanPacePresentation.calibrationDetail(eligibility))
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                            .multilineTextAlignment(.center)
+                    } else {
+                        Text("A projected six-month trajectory from your recent 30 days—not literal biological aging speed.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    }
                 }
             }
         }
@@ -269,7 +270,9 @@ struct HealthspanView: View {
     }
 
     private func load() async {
-        history = await repo.noopAgeHistory(profile: profile)
+        let snapshot = await repo.noopAgeSnapshot(profile: profile)
+        healthspanDays = snapshot.observations
+        history = snapshot.results
         selectedIndex = HealthspanSelection.newestIndex(count: history.count)
     }
     private func chronologicalAge(for day: String) -> Double? {

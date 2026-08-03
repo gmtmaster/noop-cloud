@@ -15,6 +15,7 @@ struct StressView: View {
     @State private var sleepIntervals: [DateInterval] = []
     @State private var scrubbed: StressPresentation.Sample?
     @State private var loading = true
+    @State private var showBreathe = false
 
     private var calendar: Calendar { .current }
     private var today: Date { calendar.startOfDay(for: Date()) }
@@ -32,6 +33,9 @@ struct StressView: View {
                     gaugeCard(summary)
                     timelineCard(summary)
                     interpretationCard(summary)
+                    if let point = displayed, StressPresentation.Zone(score: point.value) == .high {
+                        downshiftCard
+                    }
                     comparisonCard(summary)
                     methodologyCard
                 } else {
@@ -48,6 +52,12 @@ struct StressView: View {
                     // A pinned scrub remains the displayed point; Latest mode advances naturally.
                     summary = refreshed
                 }
+            }
+        }
+        .sheet(isPresented: $showBreathe) {
+            NavigationStack {
+                BreathingView()
+                    .toolbar { ToolbarItem { Button("Done") { showBreathe = false } } }
             }
         }
     }
@@ -72,8 +82,15 @@ struct StressView: View {
     }
 
     private func gaugeCard(_ day: StressPresentation.Day) -> some View {
-        NoopCard(tint: zoneColor(displayed.map { StressPresentation.Zone(score: $0.value) } ?? .low)) {
-            VStack(spacing: 10) {
+        let zone = displayed.map { StressPresentation.Zone(score: $0.value) } ?? .low
+        return NoopCard(tint: zoneColor(zone)) {
+            VStack(spacing: 14) {
+                HStack {
+                    Text(isToday ? "CURRENT STATE" : "DAY SNAPSHOT").strandOverline()
+                    Spacer()
+                    Label(isToday ? "Updates every minute" : "Recorded observation", systemImage: "clock")
+                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                }
                 StressArcGauge(value: displayed?.value, zone: displayed.map { StressPresentation.Zone(score: $0.value) })
                     .frame(height: 210)
                 if let point = displayed {
@@ -84,11 +101,29 @@ struct StressView: View {
                             .font(StrandFont.caption)
                     }
                 }
+                HStack(spacing: 4) {
+                    stressBandKey("LOW", range: "0–1", zone: .low, active: zone == .low)
+                    stressBandKey("MEDIUM", range: "1–2", zone: .medium, active: zone == .medium)
+                    stressBandKey("HIGH", range: "2–3", zone: .high, active: zone == .high)
+                }
             }
             .frame(maxWidth: .infinity)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(gaugeAccessibility)
         }
+    }
+
+    private func stressBandKey(_ title: String, range: String, zone: StressPresentation.Zone,
+                               active: Bool) -> some View {
+        VStack(spacing: 3) {
+            Text(title).font(StrandFont.overline).foregroundStyle(active ? zoneColor(zone) : StrandPalette.textTertiary)
+            Text(range).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 9)
+        .background(active ? zoneColor(zone).opacity(0.13) : StrandPalette.surfaceInset,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(active ? zoneColor(zone).opacity(0.4) : Color.clear, lineWidth: 1))
     }
 
     private func timelineCard(_ day: StressPresentation.Day) -> some View {
@@ -102,7 +137,7 @@ struct StressView: View {
                 }
                 StressTimeline(samples: day.samples, selected: scrubbed, sleep: sleepIntervals) { scrubbed = $0 }
                     .frame(height: 190)
-                    .accessibilityLabel("Daily stress timeline. Drag to select the nearest recorded hour.")
+                    .accessibilityLabel("Daily stress timeline. Drag to select the nearest recorded observation.")
                 HStack {
                     Text("6 AM"); Spacer(); Text("2 PM"); Spacer(); Text("10 PM")
                 }
@@ -130,6 +165,25 @@ struct StressView: View {
                 Text(interpretation(day, dominant: dominant))
                     .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var downshiftCard: some View {
+        NoopCard(tint: StrandPalette.statusWarning) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Image(systemName: "wind").font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(StrandPalette.statusWarning)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("A moment to downshift").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                        Text("High physiological activation is present in the latest scored hour.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                    }
+                }
+                NoopButton("Start a breathing session", systemImage: "lungs.fill", kind: .primary, fullWidth: true) {
+                    showBreathe = true
+                }
             }
         }
     }
@@ -267,11 +321,20 @@ extension Repository {
         let from = Int(start.timeIntervalSince1970), to = Int(end.timeIntervalSince1970)
         let hr = await hrSamples(from: from, to: to, limit: 200_000)
         guard hr.count >= DaytimeStress.minHourHRSamples else { return nil }
-        let rr = (try? await storeHandle()?.rrIntervals(
-            deviceId: deviceId, from: from, to: to, limit: 200_000)) ?? []
+        let store = await storeHandle()
+        let rr = (try? await store?.rrIntervals(deviceId: deviceId, from: from, to: to, limit: 200_000)) ?? []
+        let gravity = (try? await store?.gravitySamples(deviceId: deviceId, from: from, to: to, limit: 200_000)) ?? []
+        // Query the selected day directly rather than a "recent N days" helper, so historical Stress
+        // views retain activity context too. Gravity remains the primary movement signal.
+        var activityRows: [WorkoutRow] = []
+        for id in Set([deviceId, "my-whoop", "apple-health", "lifting", "activity-file"]) {
+            activityRows += (try? await store?.workouts(deviceId: id, from: from, to: to, limit: 1_000)) ?? []
+        }
+        let activities = activityRows.map { DaytimeStress.ActivityInterval(startTs: $0.startTs, endTs: $0.endTs) }
         let noon = calendar.date(byAdding: .hour, value: 12, to: start) ?? start
         let offset = calendar.timeZone.secondsFromGMT(for: noon)
-        let result = DaytimeStress.analyze(hr: hr, rr: rr, tzOffsetSeconds: offset)
+        let result = DaytimeStress.analyze(hr: hr, rr: rr, gravity: gravity,
+                                           activities: activities, tzOffsetSeconds: offset)
         return StressPresentation.summarize(date: start, points: result.hours,
                                             end: calendar.isDate(date, inSameDayAs: now) ? now : nil)
     }

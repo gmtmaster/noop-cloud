@@ -97,4 +97,22 @@ final class VitalBandsTests: XCTestCase {
         let rows: [(day: String, value: Double?)] = [("not-a-date", 1.0), ("2026-06-01", 50.0)]
         XCTAssertEqual(VitalBands.calendarSeries(rows), [50.0])
     }
+
+    func testTypicalRangeRequiresTrustedFreshBaseline() {
+        XCTAssertNil(VitalBands.typicalRange(history: Array(repeating: 50.0, count: 13), cfg: hrvCfg))
+        let trusted = VitalBands.typicalRange(history: Array(repeating: 50.0, count: 14), cfg: hrvCfg)
+        XCTAssertNotNil(trusted)
+        XCTAssertTrue(trusted!.contains(50))
+        XCTAssertNil(VitalBands.typicalRange(
+            history: Array(repeating: 50.0, count: 14) + Array(repeating: nil, count: 15), cfg: hrvCfg))
+    }
+
+    func testTypicalRangeUsesExistingTwoSigmaBaselineAndClassifiesDirection() {
+        let range = VitalBands.typicalRange(history: Array(repeating: 50.0, count: 20), cfg: hrvCfg)!
+        XCTAssertEqual(range.lower, 50 - VitalBands.sigmaK * 1.253 * hrvCfg.floorSpread, accuracy: 1e-9)
+        XCTAssertEqual(range.upper, 50 + VitalBands.sigmaK * 1.253 * hrvCfg.floorSpread, accuracy: 1e-9)
+        XCTAssertEqual(VitalBands.position(value: 50, in: range), .within)
+        XCTAssertEqual(VitalBands.position(value: range.lower - 1, in: range), .below)
+        XCTAssertEqual(VitalBands.position(value: range.upper + 1, in: range), .above)
+    }
 }

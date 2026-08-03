@@ -1,295 +1,236 @@
 import Foundation
 import WhoopProtocol
 
-// DaytimeStress.swift — an intraday (hour-by-hour) read of the SAME autonomic stress
-// proxy the daily Stress monitor shows, computed from the day's banked HR + R-R.
-//
-// The daily Stress score (StressView / StressScreen) maps "resting HR up + HRV down vs
-// a personal baseline" onto a 0–3 logistic. This helper applies that SAME math at the
-// per-hour grain so the Stress screen can show *when* in the day stress ran high — not
-// a new score. For each waking hour it computes:
-//
-//   • mean HR over the hour                    (HR up   = stress, like daily RHR)
-//   • RMSSD over the hour's clean R-R          (HRV down = stress, like daily avgHRV)
-//
-// and z-scores each against the day's OWN quiet reference (the calm-hour median + the
-// spread across hours), then squashes the z-sum onto 0–3 with the identical logistic
-//   stress = 3 / (1 + e^(−raw)). 0 calm · 1.5 baseline · 3 high — same bands as the daily
-// score. The day is its own baseline: a desk day with one tense afternoon reads that
-// afternoon as elevated *relative to that person's own calm hours*, no cloud, no history
-// needed beyond the day itself.
-//
-// "Sustained high stress" is an honest, conservative flag: the most recent
-// `sustainedHours` covered hours must ALL sit in the HIGH band (≥ highBandFloor). It
-// drives a passive in-app suggestion to run a Breathe session — never a notification.
-//
-// APPROXIMATE and non-clinical: an hour with too little data (few HR samples / too few
-// clean beats) is reported as `.noData` and never invented.
-
+/// A rolling, non-diagnostic physiological-activation proxy.
+///
+/// Public WHOOP material describes in-the-moment HR/HRV, personal baselines and motion context. A
+/// WHOOP-affiliated paper used five-minute moving blocks stepped every 30 seconds. This engine follows
+/// that public signal-processing shape without claiming or attempting to reproduce proprietary math.
 public enum DaytimeStress {
 
-    // MARK: - Tunables
+    /// All behavioural tuning is centralized here so replay experiments can change one value set.
+    public struct Configuration: Equatable, Sendable {
+        public var windowSeconds = 5 * 60
+        public var stepSeconds = 60
+        public var minimumHRSamples = 30
+        public var minimumWindowCoverage = 0.60
+        public var minimumRRIntervals = 20
+        public var trimmedFraction = 0.10
+        public var minimumHRSpread = 4.0
+        public var minimumRMSSDSpread = 8.0
+        public var hrWeight = 0.55
+        public var hrvWeight = 0.45
+        public var motionDeltaFloorG = 0.025
+        public var motionDeltaFullG = 0.14
+        public var movingHRWeightFloor = 0.20
+        public var attackAlpha = 0.48
+        public var releaseAlpha = 0.30
+        public var maximumStepChange = 0.55
+        public var highBandFloor = 2.0
+        public var sustainedHighSeconds = 15 * 60
+        public var wakingStartHour = 6
+        public var wakingEndHour = 22
 
-    /// Minimum HR samples in an hour before its mean HR is trusted (~5 min at 1 Hz).
-    public static let minHourHRSamples: Int = 300
-    /// Bucket width for the timeline, in seconds (one hour).
-    public static let bucketSeconds: Int = 3_600
-    /// Band floor for "high" on the shared 0–3 scale (matches StressBand .high).
-    public static let highBandFloor: Double = 2.0
-    /// Consecutive most-recent covered hours that must all be HIGH to flag sustained stress.
-    public static let sustainedHours: Int = 3
-    /// First/last local hour-of-day treated as "waking" for the timeline (06:00–22:00).
-    public static let wakingStartHour: Int = 6
-    public static let wakingEndHour: Int = 22
+        public static let `default` = Configuration()
+    }
 
-    // MARK: - Output
+    public static let configuration = Configuration.default
+    // Compatibility names retained for callers and older tests.
+    public static let minHourHRSamples = configuration.minimumHRSamples
+    public static let bucketSeconds = configuration.stepSeconds
+    public static let highBandFloor = configuration.highBandFloor
+    public static let sustainedHours = configuration.sustainedHighSeconds / configuration.stepSeconds
+    public static let wakingStartHour = configuration.wakingStartHour
+    public static let wakingEndHour = configuration.wakingEndHour
 
-    /// One hour of the daytime timeline. `level` is the shared 0–3 stress proxy, or nil
-    /// when the hour had too little signal to score honestly.
-    public struct HourPoint: Equatable, Sendable {
-        /// Hour-of-day on the LOCAL clock (0–23), the bucket this point covers.
-        public let hour: Int
-        /// Unix seconds at the start of the bucket (wall-clock).
+    public struct ActivityInterval: Equatable, Sendable {
         public let startTs: Int
-        /// Shared 0–3 stress proxy for the hour, or nil when `.noData`.
-        public let level: Double?
-        /// Mean HR over the hour (bpm), or nil.
-        public let meanHR: Double?
-        /// RMSSD over the hour's clean R-R (ms), or nil (too few clean beats).
-        public let rmssd: Double?
+        public let endTs: Int
+        public init(startTs: Int, endTs: Int) { self.startTs = startTs; self.endTs = endTs }
+        func overlaps(_ start: Int, _ end: Int) -> Bool { startTs < end && endTs > start }
+    }
 
-        /// True when the hour was scored (had enough HR to place on the curve).
+    /// Kept as `HourPoint` for source compatibility; V2 emits one observation per configured step.
+    public struct HourPoint: Equatable, Sendable {
+        public let hour: Int
+        public let startTs: Int
+        public let level: Double?
+        public let meanHR: Double?
+        public let rmssd: Double?
+        public let confidence: Double
+        public let motion: Double
+        public let isActivity: Bool
         public var hasData: Bool { level != nil }
 
-        public init(hour: Int, startTs: Int, level: Double?, meanHR: Double?, rmssd: Double?) {
-            self.hour = hour
-            self.startTs = startTs
-            self.level = level
-            self.meanHR = meanHR
-            self.rmssd = rmssd
+        public init(hour: Int, startTs: Int, level: Double?, meanHR: Double?, rmssd: Double?,
+                    confidence: Double = 1, motion: Double = 0, isActivity: Bool = false) {
+            self.hour = hour; self.startTs = startTs; self.level = level
+            self.meanHR = meanHR; self.rmssd = rmssd; self.confidence = confidence
+            self.motion = motion; self.isActivity = isActivity
         }
     }
 
-    /// The full daytime read: the hourly timeline plus the sustained-high summary.
     public struct Result: Equatable, Sendable {
-        /// Waking-hour timeline, earliest → latest. Hours with no signal carry `level == nil`.
         public let hours: [HourPoint]
-        /// True when the most recent `sustainedHours` SCORED hours all sit in the HIGH band.
         public let sustainedHigh: Bool
-        /// Count of trailing high hours backing `sustainedHigh` (0 when not sustained).
+        /// Number of trailing high-resolution observations, not clock hours.
         public let sustainedRun: Int
-        /// Mean stress across the SCORED hours, or nil when none were scorable.
         public let dayMean: Double?
-        /// Peak scored hour (highest `level`), or nil.
         public let peak: HourPoint?
-
         public init(hours: [HourPoint], sustainedHigh: Bool, sustainedRun: Int,
                     dayMean: Double?, peak: HourPoint?) {
-            self.hours = hours
-            self.sustainedHigh = sustainedHigh
-            self.sustainedRun = sustainedRun
-            self.dayMean = dayMean
-            self.peak = peak
+            self.hours = hours; self.sustainedHigh = sustainedHigh; self.sustainedRun = sustainedRun
+            self.dayMean = dayMean; self.peak = peak
         }
-
-        /// The scored hours only (level non-nil), in time order.
         public var scored: [HourPoint] { hours.filter { $0.level != nil } }
-
-        /// Empty read — used when the day had no usable intraday HR at all.
         public static let empty = Result(hours: [], sustainedHigh: false, sustainedRun: 0,
                                          dayMean: nil, peak: nil)
     }
 
-    // MARK: - Shared stress math (identical formula to the daily StressModel)
-
-    static func mean(_ xs: [Double]) -> Double? {
-        guard !xs.isEmpty else { return nil }
-        return xs.reduce(0, +) / Double(xs.count)
+    private struct Feature {
+        let ts: Int
+        let hour: Int
+        let hr: Double
+        let rmssd: Double?
+        let confidence: Double
+        let motion: Double
+        let activity: Bool
     }
 
-    /// Population standard deviation; 0 when there's no spread. (Matches StressMath.std.)
-    static func std(_ xs: [Double], mean m: Double?) -> Double {
-        guard let m, xs.count > 1 else { return 0 }
-        let v = xs.map { ($0 - m) * ($0 - m) }.reduce(0, +) / Double(xs.count)
-        return v.squareRoot()
-    }
-
-    /// Combined autonomic z-score. HR-up and HRV-down both push it positive — the SAME
-    /// directionality as the daily score (RHR up = stress, HRV down = stress).
-    static func rawScore(hr: Double?, meanHR: Double?, sdHR: Double,
-                         rmssd: Double?, meanRMSSD: Double?, sdRMSSD: Double) -> Double {
-        var sum = 0.0
-        if let h = hr, let m = meanHR, sdHR > 0.0001 {
-            sum += (h - m) / sdHR              // HR up = stress
-        }
-        if let r = rmssd, let m = meanRMSSD, sdRMSSD > 0.0001 {
-            sum += (m - r) / sdRMSSD           // HRV (RMSSD) down = stress
-        }
-        return sum
-    }
-
-    /// Logistic squash of the raw z-sum onto 0–3 (baseline 0 → 1.5). Identical to
-    /// StressMath.squash, so an hourly point shares the daily score's scale and bands.
-    static func squash(_ raw: Double) -> Double {
-        let s = 3.0 / (1.0 + exp(-raw))
-        return min(max(s, 0), 3)
-    }
-
-    // MARK: - Public API
-
-    /// Build the daytime stress timeline from a day's banked HR + R-R.
-    ///
-    /// - Parameters:
-    ///   - hr: the day's `[HRSample]` (any order; bucketed by ts here).
-    ///   - rr: the day's `[RRInterval]`.
-    ///   - tzOffsetSeconds: seconds east of UTC, for placing each bucket on the LOCAL
-    ///     clock (so "waking hours" and the hour labels are local). Defaults to UTC.
-    ///
-    /// Returns `.empty` when there isn't a single hour with enough HR to score.
     public static func analyze(hr: [HRSample], rr: [RRInterval],
-                               tzOffsetSeconds: Int = 0) -> Result {
-        // v7.0.2 perf (#707): buckets the day's full HR + R-R streams into per-hour aggregates and runs an
-        // RMSSD per hour — invoked from the Stress view, so a `body` re-evaluation re-buckets the whole day.
-        // Memoize on the streams' fingerprint + tz offset; result is a small `Result`, raw arrays not held.
-        let key = StressKey(
-            hr: StreamFingerprint.of(hr, ts: { $0.ts }, quant: { Int($0.bpm) }),
-            rr: StreamFingerprint.of(rr, ts: { $0.ts }, quant: { Int($0.rrMs) }),
-            tz: tzOffsetSeconds)
-        return analyzeCache.value(key) { analyzeUncached(hr: hr, rr: rr, tzOffsetSeconds: tzOffsetSeconds) }
-    }
+                               gravity: [GravitySample] = [], activities: [ActivityInterval] = [],
+                               tzOffsetSeconds: Int = 0,
+                               configuration c: Configuration = .default) -> Result {
+        guard !hr.isEmpty, c.windowSeconds > 0, c.stepSeconds > 0 else { return .empty }
+        let orderedHR = hr.filter { (30...220).contains($0.bpm) }.sorted { $0.ts < $1.ts }
+        guard let first = orderedHR.first?.ts, let last = orderedHR.last?.ts else { return .empty }
+        let orderedRR = rr.filter { (250...3_000).contains($0.rrMs) }.sorted { $0.ts < $1.ts }
+        let orderedGravity = gravity.sorted { $0.ts < $1.ts }
 
-    private struct StressKey: Hashable { let hr: StreamFingerprint; let rr: StreamFingerprint; let tz: Int }
-    private static let analyzeCache = AnalyticsMemoCache<StressKey, Result>(capacity: 8)
+        let firstEnd = ceilDiv(first, c.stepSeconds) * c.stepSeconds
+        var features: [Feature] = []
+        var h0 = 0, h1 = 0, r0 = 0, r1 = 0, g0 = 0, g1 = 0
 
-    private static func analyzeUncached(hr: [HRSample], rr: [RRInterval],
-                                        tzOffsetSeconds: Int) -> Result {
-        guard !hr.isEmpty else { return .empty }
+        if firstEnd <= last {
+            for end in stride(from: firstEnd, through: last, by: c.stepSeconds) {
+                let localHour = positiveMod(floorDiv(end + tzOffsetSeconds, 3_600), 24)
+                guard localHour >= c.wakingStartHour && localHour < c.wakingEndHour else { continue }
+                let start = end - c.windowSeconds
+                advance(&h0, orderedHR, while: { $0.ts < start }); h1 = max(h1, h0)
+                advance(&h1, orderedHR, while: { $0.ts <= end })
+                advance(&r0, orderedRR, while: { $0.ts < start }); r1 = max(r1, r0)
+                advance(&r1, orderedRR, while: { $0.ts <= end })
+                advance(&g0, orderedGravity, while: { $0.ts < start }); g1 = max(g1, g0)
+                advance(&g1, orderedGravity, while: { $0.ts <= end })
 
-        // 1) Bucket HR + R-R into LOCAL hour-of-day buckets, keyed by the bucket start
-        //    (floored to the hour on the local clock).
-        var hrByBucket: [Int: [Double]] = [:]
-        for s in hr {
-            let local = s.ts + tzOffsetSeconds
-            let bucket = floorDiv(local, bucketSeconds) * bucketSeconds
-            hrByBucket[bucket, default: []].append(Double(s.bpm))
+                let hrs = orderedHR[h0..<h1]
+                guard hrs.count >= c.minimumHRSamples,
+                      let lo = hrs.first?.ts, let hi = hrs.last?.ts,
+                      Double(hi - lo) / Double(c.windowSeconds) >= c.minimumWindowCoverage else { continue }
+                let hrValue = trimmedMean(hrs.map { Double($0.bpm) }, fraction: c.trimmedFraction)
+                let rrWindow = Array(orderedRR[r0..<r1])
+                let rmssd = rrWindow.count >= c.minimumRRIntervals
+                    ? HRVAnalyzer.analyze(rawRR: rrWindow.map { Double($0.rrMs) }).rmssd : nil
+                let motion = motionLevel(Array(orderedGravity[g0..<g1]), config: c)
+                let activity = activities.contains { $0.overlaps(start, end) }
+                let countConfidence = min(1, Double(hrs.count) / Double(max(c.minimumHRSamples * 3, 1)))
+                let spanConfidence = min(1, Double(hi - lo) / Double(c.windowSeconds))
+                var confidence = 0.45 + 0.30 * countConfidence + 0.25 * spanConfidence
+                if rmssd == nil { confidence *= 0.78 }
+                features.append(Feature(ts: end, hour: localHour, hr: hrValue, rmssd: rmssd,
+                                        confidence: min(max(confidence, 0), 1),
+                                        motion: motion, activity: activity))
+            }
         }
-        var rrByBucket: [Int: [Double]] = [:]
-        for s in rr {
-            let local = s.ts + tzOffsetSeconds
-            let bucket = floorDiv(local, bucketSeconds) * bucketSeconds
-            rrByBucket[bucket, default: []].append(Double(s.rrMs))
-        }
+        guard !features.isEmpty else { return .empty }
 
-        // 2) Per-hour mean HR + RMSSD (RMSSD via the shared HRV cleaner, so ectopic
-        //    beats can't fabricate variability). An hour with < minHourHRSamples HR is
-        //    left unscored (noData) — never invented.
-        struct HourAgg { let bucket: Int; let meanHR: Double?; let rmssd: Double?; let nHR: Int }
-        let orderedBuckets = hrByBucket.keys.sorted()
-        var aggs: [HourAgg] = []
-        aggs.reserveCapacity(orderedBuckets.count)
-        for b in orderedBuckets {
-            let hrs = hrByBucket[b] ?? []
-            let mHR = hrs.count >= minHourHRSamples ? mean(hrs) : nil
-            let rrRes = HRVAnalyzer.analyze(rawRR: rrByBucket[b] ?? [])
-            aggs.append(HourAgg(bucket: b, meanHR: mHR, rmssd: rrRes.rmssd, nHR: hrs.count))
-        }
+        // Robust personal reference from available waking windows. Prefer still/non-workout windows so
+        // exercise cannot raise its own baseline; fall back to all valid windows early in the day.
+        let still = features.filter { $0.motion < 0.35 && !$0.activity }
+        let reference = still.count >= 4 ? still : features
+        let hrValues = reference.map(\.hr)
+        let rrValues = reference.compactMap(\.rmssd)
+        let hrMedian = median(hrValues)
+        let rrMedian = rrValues.isEmpty ? nil : median(rrValues)
+        let hrSpread = max(robustSpread(hrValues), c.minimumHRSpread)
+        let rrSpread = max(robustSpread(rrValues), c.minimumRMSSDSpread)
 
-        // 3) The day's OWN quiet reference: centre on the CALM end (the lower quartile of
-        //    hourly mean HR, the upper quartile of hourly RMSSD), and spread from the
-        //    across-hour SD. This makes a flat day read ~baseline and a spiky day surface
-        //    its tense hours — without any cross-day history. Falls back to the plain mean
-        //    when there are too few scored hours for a quartile.
-        //
-        //    Built from the WAKING hours only — the same hours scored in step 4. Sleep is the
-        //    calmest, lowest-HR / highest-HRV stretch of the day, and the analysis window
-        //    always begins at local midnight, so the current day routinely carries several
-        //    hours of it. Letting those night hours into the reference drags the "calm" anchor
-        //    far beneath every waking hour, inflating an ordinary calm day toward HIGH and
-        //    falsely tripping the sustained-high Breathe nudge.
-        let referenceAggs = aggs.filter { isWakingHour($0.bucket) }
-        let hrMeans = referenceAggs.compactMap { $0.meanHR }
-        let rmssdVals = referenceAggs.compactMap { $0.rmssd }
-        let refHR = calmReference(hrMeans, calmIsLow: true)         // calm HR is LOW
-        let refRMSSD = calmReference(rmssdVals, calmIsLow: false)   // calm HRV is HIGH
-        let sdHR = std(hrMeans, mean: mean(hrMeans))
-        let sdRMSSD = std(rmssdVals, mean: mean(rmssdVals))
-
-        // 4) Score each waking-hour bucket on the shared 0–3 curve.
         var points: [HourPoint] = []
-        points.reserveCapacity(aggs.count)
-        for a in aggs {
-            guard isWakingHour(a.bucket) else { continue }
-            let hourOfDay = floorDiv(a.bucket, bucketSeconds) % 24
-            // The wall-clock bucket start (undo the local shift applied above).
-            let wallStart = a.bucket - tzOffsetSeconds
-            // Score only when at least one signal is present AND HR cleared the count gate
-            // (HR is the always-available anchor; RMSSD enriches it when beats allow).
-            let level: Double? = a.meanHR != nil
-                ? squash(rawScore(hr: a.meanHR, meanHR: refHR, sdHR: sdHR,
-                                  rmssd: a.rmssd, meanRMSSD: refRMSSD, sdRMSSD: sdRMSSD))
-                : nil
-            points.append(HourPoint(hour: hourOfDay, startTs: wallStart,
-                                    level: level, meanHR: a.meanHR, rmssd: a.rmssd))
+        var previous: Double?
+        var previousTs: Int?
+        for f in features {
+            let hrZ = clamp((f.hr - hrMedian) / hrSpread, -3, 3)
+            let rrZ = (f.rmssd != nil && rrMedian != nil)
+                ? clamp((rrMedian! - f.rmssd!) / rrSpread, -3, 3) : 0
+            let motionContext = max(f.motion, f.activity ? 1 : 0)
+            let hrSpecificity = 1 - motionContext * (1 - c.movingHRWeightFloor)
+            let availableHRVWeight = f.rmssd == nil ? 0 : c.hrvWeight
+            // Keep the full configured denominator. Otherwise an HR-only window would divide away the
+            // motion attenuation and moving HR would remain just as influential as still HR.
+            let weightSum = max(0.0001, c.hrWeight + c.hrvWeight)
+            let evidence = (c.hrWeight * hrSpecificity * hrZ + availableHRVWeight * rrZ) / weightSum
+            let raw = squash(evidence)
+            // Low confidence shrinks toward the neutral midpoint instead of increasing volatility.
+            let credible = 1.5 + (raw - 1.5) * f.confidence
+            let value: Double
+            if let old = previous, let oldTs = previousTs, f.ts - oldTs <= c.stepSeconds * 2 {
+                let alpha = credible >= old ? c.attackAlpha : c.releaseAlpha
+                let ema = old + alpha * (credible - old)
+                value = old + clamp(ema - old, -c.maximumStepChange, c.maximumStepChange)
+            } else { value = credible }
+            previous = value; previousTs = f.ts
+            points.append(HourPoint(hour: f.hour, startTs: f.ts, level: value, meanHR: f.hr,
+                                    rmssd: f.rmssd, confidence: f.confidence,
+                                    motion: f.motion, isActivity: f.activity))
         }
 
-        let scored = points.compactMap { p -> (HourPoint, Double)? in p.level.map { (p, $0) } }
-        guard !scored.isEmpty else {
-            // No scorable waking hour — still return the (unscored) timeline so the UI can
-            // show "not enough data" rather than nothing.
-            return points.isEmpty ? .empty
-                : Result(hours: points, sustainedHigh: false, sustainedRun: 0,
-                         dayMean: nil, peak: nil)
-        }
-
-        // 5) Sustained-high flag: walk back from the latest SCORED hour while each is HIGH.
         var run = 0
-        for (_, lvl) in scored.reversed() {
-            if lvl >= highBandFloor { run += 1 } else { break }
+        for p in points.reversed() {
+            if (p.level ?? 0) >= c.highBandFloor { run += 1 } else { break }
         }
-        let sustained = run >= sustainedHours
-
-        let dayMean = mean(scored.map { $0.1 })
-        let peak = scored.max { $0.1 < $1.1 }?.0
-
-        return Result(hours: points, sustainedHigh: sustained, sustainedRun: run,
-                      dayMean: dayMean, peak: peak)
+        let needed = Int(ceil(Double(c.sustainedHighSeconds) / Double(c.stepSeconds)))
+        return Result(hours: points, sustainedHigh: run >= needed, sustainedRun: run,
+                      dayMean: mean(points.compactMap(\.level)),
+                      peak: points.max { ($0.level ?? 0) < ($1.level ?? 0) })
     }
 
-    // MARK: - Helpers
-
-    /// Floor-division that is correct for negative numerators (so a local time just before
-    /// the UTC epoch still buckets to the hour below, not toward zero).
-    static func floorDiv(_ a: Int, _ b: Int) -> Int {
-        let q = a / b, r = a % b
-        return (r != 0 && (r < 0) != (b < 0)) ? q - 1 : q
+    static func squash(_ raw: Double) -> Double { clamp(3 / (1 + exp(-raw)), 0, 3) }
+    static func mean(_ xs: [Double]) -> Double? { xs.isEmpty ? nil : xs.reduce(0, +) / Double(xs.count) }
+    static func median(_ xs: [Double]) -> Double {
+        let s = xs.sorted(), m = s.count / 2
+        guard !s.isEmpty else { return 0 }
+        return s.count.isMultiple(of: 2) ? (s[m - 1] + s[m]) / 2 : s[m]
     }
-
-    /// Whether a local hour-bucket start falls inside the waking window the timeline scores
-    /// (06:00–22:00). The single source of truth for "waking" — used both to build the calm
-    /// reference and to pick the hours to score, so the two can never drift apart.
-    static func isWakingHour(_ bucket: Int) -> Bool {
-        let hourOfDay = floorDiv(bucket, bucketSeconds) % 24
-        return hourOfDay >= wakingStartHour && hourOfDay < wakingEndHour
-    }
-
-    /// The day's "calm" reference for a signal: the quartile toward the calm end (lower
-    /// quartile when calm is LOW, e.g. HR; upper quartile when calm is HIGH, e.g. RMSSD).
-    /// Falls back to the plain mean below 4 values, and to nil when empty.
-    static func calmReference(_ xs: [Double], calmIsLow: Bool) -> Double? {
-        guard !xs.isEmpty else { return nil }
-        guard xs.count >= 4 else { return mean(xs) }
+    static func robustSpread(_ xs: [Double]) -> Double {
+        guard xs.count >= 4 else { return 0 }
         let s = xs.sorted()
-        return calmIsLow ? quantile(s, 0.25) : quantile(s, 0.75)
+        return (quantile(s, 0.75) - quantile(s, 0.25)) / 1.349
     }
-
-    /// Linear-interpolated quantile of an already-sorted, non-empty array.
+    static func trimmedMean(_ xs: [Double], fraction: Double) -> Double {
+        let s = xs.sorted(), trim = min(Int(Double(s.count) * max(0, fraction)), max(0, (s.count - 1) / 2))
+        let kept = s[trim..<(s.count - trim)]
+        return kept.reduce(0, +) / Double(kept.count)
+    }
+    static func motionLevel(_ samples: [GravitySample], config c: Configuration) -> Double {
+        guard samples.count >= 3 else { return 0 }
+        var deltas: [Double] = []; deltas.reserveCapacity(samples.count - 1)
+        for pair in zip(samples, samples.dropFirst()) {
+            let dx = pair.1.x - pair.0.x, dy = pair.1.y - pair.0.y, dz = pair.1.z - pair.0.z
+            deltas.append(sqrt(dx * dx + dy * dy + dz * dz))
+        }
+        let typical = median(deltas)
+        return clamp((typical - c.motionDeltaFloorG) / max(0.0001, c.motionDeltaFullG - c.motionDeltaFloorG), 0, 1)
+    }
     static func quantile(_ sorted: [Double], _ q: Double) -> Double {
-        let n = sorted.count
-        guard n > 0 else { return 0 }   // defensive: callers guard emptiness; never trap on []
-        if n == 1 { return sorted[0] }
-        let pos = q * Double(n - 1)
-        let lo = Int(pos), hi = min(lo + 1, n - 1)
-        let frac = pos - Double(lo)
-        return sorted[lo] + frac * (sorted[hi] - sorted[lo])
+        guard !sorted.isEmpty else { return 0 }; if sorted.count == 1 { return sorted[0] }
+        let p = q * Double(sorted.count - 1), lo = Int(p), hi = min(lo + 1, sorted.count - 1)
+        return sorted[lo] + (p - Double(lo)) * (sorted[hi] - sorted[lo])
+    }
+    static func floorDiv(_ a: Int, _ b: Int) -> Int { let q = a / b, r = a % b; return (r != 0 && (r < 0) != (b < 0)) ? q - 1 : q }
+    static func ceilDiv(_ a: Int, _ b: Int) -> Int { -floorDiv(-a, b) }
+    static func positiveMod(_ a: Int, _ b: Int) -> Int { let r = a % b; return r >= 0 ? r : r + b }
+    static func clamp(_ x: Double, _ lo: Double, _ hi: Double) -> Double { min(max(x, lo), hi) }
+    static func advance<T>(_ index: inout Int, _ values: [T], while predicate: (T) -> Bool) {
+        while index < values.count && predicate(values[index]) { index += 1 }
     }
 }

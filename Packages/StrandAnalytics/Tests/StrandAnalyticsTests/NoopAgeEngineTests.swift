@@ -36,6 +36,59 @@ final class NoopAgeEngineTests: XCTestCase {
         XCTAssertNil(r.paceOfAging)
     }
 
+    func testPaceIsUnavailableOneWearDayBelowExactMinimumAndAppearsAtMinimum() {
+        let days = (0..<58).map { day($0) }
+        let cutoff = days.last!.day
+        let eligibility = NoopAgeEngine.paceEligibility(days: days, cutoff: cutoff)
+        XCTAssertEqual(eligibility.olderWearDays, 28)
+        XCTAssertEqual(eligibility.recentWearDays, 30)
+        XCTAssertGreaterThanOrEqual(eligibility.validWeeks, 8)
+        XCTAssertNotNil(result(days).paceOfAging)
+
+        var below = days
+        // Keep only 20 qualified wear days in the trailing 30-calendar-day window.
+        for i in 28..<38 { below[i] = day(i, complete: false) }
+        let belowEligibility = NoopAgeEngine.paceEligibility(days: below, cutoff: cutoff)
+        XCTAssertEqual(belowEligibility.recentWearDays, 20)
+        XCTAssertFalse(belowEligibility.isEligible)
+        XCTAssertNil(result(below).paceOfAging)
+    }
+
+    func testPaceAllowsCalendarGapsWhenObservationAndWeekGatesStillPass() {
+        let days = (0..<70).filter { ![5, 12, 34, 41, 55].contains($0) }.map { day($0) }
+        let eligibility = NoopAgeEngine.paceEligibility(days: days, cutoff: add(start, 69))
+        XCTAssertTrue(eligibility.isEligible)
+        XCTAssertNotNil(result(days, cutoff: add(start, 69)).paceOfAging)
+    }
+
+    func testPartiallyInvalidDayDoesNotCountAsWearDay() {
+        var days = (0..<58).map { day($0) }
+        days[57] = HealthspanDay(day: add(start, 57), restingHR: 58)
+        let eligibility = NoopAgeEngine.paceEligibility(days: days, cutoff: add(start, 57))
+        XCTAssertEqual(eligibility.recentWearDays, 29)
+    }
+
+    func testInvalidOnlyWeekDoesNotSatisfyPaceWeekGate() {
+        let valid = (0..<42).map { day($0) }
+        let invalidWeek = (42..<49).map { day($0, complete: false) }
+        let eligibility = NoopAgeEngine.paceEligibility(days: valid + invalidWeek, cutoff: add(start, 48))
+        XCTAssertEqual(eligibility.validWeeks, 7)
+        XCTAssertFalse(eligibility.isEligible)
+    }
+
+    func testMissingLatestCalendarDayDoesNotBlockQualifiedPace() {
+        let days = (0..<70).map { day($0) }
+        let cutoffAfterMissingDay = add(start, 70)
+        XCTAssertTrue(NoopAgeEngine.paceEligibility(days: days, cutoff: cutoffAfterMissingDay).isEligible)
+        XCTAssertNotNil(result(days, cutoff: cutoffAfterMissingDay).paceOfAging)
+    }
+
+    func testFlatHistoryProducesFinitePace() {
+        let r = result((0..<90).map { day($0) })
+        XCTAssertNotNil(r.paceOfAging)
+        XCTAssertTrue(r.paceOfAging!.isFinite)
+    }
+
     func testEstablishedRequiresAbout180DaysAndAdequateCoverage() {
         XCTAssertEqual(result((0..<179).map { day($0) }).confidence, .developing)
         let established = result((0..<180).map { day($0) })

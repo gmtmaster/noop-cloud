@@ -24,16 +24,16 @@ final class StressPresentationTests: XCTestCase {
 
     func testIntervalsAreCappedAndMissingIsNotLow() {
         let day = StressPresentation.summarize(date: base, points: [point(0, 0.5), point(10 * 3600, 2.5)])
-        XCTAssertEqual(day.distribution.low, 3600)
-        XCTAssertEqual(day.distribution.high, 3600)
-        XCTAssertEqual(day.distribution.observed, 7200)
-        XCTAssertEqual(day.distribution.coverage, 0.125, accuracy: 0.0001)
+        XCTAssertEqual(day.distribution.low, 60)
+        XCTAssertEqual(day.distribution.high, 60)
+        XCTAssertEqual(day.distribution.observed, 120)
+        XCTAssertEqual(day.distribution.coverage, 120 / StressPresentation.expectedDayDuration, accuracy: 0.0001)
     }
 
     func testCurrentPartialBucketIsClipped() {
         let day = StressPresentation.summarize(date: base, points: [point(0, 1.5)],
                                                end: base.addingTimeInterval(900))
-        XCTAssertEqual(day.distribution.medium, 900)
+        XCTAssertEqual(day.distribution.medium, 60)
     }
 
     func testNearestSampleSelectsRecordedPoint() {
@@ -42,7 +42,7 @@ final class StressPresentationTests: XCTestCase {
     }
 
     func testLineBreaksAcrossLongGapWithoutInventingSamples() {
-        let samples = StressPresentation.samples(from: [point(0, 0.4), point(3600, 0.6), point(3 * 3600, 2.2)])
+        let samples = StressPresentation.samples(from: [point(0, 0.4), point(60, 0.6), point(10 * 60, 2.2)])
         let segments = StressPresentation.lineSegments(samples)
         XCTAssertEqual(segments.map(\.count), [2, 1])
         XCTAssertEqual(segments.flatMap { $0 }, samples)
@@ -64,8 +64,8 @@ final class StressPresentationTests: XCTestCase {
 
     func testStaleness() {
         let sample = StressPresentation.Sample(timestamp: base, value: 1)
-        XCTAssertFalse(StressPresentation.isStale(sample, now: base.addingTimeInterval(89 * 60)))
-        XCTAssertTrue(StressPresentation.isStale(sample, now: base.addingTimeInterval(91 * 60)))
+        XCTAssertFalse(StressPresentation.isStale(sample, now: base.addingTimeInterval(2 * 60)))
+        XCTAssertTrue(StressPresentation.isStale(sample, now: base.addingTimeInterval(4 * 60)))
     }
 
     func testBaselineExcludesSelectedFutureSparseAndUsesMedian() {

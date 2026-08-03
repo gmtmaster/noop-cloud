@@ -88,7 +88,12 @@ enum NoopAgeInputBuilder {
 }
 
 extension Repository {
-    func noopAgeHistory(profile: ProfileStore) async -> [NoopAgeWeekResult] {
+    struct NoopAgeHistorySnapshot {
+        let observations: [HealthspanDay]
+        let results: [NoopAgeWeekResult]
+    }
+
+    func noopAgeObservations() async -> [HealthspanDay] {
         async let steps = exploreSeries(key: "steps", source: "my-whoop")
         async let z1 = exploreSeries(key: "hr_zone1_min", source: "my-whoop")
         async let z2 = exploreSeries(key: "hr_zone2_min", source: "my-whoop")
@@ -103,12 +108,12 @@ extension Repository {
         let series = await ["steps": steps, "hr_zone1_min": z1, "hr_zone2_min": z2, "hr_zone3_min": z3,
             "hr_zone4_min": z4, "hr_zone5_min": z5, "strength_min": strength, "vo2max": vo2,
             "vo2max_est": vo2est, "lean_mass": lean, "weight": weight]
-        let observations = NoopAgeInputBuilder.observations(dailies: days, sleeps: sleeps, series: series)
-        let age = profile.ageIsExplicit && profile.age > 0 ? Double(profile.age) : nil
-        let results = NoopAgeInputBuilder.evaluate(days: observations, chronologicalAge: age, birthDate: profile.birthDate)
-        // Canonical weekly projection for Trends and every other generic metric consumer. These keys are
-        // deliberately distinct from legacy fitness_age/body_age/vitality and contain exactly the values
-        // returned to Healthspan and Today above.
+        return NoopAgeInputBuilder.observations(dailies: days, sleeps: sleeps, series: series)
+    }
+
+    func persistNoopAgeHistory(_ results: [NoopAgeWeekResult]) async {
+        // Persistence is a projection for Trends, not an input to Healthspan. Raw daily observations remain
+        // canonical, allowing old databases to be replayed under the current versioned model.
         if let store = await storeHandle() {
             let points = results.flatMap { result -> [MetricPoint] in
                 NoopAgeEngine.canonicalMetricValues(result).map {
@@ -117,7 +122,21 @@ extension Repository {
             }
             if !points.isEmpty { _ = try? await store.upsertMetricSeries(points, deviceId: Repository.whoopSource + "-noop") }
         }
-        return results
+    }
+
+    func noopAgeHistory(profile: ProfileStore) async -> [NoopAgeWeekResult] {
+        await noopAgeSnapshot(profile: profile).results
+    }
+
+    func noopAgeSnapshot(profile: ProfileStore) async -> NoopAgeHistorySnapshot {
+        let observations = await noopAgeObservations()
+        let age = profile.ageIsExplicit && profile.age > 0 ? Double(profile.age) : nil
+        let results = NoopAgeInputBuilder.evaluate(days: observations, chronologicalAge: age, birthDate: profile.birthDate)
+        // Canonical weekly projection for Trends and every other generic metric consumer. These keys are
+        // deliberately distinct from legacy fitness_age/body_age/vitality and contain exactly the values
+        // returned to Healthspan and Today above.
+        await persistNoopAgeHistory(results)
+        return NoopAgeHistorySnapshot(observations: observations, results: results)
     }
 }
 

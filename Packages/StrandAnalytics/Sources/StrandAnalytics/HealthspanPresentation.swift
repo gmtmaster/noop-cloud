@@ -41,3 +41,18 @@ public enum HealthspanDirection: Equatable, Sendable {
 public enum HealthspanSelection {
     public static func newestIndex(count: Int) -> Int { max(0, count - 1) }
 }
+
+public enum HealthspanPacePresentation {
+    public static func value(_ pace: Double?) -> String {
+        pace.map { String(format: "%.1fx", $0) } ?? "—"
+    }
+
+    public static func calibrationDetail(_ eligibility: NoopAgeEngine.PaceEligibility) -> String {
+        "Recent window \(min(eligibility.recentWearDays, NoopAgeEngine.Configuration.minimumRecentPaceWearDays)) " +
+        "of \(NoopAgeEngine.Configuration.minimumRecentPaceWearDays) · older baseline " +
+        "\(min(eligibility.olderWearDays, NoopAgeEngine.Configuration.minimumOlderPaceWearDays)) " +
+        "of \(NoopAgeEngine.Configuration.minimumOlderPaceWearDays) · " +
+        "\(min(eligibility.validWeeks, NoopAgeEngine.Configuration.minimumPaceWeeks)) " +
+        "of \(NoopAgeEngine.Configuration.minimumPaceWeeks) weeks"
+    }
+}

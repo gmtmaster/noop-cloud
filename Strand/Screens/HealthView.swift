@@ -4,6 +4,37 @@ import StrandDesign
 import StrandAnalytics
 import WhoopStore
 
+private enum HealthMonitorPalette {
+    static let liveBlue = Color(red: 0.05, green: 0.72, blue: 1.0)
+    static let darkCard = Color(red: 0.115, green: 0.135, blue: 0.155)
+}
+
+/// Health Monitor deliberately opts out of the app-wide frosted/tinted card surface. It is opaque,
+/// untinted and unaffected by the card-transparency preference so vital values always retain contrast.
+private struct SolidHealthMonitorCard<Content: View>: View {
+    let padding: CGFloat
+    @ViewBuilder let content: () -> Content
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(padding: CGFloat = 16, @ViewBuilder content: @escaping () -> Content) {
+        self.padding = padding; self.content = content
+    }
+
+    var body: some View {
+        content()
+            .padding(padding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                colorScheme == .dark ? HealthMonitorPalette.darkCard : StrandPalette.surfaceRaised,
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(StrandPalette.hairline.opacity(0.7), lineWidth: 1)
+            )
+    }
+}
+
 /// NOOP — Health Monitor: current and most-recent physiological status only.
 /// Live heart rate hero (ChartCard with a streaming sparkline + HR-zone footer),
 /// then a uniform LazyVGrid of the body's vital signs (respiratory rate, blood
@@ -272,26 +303,39 @@ private struct HeartRateSection: View {
         let series = hrSeries(displayHR)
 
         return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-            SectionHeader("Heart Rate", overline: "Live", trailing: hrIsDerived ? String(localized: "from R-R") : nil)
+            SolidHealthMonitorCard(padding: 20) {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text("HEART RATE").strandOverline()
+                        Spacer(minLength: 8)
+                        Text(hasLiveHR ? String(localized: "LIVE") : String(localized: "IDLE"))
+                            .font(StrandFont.footnote.weight(.semibold))
+                            .foregroundStyle(hasLiveHR ? HealthMonitorPalette.liveBlue : StrandPalette.textTertiary)
+                    }
 
-            // The live HR hero is a flat WHOOP card tinted rose — heart-rate's metric accent.
-            // No scenic starfield / bloom: fill contrast carries the edge (Apple-flat).
-            ChartCard(
-                title: "Heart Rate",
-                subtitle: hrIsDerived ? String(localized: "Live · estimated from R-R interval")
-                    : (hasLiveHR ? String(localized: "Streaming live") : staleHeartRateLabel),
-                trailing: hasLiveHR ? "\(displayHR!) bpm" : "—",
-                tint: StrandPalette.metricRose
-            ) {
-                heroChart(displayHR: displayHR, hasLiveHR: hasLiveHR,
-                          fraction: fraction, zone: zone, series: series)
-            } footer: {
-                ChartFooter([
-                    ("Zone", hasLiveHR ? "Z\(zone)" : "—"),
-                    ("% Max", hasLiveHR ? "\(Int((fraction * 100).rounded()))%" : "—"),
-                    ("Max HR", "\(profile.hrMax)"),
-                    ("State", hasLiveHR ? String(localized: "STREAMING") : String(localized: "IDLE")),
-                ])
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .center, spacing: 20) {
+                            heartRateReadout(displayHR: displayHR, hasLiveHR: hasLiveHR,
+                                             fraction: fraction, zone: zone)
+                                .frame(minWidth: 104, alignment: .leading)
+                            heroChart(displayHR: displayHR, hasLiveHR: hasLiveHR,
+                                      fraction: fraction, zone: zone, series: series)
+                                .frame(height: 132)
+                        }
+                        VStack(alignment: .leading, spacing: 16) {
+                            heartRateReadout(displayHR: displayHR, hasLiveHR: hasLiveHR,
+                                             fraction: fraction, zone: zone)
+                            heroChart(displayHR: displayHR, hasLiveHR: hasLiveHR,
+                                      fraction: fraction, zone: zone, series: series)
+                                .frame(height: 132)
+                        }
+                    }
+
+                    Text(hrIsDerived ? String(localized: "Live · estimated from R-R interval")
+                         : (hasLiveHR ? String(localized: "Streaming live") : staleHeartRateLabel))
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
             }
         }
         .onReceive(sampleTimer) { now in
@@ -307,6 +351,29 @@ private struct HeartRateSection: View {
         }
     }
 
+    private func heartRateReadout(displayHR: Int?, hasLiveHR: Bool,
+                                  fraction: Double, zone: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(displayHR.map(String.init) ?? "—")
+                    .font(StrandFont.display(58))
+                    .foregroundStyle(hasLiveHR ? StrandPalette.textPrimary : StrandPalette.textTertiary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                Text("BPM")
+                    .font(StrandFont.subhead.weight(.semibold))
+                    .foregroundStyle(StrandPalette.textSecondary)
+            }
+            Text(zoneLabel(hasLiveHR: hasLiveHR, zone: zone, fraction: fraction))
+                .font(StrandFont.subhead)
+                .foregroundStyle(hasLiveHR ? HealthMonitorPalette.liveBlue : StrandPalette.textTertiary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(hasLiveHR
+            ? "Heart rate, \(displayHR ?? 0) beats per minute, zone \(zone)"
+            : "Heart rate unavailable")
+    }
+
     private var staleHeartRateLabel: String {
         guard let lastSampleAt else { return String(localized: "Awaiting a live source") }
         let seconds = max(0, Int(Date().timeIntervalSince(lastSampleAt)))
@@ -317,14 +384,10 @@ private struct HeartRateSection: View {
     /// status pill floated top-trailing. Fixed to NoopMetrics.chartHeight via ChartCard.
     private func heroChart(displayHR: Int?, hasLiveHR: Bool,
                            fraction: Double, zone: Int, series: [LiveHRSample]) -> some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack {
             if series.count > 1 {
                 LiveTimeChart(
-                    samples: series,
-                    gradient: Gradient(colors: [
-                        StrandPalette.hrZoneColor(max(1, zone - 1)),
-                        StrandPalette.hrZoneColor(zone),
-                    ])
+                    samples: series
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityLabel("Live heart rate over time")
@@ -349,10 +412,6 @@ private struct HeartRateSection: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            StatePill("\(zoneLabel(hasLiveHR: hasLiveHR, zone: zone, fraction: fraction))",
-                      tone: hasLiveHR ? .accent : .neutral,
-                      showsDot: hasLiveHR,
-                      pulsing: hasLiveHR)
         }
     }
 
@@ -379,8 +438,6 @@ struct LiveHRSample: Identifiable, Equatable {
 /// from the caller's 1 Hz-sampled, 180-capped buffer (HeartRateSection.hrHistory, #941).
 private struct LiveTimeChart: View {
     var samples: [LiveHRSample]
-    /// The gradient the line/area is stroked with (the current HR-zone band).
-    var gradient: Gradient
 
     /// Auto-fitted y bounds with a little headroom so the trace never kisses the edges.
     private var yDomain: ClosedRange<Double> {
@@ -391,57 +448,33 @@ private struct LiveTimeChart: View {
         return (lo - pad)...(hi + pad)
     }
 
-    /// A vertical gradient keyed bottom→top so the stroke colour tracks the zone band.
-    private var lineGradient: LinearGradient {
-        LinearGradient(gradient: gradient, startPoint: .bottom, endPoint: .top)
-    }
-
-    /// The lightest stop of the zone gradient, used to tint the area wash.
-    private var areaTint: Color {
-        StrandPalette.sample(stops: gradient.stops, at: 0.85)
-    }
-
     var body: some View {
-        Chart(samples) { s in
-            AreaMark(
-                x: .value("Time", s.date),
-                y: .value("BPM", s.bpm)
-            )
-            .interpolationMethod(.catmullRom)
-            .foregroundStyle(
-                LinearGradient(
-                    colors: [areaTint.opacity(0.24), Color.clear],
-                    startPoint: .top, endPoint: .bottom
-                )
-            )
-
-            LineMark(
-                x: .value("Time", s.date),
-                y: .value("BPM", s.bpm)
-            )
-            .interpolationMethod(.catmullRom)
-            .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-            .foregroundStyle(lineGradient)
+        Chart {
+            ForEach(samples) { s in
+                LineMark(x: .value("Time", s.date), y: .value("BPM", s.bpm))
+                    .interpolationMethod(.catmullRom)
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    .foregroundStyle(HealthMonitorPalette.liveBlue)
+            }
+            if let latest = samples.last {
+                RuleMark(x: .value("Latest", latest.date))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .foregroundStyle(HealthMonitorPalette.liveBlue.opacity(0.35))
+                PointMark(x: .value("Latest time", latest.date), y: .value("Latest BPM", latest.bpm))
+                    .symbolSize(45)
+                    .foregroundStyle(Color.white)
+                    .annotation(position: .overlay) {
+                        Circle().fill(HealthMonitorPalette.liveBlue).frame(width: 6, height: 6)
+                    }
+            }
         }
         .chartYScale(domain: yDomain)
         // catmullRom overshoots on sharp HR turns and the area fill draws unclipped — clip the
         // plot so nothing bleeds below the card (mirrors TrendChart's fix for #104).
         .chartPlotStyle { plotArea in plotArea.clipped() }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(StrandPalette.hairline.opacity(0.4))
-                AxisValueLabel(format: .dateTime.hour().minute().second())
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .font(StrandFont.footnote)
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(StrandPalette.hairline.opacity(0.4))
-                AxisValueLabel().foregroundStyle(StrandPalette.textTertiary)
-                    .font(StrandFont.footnote)
-            }
-        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .shadow(color: HealthMonitorPalette.liveBlue.opacity(0.28), radius: 3)
         .clipped()
     }
 }
@@ -1104,6 +1137,7 @@ private struct VitalitySection: View {
 /// not re-rendered by the ~1Hz live HR stream.
 private struct VitalsSection: View {
     @EnvironmentObject var repo: Repository
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     // Temperature display preference (D#103). Skin temp is stored in °C (absolute or a ±deviation); the
     // toggle re-labels it to °F. Display-only — banding still runs on the stored °C value.
@@ -1122,21 +1156,18 @@ private struct VitalsSection: View {
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader("Vital Signs", overline: "Latest", trailing: BodyVitalSigns.latestDayLabel(readings))
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 168), spacing: NoopMetrics.gap)],
+                columns: dynamicTypeSize.isAccessibilitySize
+                    ? [GridItem(.flexible())]
+                    : [GridItem(.flexible(), spacing: NoopMetrics.gap), GridItem(.flexible())],
                 alignment: .leading,
                 spacing: NoopMetrics.gap
             ) {
                 ForEach(Array(readings.enumerated()), id: \.element.id) { idx, v in
-                    // Each headline vital is now a liquid tile: the signature LiquidVessel gauge tinted
-                    // to the metric's colour world (rose RHR, purple HRV, cyan SpO₂, amber skin temp),
-                    // filled to the metric's fraction, with the value counting up beside it and the same
-                    // banding caption + sparkline the classic tile carried. Every binding + accessibility
-                    // label is preserved — this is the liquid restyle of the flat StatTile.
-                    LiquidVitalTile(reading: v)
+                    HealthVitalTile(reading: v)
                         .staggeredAppear(index: idx)
                 }
             }
-            Text("Once NOOP has 14 nights of history, in-range compares each vital to your own baseline (approximate, not medical advice); until then, typical adult ranges apply.")
+            Text("Typical ranges use your previous 14 or more valid nights. Blood oxygen keeps its absolute safety check even when personal history is available. Approximate, not medical advice.")
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1144,14 +1175,9 @@ private struct VitalsSection: View {
     }
 }
 
-// MARK: - Liquid vital tile (vessel gauge + count-up value + banding caption + spark trail)
+// MARK: - Vital tile
 
-/// One headline vital sign rendered in the liquid finish: a metric-tinted `LiquidVessel` gauge (filled
-/// to the vital's physiological fraction), the value counting up beside it, the banded state caption, and
-/// the same sparkline trail the classic StatTile drew. A frosted `NoopCard` tinted to the metric's accent,
-/// matching Today's Key-Metrics tiles. Presentation-only: value, banding and source are unchanged — this
-/// just gives each vital a real liquid gauge instead of a flat tile.
-private struct LiquidVitalTile: View {
+private struct HealthVitalTile: View {
     let reading: BodyVitalReading
 
     private var metric: MetricDescriptor? {
@@ -1175,64 +1201,86 @@ private struct LiquidVitalTile: View {
     }
 
     private var tile: some View {
-        NoopCard(padding: 14, tint: reading.accent) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("\(reading.label)").strandOverline()
-                Spacer(minLength: 8)
-                HStack(alignment: .center, spacing: 10) {
-                    // The signature liquid gauge — static (posed) so a grid of them doesn't each run a live
-                    // 30fps Canvas. nil fraction (no value) reads as an empty vessel, no fabricated fill.
-                    LiquidVessel(value: vesselFraction, tint: reading.metricColor, animated: false)
-                        .frame(width: 34, height: 34)
-                    if let value = reading.value {
-                        // The value counts up on appear (snaps under Reduce Motion), formatted exactly as
-                        // the classic tile did (the reading's own formatter + unit), so it's byte-identical.
-                        CountUpText(value: value,
-                                    format: { "\(reading.format($0)) \(reading.unit)" },
-                                    font: StrandFont.number(24),
-                                    color: reading.accent)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                    } else {
-                        Text("—").font(StrandFont.number(24)).foregroundStyle(reading.accent)
-                    }
+        SolidHealthMonitorCard(padding: 16) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: symbol)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .frame(width: 18)
+                        .accessibilityHidden(true)
+                    Text(reading.label.uppercased())
+                        .font(StrandFont.footnote.weight(.bold))
+                        .tracking(0.8)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
-                #if !os(watchOS)
-                if let sparkline = reading.sparkline, sparkline.count > 1 {
-                    Sparkline(values: sparkline, gradient: Gradient(colors: [reading.metricColor.opacity(0.5), reading.metricColor]))
-                        .frame(height: 22).padding(.top, 6)
-                        .accessibilityHidden(true)
+
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(reading.value.map(reading.format) ?? "—")
+                        .font(StrandFont.number(34))
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                    Text(reading.unit)
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
                 }
-                #endif
+
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: statusSymbol)
+                        .font(.system(size: 11, weight: .bold))
+                        .accessibilityHidden(true)
+                    Text(reading.typicalRangeText)
+                        .font(StrandFont.footnote.weight(.semibold))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(statusColor)
+
                 Text(reading.stateCaption)
-                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary).lineLimit(1)
-                    .padding(.top, 4)
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(minHeight: NoopMetrics.tileHeight, maxHeight: .infinity)
+        .frame(minHeight: 164, maxHeight: .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(reading.accessibilityText)
         .accessibilityHint(metric == nil ? "" : "Opens this metric's history")
     }
 
-    /// The vessel's fill (0…1): the vital's value mapped onto its physiological span, matching Today's
-    /// per-metric `fracOver` denominators (HRV/120, RHR/100, respiratory/24, SpO₂ across 90…100, absolute
-    /// skin temp across 33…38 °C). nil when there's no value, so the gauge reads empty rather than faked.
-    private var vesselFraction: Double? {
-        guard let v = reading.value else { return nil }
-        func over(_ span: Double) -> Double { max(0.02, min(1, v / span)) }
-        func across(_ lo: Double, _ hi: Double) -> Double { max(0.02, min(1, (v - lo) / (hi - lo))) }
+    private var symbol: String {
         switch reading.key {
-        case "hrv":        return over(120)
-        case "rhr":        return over(100)
-        case "resp_rate":  return over(24)
-        case "spo2":       return across(90, 100)
-        case "skin_temp":
-            // Absolute skin temp (>= 20 °C) maps across a plausible wrist band; a small ±deviation
-            // maps around a half-full centre so a normal night reads mid-gauge, not empty.
-            return VitalBands.isAbsoluteSkinTemp(v) ? across(33, 38) : max(0.02, min(1, 0.5 + v / 4))
-        default:           return across(0, max(1, v * 1.5))
+        case "resp": return "lungs.fill"
+        case "spo2": return "drop.fill"
+        case "rhr": return "heart.fill"
+        case "hrv": return "waveform.path.ecg"
+        case "skin": return "thermometer.medium"
+        default: return "waveform"
+        }
+    }
+
+    private var statusColor: Color {
+        switch reading.typicalRangePosition {
+        case .within: return StrandPalette.statusPositive
+        case .above, .below: return StrandPalette.statusWarning
+        case nil: return StrandPalette.textTertiary
+        }
+    }
+
+    private var statusSymbol: String {
+        switch reading.typicalRangePosition {
+        case .within: return "checkmark"
+        case .above: return "arrow.up"
+        case .below: return "arrow.down"
+        case nil: return "clock"
         }
     }
 }

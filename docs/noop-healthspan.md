@@ -74,9 +74,13 @@ of chronological aging:
 
 `pace = (projectedSixMonthAge − currentNoopAge) / 0.5`
 
-Pace is clamped to `-1.0x...3.0x`; 1.0x means normal chronological aging. It requires 21 valid recent wear
-days, 28 older valid comparison days outside the recent window, eight valid weeks overall, and at least two
-domains in both periods. Otherwise it remains unavailable while the older baseline builds.
+Pace is clamped to `-1.0x...3.0x`; 1.0x means normal chronological aging. It requires 21 valid wear days
+inside the trailing 30 calendar days, 28 older valid comparison days strictly before that window, eight weeks
+that each contain at least one valid wear day, and at least two domains in both periods. These are usable
+observations rather than 30 days since feature installation; gaps are allowed when every gate still passes.
+A valid wear day has at least two of sleep duration, resting HR, and activity evidence. The underlying Noop
+Age result must also clear its confidence gate. Otherwise Pace remains unavailable while the UI reports the
+recent-day, older-day, and qualified-week calibration counts.
 
 ## Data sources and limitations
 

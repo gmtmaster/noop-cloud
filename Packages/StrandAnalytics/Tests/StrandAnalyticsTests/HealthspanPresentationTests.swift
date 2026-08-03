@@ -55,4 +55,13 @@ final class HealthspanPresentationTests: XCTestCase {
         XCTAssertEqual(HealthspanSelection.newestIndex(count: 5), 4)
         XCTAssertEqual(HealthspanSelection.newestIndex(count: 0), 0)
     }
+
+    func testPaceValueFormattingAndCalibrationCopy() {
+        XCTAssertEqual(HealthspanPacePresentation.value(nil), "—")
+        XCTAssertEqual(HealthspanPacePresentation.value(0.94), "0.9x")
+        let eligibility = NoopAgeEngine.PaceEligibility(recentWearDays: 18, olderWearDays: 12,
+            validWeeks: 5, recentDomains: 3, olderDomains: 2)
+        XCTAssertEqual(HealthspanPacePresentation.calibrationDetail(eligibility),
+            "Recent window 18 of 21 · older baseline 12 of 28 · 5 of 8 weeks")
+    }
 }

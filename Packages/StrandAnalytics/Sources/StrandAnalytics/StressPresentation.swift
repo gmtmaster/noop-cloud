@@ -5,13 +5,14 @@ import Foundation
 public enum StressPresentation {
     public static let scale: ClosedRange<Double> = 0...3
     public static let expectedDayDuration: TimeInterval = 16 * 60 * 60
-    public static let maximumAttributedInterval: TimeInterval = 60 * 60
-    /// Display paths break beyond the expected hourly cadence plus 50% tolerance.
-    public static let maximumConnectedGap: TimeInterval = 90 * 60
+    /// A rolling observation owns at most one configured step. Missing minutes remain missing.
+    public static let maximumAttributedInterval: TimeInterval = TimeInterval(DaytimeStress.configuration.stepSeconds)
+    /// Break the display after two missed observations; never draw through a sensor outage.
+    public static let maximumConnectedGap: TimeInterval = TimeInterval(DaytimeStress.configuration.stepSeconds * 3)
     public static let qualifiedCoverage = 0.60
     public static let maximumBaselineDays = 8
     public static let minimumBaselineDays = 3
-    public static let staleAfter: TimeInterval = 90 * 60
+    public static let staleAfter: TimeInterval = TimeInterval(DaytimeStress.configuration.stepSeconds * 3)
 
     public enum Zone: String, CaseIterable, Codable, Sendable {
         case low, medium, high
@@ -102,7 +103,7 @@ public enum StressPresentation {
         }
     }
 
-    /// Each scored hourly bucket owns at most one hour. A following sample never
+    /// Each rolling observation owns at most one configured step. A following sample never
     /// causes a long missing gap to be assigned to the preceding zone.
     public static func summarize(date: Date, points: [DaytimeStress.HourPoint],
                                  end: Date? = nil) -> Day {

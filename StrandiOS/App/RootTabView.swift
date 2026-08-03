@@ -2,6 +2,15 @@
 import SwiftUI
 import StrandDesign
 
+/// Stable contract for the primary iPhone navigation. This belongs beside the shell that consumes
+/// it so a stale generated project cannot omit the declaration when a destination file is added.
+enum HealthNavigationContract {
+    static let primaryTabs = ["Today", "Health", "Friends", "More"]
+    static let healthTabIndex = 1
+    static let sleepIsContextual = true
+    static let trendsRemainsSecondary = true
+}
+
 /// Testable contract for the iPhone More information architecture. Primary-tab/contextual duplicates are
 /// deliberately absent while every secondary destination remains represented by a card group.
 enum MoreInformationArchitecture {
