@@ -1,8 +1,54 @@
 import SwiftUI
+import Charts
 import StrandDesign
 import StrandAnalytics
 import WhoopStore
 import Foundation
+
+struct OverviewHRAnnotationContext {
+    let sleep: OverviewHRChart.SleepSpan?
+    let workouts: [OverviewHRChart.WorkoutSpan]
+}
+
+/// Canonical app-level annotation source for every whole-day Overview HR chart. Repository workout
+/// rows are already cross-source deduplicated and dismissal-filtered; sleep reads include imported and
+/// on-device computed sessions. Selection then uses OverviewHRChart's original overlap rules.
+@MainActor
+enum OverviewHRAnnotationSource {
+    static func load(repo: Repository, window: ClosedRange<Date>, daysBack: Int) async -> OverviewHRAnnotationContext {
+        async let sleeps = repo.allSleepSessions(days: max(2, daysBack))
+        async let workouts = repo.workoutRows(days: max(2, daysBack))
+        let sleepRows = await sleeps
+        let workoutRows = await workouts
+        let sleepCandidates = sleepRows.map(sleepSpan)
+        let workoutCandidates = workoutRows.map(workoutSpan)
+        return OverviewHRAnnotationContext(
+            sleep: OverviewHRChart.mainSleep(sleepCandidates, overlapping: window),
+            workouts: OverviewHRChart.workouts(workoutCandidates, overlapping: window)
+        )
+    }
+
+    static func sleepSpan(_ session: CachedSleepSession) -> OverviewHRChart.SleepSpan {
+        .init(start: Date(timeIntervalSince1970: TimeInterval(session.effectiveStartTs)),
+              end: Date(timeIntervalSince1970: TimeInterval(session.endTs)),
+              label: durationLabel(session.endTs - session.effectiveStartTs))
+    }
+
+    static func workoutSpans(_ rows: [WorkoutRow], overlapping window: ClosedRange<Date>) -> [OverviewHRChart.WorkoutSpan] {
+        OverviewHRChart.workouts(rows.map(workoutSpan), overlapping: window)
+    }
+
+    private static func workoutSpan(_ workout: WorkoutRow) -> OverviewHRChart.WorkoutSpan {
+        .init(start: Date(timeIntervalSince1970: TimeInterval(workout.startTs)),
+              end: Date(timeIntervalSince1970: TimeInterval(workout.endTs)),
+              symbol: sportSymbol(workout.sport))
+    }
+
+    private static func durationLabel(_ seconds: Int) -> String {
+        let value = max(0, seconds)
+        return "\(value / 3600):\(String(format: "%02d", (value % 3600) / 60))"
+    }
+}
 
 // MARK: - Control Center (the home dashboard), HomeDensity rewrite
 //
@@ -32,6 +78,135 @@ import Foundation
 private struct HeroRingRowWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct StrainRecoveryHistoryCard: View {
+    let days: [DailyMetric]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+
+    private struct Point: Identifiable {
+        let id: String
+        let date: Date
+        let day: String
+        let strain: Double?
+        let recovery: Double?
+        let isToday: Bool
+    }
+
+    private var points: [Point] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let keyed = Dictionary(uniqueKeysWithValues: days.map { ($0.day, $0) })
+        return (0..<7).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: offset - 6, to: today) else { return nil }
+            let key = Self.keyFormatter.string(from: date)
+            let metric = keyed[key]
+            return Point(id: key, date: date, day: key, strain: metric?.strain,
+                         recovery: metric?.recovery, isToday: offset == 6)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Strain & Recovery", overline: "LAST 7 DAYS")
+            NoopCard(tint: StrandPalette.effortColor) {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(spacing: 18) {
+                        legend(color: StrandPalette.effortColor, text: "STRAIN")
+                        legend(color: .white, text: "RECOVERY")
+                        Spacer()
+                    }
+                    Chart(points) { point in
+                        if point.isToday {
+                            RectangleMark(x: .value("Today", point.date), width: .fixed(42))
+                                .foregroundStyle(Color.white.opacity(0.075))
+                                .cornerRadius(13)
+                        }
+                        if let rawStrain = point.strain {
+                            let strain = whoopStrain(rawStrain)
+                            LineMark(x: .value("Day", point.date), y: .value("Strain", strain))
+                                .interpolationMethod(.catmullRom)
+                                .foregroundStyle(by: .value("Metric", "Strain"))
+                            PointMark(x: .value("Day", point.date), y: .value("Strain", strain))
+                                .foregroundStyle(StrandPalette.effortColor)
+                                .symbol { Circle().stroke(StrandPalette.effortColor, lineWidth: 3).frame(width: 13, height: 13) }
+                                .annotation(position: strain < 8 ? .bottom : .top, spacing: 7) {
+                                    Text(strainLabel(strain)).foregroundStyle(StrandPalette.effortColor)
+                                }
+                        }
+                        if let recovery = point.recovery {
+                            let plottedRecovery = recovery / 100 * 21
+                            LineMark(x: .value("Day", point.date), y: .value("Recovery", plottedRecovery))
+                                .interpolationMethod(.catmullRom)
+                                .foregroundStyle(by: .value("Metric", "Recovery"))
+                            PointMark(x: .value("Day", point.date), y: .value("Recovery", plottedRecovery))
+                                .foregroundStyle(recoveryColor(recovery))
+                                .symbol { Circle().stroke(recoveryColor(recovery), lineWidth: 3).frame(width: 13, height: 13) }
+                                .annotation(position: recovery < 67 ? .bottom : .top, spacing: 7) {
+                                    Text("\(Int(recovery.rounded()))%")
+                                        .foregroundStyle(recoveryColor(recovery))
+                                }
+                        }
+                    }
+                    .chartForegroundStyleScale(["Strain": StrandPalette.effortColor, "Recovery": Color.white])
+                    .chartYScale(domain: 0...21)
+                    .chartYAxis {
+                        AxisMarks(position: .leading, values: [0, 7, 14, 21]) { value in
+                            AxisGridLine().foregroundStyle(StrandPalette.hairlineStrong.opacity(0.6))
+                            AxisValueLabel {
+                                if let level = value.as(Int.self) { Text("\(level)").foregroundStyle(StrandPalette.effortColor) }
+                            }
+                        }
+                        AxisMarks(position: .trailing, values: [0, 7, 14, 21]) { value in
+                            AxisValueLabel {
+                                if let level = value.as(Int.self) {
+                                    let percent = Int((Double(level) / 21 * 100).rounded())
+                                    Text("\(percent)%").foregroundStyle(recoveryColor(Double(percent)))
+                                }
+                            }
+                        }
+                    }
+                    .chartXAxis {
+                        AxisMarks(values: points.map(\.date)) { value in
+                            AxisValueLabel {
+                                if let date = value.as(Date.self) {
+                                    VStack(spacing: 2) {
+                                        Text(date.formatted(.dateTime.weekday(.narrow))).fontWeight(.bold)
+                                        Text(date.formatted(.dateTime.day())).foregroundStyle(StrandPalette.textTertiary)
+                                    }
+                                }
+                            }
+                            AxisGridLine().foregroundStyle(StrandPalette.hairline.opacity(0.28))
+                        }
+                    }
+                    .chartLegend(.hidden)
+                    .frame(height: 245)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.7), value: appeared)
+                }
+            }
+        }
+        .onAppear { appeared = true }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func legend(color: Color, text: LocalizedStringKey) -> some View {
+        HStack(spacing: 6) { Circle().fill(color).frame(width: 7, height: 7); Text(text).strandOverline() }
+    }
+    private func strainLabel(_ value: Double) -> String {
+        String(format: "%.1f", value)
+    }
+    private func whoopStrain(_ value: Double) -> Double { value <= 21 ? value : min(21, value / 100 * 21) }
+    private func recoveryColor(_ value: Double) -> Color {
+        if value >= 67 { return StrandPalette.statusPositive }
+        if value >= 34 { return Color.yellow }
+        return Color.red
+    }
+    private static let keyFormatter: DateFormatter = {
+        let f = DateFormatter(); f.calendar = .current; f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current; f.dateFormat = "yyyy-MM-dd"; return f
+    }()
 }
 
 /// #829 follow-up: the Today HR chart's frame in the day-swipe gesture's coordinate space, published by a
@@ -1437,7 +1612,7 @@ struct TodayView: View {
                     tonightPlanSection.staggeredAppear(index: 1)
                 }
                 // Phase 1 WHOOP-like hierarchy: rings first, then a coaching brief, then compact supporting
-                // signals. The 5-minute HR chart remains on Today, lower between workouts and sources.
+                // signals. Seven-day Strain & Recovery history closes the dashboard.
                 synthesisSection.staggeredAppear(index: 2)
                 stressSection.staggeredAppear(index: 3)
                 recoveryVitalsSection.staggeredAppear(index: 4)
@@ -1448,7 +1623,7 @@ struct TodayView: View {
                 metricsSection.staggeredAppear(index: 5)
                 yourCardsSection.staggeredAppear(index: 6)
                 workoutsSection.staggeredAppear(index: 7)
-                heartRateTrendSection.staggeredAppear(index: 8)
+                StrainRecoveryHistoryCard(days: repo.days).staggeredAppear(index: 8)
                 // Opt-in "looks like a workout?" suggestion (default OFF). Renders only when the
                 // Settings toggle is on AND the detector finds a recent unsaved, un-dismissed window.
                 AutoWorkoutCard()
@@ -1829,7 +2004,7 @@ struct TodayView: View {
 
             // Existing secondary dashboard content remains available below the redesigned primary flow.
             ActiveWorkoutIndicatorSection()
-            heartRateTrendSection
+            StrainRecoveryHistoryCard(days: repo.days)
             AutoWorkoutCard()
             sourcesSection
         }
@@ -2514,7 +2689,7 @@ struct TodayView: View {
     @ViewBuilder
     private var chargeBreakdownSheet: some View {
         NavigationStack {
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                     let drivers = chargeDrivers
                     if drivers.isEmpty {
@@ -3936,33 +4111,21 @@ struct TodayView: View {
         return lo...hi
     }
 
-    /// "H:MM" for a duration in seconds (e.g. a 6h06m night → "6:06").
     private func hoursMinutes(_ seconds: Int) -> String {
-        let h = max(0, seconds) / 3600, m = (max(0, seconds) % 3600) / 60
-        return "\(h):\(String(format: "%02d", m))"
+        let value = max(0, seconds)
+        return "\(value / 3600):\(String(format: "%02d", (value % 3600) / 60))"
     }
 
     /// Last night's sleep as a shaded band, labelled with its duration.
     private var sleepSpan: OverviewHRChart.SleepSpan? {
         guard let s = sleepToday else { return nil }
-        // Use the EFFECTIVE onset so a hand-corrected bedtime shows the same band/duration here as on
-        // the Sleep tab (not the detected onset). (#318)
-        return .init(
-            start: Date(timeIntervalSince1970: TimeInterval(s.effectiveStartTs)),
-            end: Date(timeIntervalSince1970: TimeInterval(s.endTs)),
-            label: hoursMinutes(s.endTs - s.effectiveStartTs)
-        )
+        return OverviewHRAnnotationSource.sleepSpan(s)
     }
 
     /// Each workout overlapping the HR window, as a sport glyph anchored at its HR peak.
     private var workoutSpans: [OverviewHRChart.WorkoutSpan] {
         guard let win = hrWindow else { return [] }
-        return workouts.compactMap { w in
-            let start = Date(timeIntervalSince1970: TimeInterval(w.startTs))
-            let end = Date(timeIntervalSince1970: TimeInterval(w.endTs))
-            guard end >= win.lowerBound, start <= win.upperBound else { return nil }
-            return .init(start: start, end: end, symbol: sportSymbol(w.sport))
-        }
+        return OverviewHRAnnotationSource.workoutSpans(workouts, overlapping: win)
     }
 
     /// "Charge" marker (NOOP's name for recovery) at wake time (sleep end), else at the window start.

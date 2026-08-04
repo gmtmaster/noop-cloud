@@ -1935,7 +1935,7 @@ struct SettingsView: View {
                                 }
                             }
                             if !notes.isEmpty {
-                                ScrollView {
+                                ScrollView(showsIndicators: false) {
                                     Text(notes)
                                         .font(StrandFont.footnote)
                                         .foregroundStyle(StrandPalette.textSecondary)
@@ -2283,7 +2283,7 @@ private struct DiagnosticsSheet: View {
 
             Divider().overlay(StrandPalette.hairline)
 
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 8) {
                     if lines.isEmpty {
                         Text("No iOS diagnostics available.")
@@ -2386,7 +2386,7 @@ struct StepsCalibrationSheet: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(StrandPalette.hairline)
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                     explainerCard
                     if didLoad && sampleMotion == nil { noMotionNote }

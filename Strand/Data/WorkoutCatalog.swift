@@ -39,6 +39,8 @@ enum WorkoutCatalog {
         Sport(name: "Pool swim", isDistanceSport: false),
         Sport(name: "Row machine", isDistanceSport: false),
         Sport(name: "Elliptical", isDistanceSport: false),
+        // Gym stair machine. Persisted with this canonical label across live, manual and restored rows.
+        Sport(name: "Stair Climber", isDistanceSport: false),
         Sport(name: "Strength", isDistanceSport: false),
         // Bodybuilding (#714). A strength-style session with no route, so GPS off.
         Sport(name: "Bodybuilding", isDistanceSport: false),

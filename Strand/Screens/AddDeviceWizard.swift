@@ -165,7 +165,7 @@ struct AddDeviceWizard: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(StrandPalette.hairline)
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: NoopMetrics.gap) {
                     if type == .oura {
                         // The Oura type runs its OWN step machine (gate -> prep -> pick -> confirm ->

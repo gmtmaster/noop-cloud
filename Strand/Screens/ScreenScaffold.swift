@@ -34,7 +34,7 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     #endif
 
     var body: some View {
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             column
             #if os(iOS)
             // Unified side margins matching the liquid home (16pt) so every page's cards + header line up

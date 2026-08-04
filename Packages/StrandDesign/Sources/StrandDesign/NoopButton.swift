@@ -195,7 +195,7 @@ public struct NoopButton: View {
 
 #if DEBUG
 #Preview("NoopButton") {
-    ScrollView {
+    ScrollView(showsIndicators: false) {
         VStack(spacing: NoopMetrics.rowSpacing) {
             NoopButton("Primary action", systemImage: "checkmark", kind: .primary) {}
             NoopButton("Secondary action", systemImage: "square.and.arrow.up", kind: .secondary) {}

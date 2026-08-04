@@ -1,4 +1,5 @@
 import XCTest
+import StrandDesign
 @testable import Strand
 
 /// Pins the suggestion catalogue (#714): the two new indoor presets exist, are spelled byte-for-byte
@@ -6,6 +7,13 @@ import XCTest
 /// and default GPS off (no route on a treadmill or a lifting session). Mirrors the Android
 /// WorkoutSportTest intent for the same two sports.
 final class WorkoutCatalogTests: XCTestCase {
+
+    func testStairClimberIsCanonicalMachineActivity() {
+        let sport = WorkoutCatalog.sport(named: "stair climber")
+        XCTAssertEqual(sport?.name, "Stair Climber")
+        XCTAssertEqual(sport?.isDistanceSport, false)
+        XCTAssertEqual(sportSymbol("Stair Climber"), "figure.stair.stepper")
+    }
 
     func testTreadmillWalkPresetExistsWithGpsOff() {
         let s = WorkoutCatalog.sport(named: "Treadmill walk")

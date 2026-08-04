@@ -1108,7 +1108,7 @@ private struct StressPreviewHarness: View {
     var body: some View {
         let band = StressBand(score: score)
         let hours = sampleDaytimeHours()
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 Text("Stress").font(StrandFont.title1).foregroundStyle(StrandPalette.textPrimary)
 

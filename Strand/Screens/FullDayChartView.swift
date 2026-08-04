@@ -335,30 +335,12 @@ struct FullDayChartView: View {
     /// now to cover the shown day; the +2 pad mirrors TodayView's sleep read (the night straddles midnight).
     private func reloadAnnotations() async {
         let daysBack = max(0, Int(Date().timeIntervalSince(dayStart) / 86_400)) + 2
-
-        let sleepCandidates: [OverviewHRChart.SleepSpan] = await repo.allSleepSessions(days: daysBack)
-            .map { s in
-                .init(start: Date(timeIntervalSince1970: TimeInterval(s.effectiveStartTs)),
-                      end: Date(timeIntervalSince1970: TimeInterval(s.endTs)),
-                      label: Self.hoursMinutes(s.endTs - s.effectiveStartTs))
-            }
-        let workoutCandidates: [OverviewHRChart.WorkoutSpan] = await repo.workoutRows(days: daysBack)
-            .map { w in
-                .init(start: Date(timeIntervalSince1970: TimeInterval(w.startTs)),
-                      end: Date(timeIntervalSince1970: TimeInterval(w.endTs)),
-                      symbol: sportSymbol(w.sport))
-            }
+        let annotations = await OverviewHRAnnotationSource.load(
+            repo: repo, window: dayBounds, daysBack: daysBack
+        )
         guard !Task.isCancelled else { return }
-        // The pure, headless-tested selection (StrandDesignTests) — window = the shown DAY, not the zoom.
-        sleepSpan = OverviewHRChart.mainSleep(sleepCandidates, overlapping: dayBounds)
-        workoutSpans = OverviewHRChart.workouts(workoutCandidates, overlapping: dayBounds)
-    }
-
-    /// "H:MM" for a duration in seconds (e.g. a 6h06m night → "6:06") — mirrors TodayView.hoursMinutes
-    /// so the band label reads identically on both whole-day charts.
-    private static func hoursMinutes(_ seconds: Int) -> String {
-        let h = max(0, seconds) / 3600, m = (max(0, seconds) % 3600) / 60
-        return "\(h):\(String(format: "%02d", m))"
+        sleepSpan = annotations.sleep
+        workoutSpans = annotations.workouts
     }
 
     // MARK: Presentation helpers

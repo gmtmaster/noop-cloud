@@ -80,8 +80,7 @@ struct LiveView: View {
 
     var body: some View {
         ScreenScaffold(title: "Live Body Console",
-                       subtitle: "Current physiology, strap trust, and session controls in one working view.",
-                       topBackground: liquidScaffoldSky()) {
+                       subtitle: "Current physiology, telemetry, and developer diagnostics") {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 consoleHeader
                 // Can't-connect-at-all guidance: the strap wiped its bond (firmware update / WHOOP app
@@ -353,31 +352,34 @@ struct LiveView: View {
     }
 
     private func activeWorkoutCard(_ w: AppModel.ActiveWorkout) -> some View {
-        card {
+        SolidHealthMonitorCard(padding: 16) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
-                    Circle().fill(StrandPalette.metricRose).frame(width: 8, height: 8)
-                    Text("RECORDING WORKOUT").font(StrandFont.overline)
-                        .tracking(StrandFont.overlineTracking).foregroundStyle(StrandPalette.metricRose)
+                    Image(systemName: sportSymbol(w.sport)).foregroundStyle(StrandPalette.effortColor).frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(w.sport).font(StrandFont.headline)
+                        HStack(spacing: 5) {
+                            Circle().fill(w.isPaused ? StrandPalette.statusWarning : StrandPalette.statusPositive).frame(width: 6, height: 6)
+                            Text(w.isPaused ? "Paused" : "Workout active").font(StrandFont.caption).foregroundStyle(StrandPalette.textSecondary)
+                        }
+                    }
                     Spacer()
                     // Re-render once a second so the elapsed clock ticks without a manual Timer.
-                    TimelineView(.periodic(from: .now, by: 1)) { _ in
-                        Text(Self.elapsed(since: w.start)).font(StrandFont.number(17)).monospacedDigit()
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(Self.elapsed(w, now: context.date)).font(StrandFont.number(17)).monospacedDigit()
                             .foregroundStyle(StrandPalette.textPrimary)
                     }
                 }
-                // Live HR / avg / peak / effort — the leaf owns LiveState + the active workout so the
-                // 1 Hz stat refresh re-renders only these tiles, plus a liquid effort tube under them.
-                ActiveWorkoutLive(workout: w, effortScale: effortScale)
+                if let bpm = model.bpm {
+                    Text("\(bpm) bpm").font(StrandFont.number(18)).foregroundStyle(StrandPalette.metricRose)
+                } else {
+                    Text("Waiting for heart-rate data").font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                }
                 HStack(spacing: NoopMetrics.rowSpacing) {
                     // Re-open the full live workout screen (#238) after it's been dismissed.
-                    NoopButton("Open live view", systemImage: "rectangle.expand.vertical",
+                    NoopButton("Return to Workout", systemImage: "rectangle.expand.vertical",
                                kind: .secondary, fullWidth: true) {
                         showLiveWorkout = true
-                    }
-                    NoopButton("End workout", systemImage: "stop.circle.fill",
-                               kind: .destructive, fullWidth: true) {
-                        model.endWorkout()
                     }
                 }
             }
@@ -400,6 +402,12 @@ struct LiveView: View {
     private static func elapsed(since start: Date) -> String {
         let s = max(0, Int(Date().timeIntervalSince(start)))
         return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    private static func elapsed(_ workout: AppModel.ActiveWorkout, now: Date) -> String {
+        let endpoint = workout.pausedAt ?? now
+        let seconds = max(0, Int(endpoint.timeIntervalSince(workout.start) - workout.pausedDurationS))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     private func reconnectGuideBanner(_ guide: String) -> some View {
@@ -593,7 +601,7 @@ struct LiveView: View {
                 .strokeBorder(StrandPalette.hairline, lineWidth: 1))
             .contentShape(Rectangle())
         }
-        .buttonStyle(LiquidPressStyle())
+        .buttonStyle(.plain)
         .accessibilityLabel("Manage devices")
         .accessibilityHint("Opens the Devices screen, where you pair and switch bands.")
     }
@@ -754,47 +762,9 @@ private struct LiveHeartReadout: View {
         return max(0.02, min(1, Double(bpm) / Double(hrMax)))
     }
 
-    @State private var shown: Double = 0
-
     var body: some View {
-        let tint = hrTint
-        return VStack(alignment: .center, spacing: NoopMetrics.space2) {
-            Text("HEART RATE")
-                .font(StrandFont.overline)
-                .tracking(StrandFont.overlineTracking)
-                .foregroundStyle(StrandPalette.textSecondary)
-            ZStack {
-                // The live BPM gauge: a liquid vessel that fills to the HR-zone fraction and sloshes.
-                LiquidVessel(value: hrFrac, tint: tint, animated: displayHR != nil)
-                    .frame(width: 210, height: 210)
-                VStack(spacing: 0) {
-                    // The big focal HR numeral counts up to the live value (the hero number); a crisp
-                    // em-dash while there's no HR yet.
-                    if displayHR != nil {
-                        CountUpNumber(value: shown, font: StrandFont.rounded(88, weight: .semibold))
-                            .foregroundStyle(tint)
-                            .shadow(color: .black.opacity(0.4), radius: 6, y: 1)
-                    } else {
-                        Text("—")
-                            .font(StrandFont.rounded(88, weight: .semibold))
-                            .foregroundStyle(StrandPalette.textTertiary)
-                    }
-                    Text("bpm")
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textSecondary)
-                    if liveZone >= 1 {
-                        Text("ZONE \(liveZone)")
-                            .font(StrandFont.overline)
-                            .tracking(StrandFont.overlineTracking)
-                            .foregroundStyle(tint)
-                            .padding(.top, NoopMetrics.space1)
-                    }
-                }
-                .allowsHitTesting(false)   // taps fall through to the vessel → splash
-            }
-            .frame(width: 210, height: 210)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(displayHR.map { "Heart rate \($0) beats per minute" } ?? "Heart rate not available")
+        VStack(alignment: .center, spacing: NoopMetrics.space2) {
+            LiveHeartRateDisplay(hrMax: hrMax, context: .console)
             Text(signalTrustSummary)
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
@@ -802,14 +772,6 @@ private struct LiveHeartReadout: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity)
-        .onAppear { rollTo(displayHR) }
-        .onChangeCompat(of: displayHR) { rollTo($0) }
-    }
-
-    /// Roll the count-up numeral to the new HR, matching the vessel's fill animation.
-    private func rollTo(_ v: Int?) {
-        guard let v else { shown = 0; return }
-        withAnimation(.easeOut(duration: 0.6)) { shown = Double(v) }
     }
 
     private var signalTrustSummary: String {
@@ -882,13 +844,15 @@ private struct LivePhysiology: View {
         let values = Array(live.rrRecent.suffix(18)).map(Double.init)
         return VStack(alignment: .leading, spacing: 8) {
             if values.count >= 2 {
-                // The liquid HR thread, tinted cyan for R-R — matches the Today live-HR trace.
-                LiquidThread(bpm: values, tint: StrandPalette.metricCyan, height: 44, animated: true)
-                    .accessibilityHidden(true)
+                HStack(alignment: .center, spacing: 3) {
+                    ForEach(Array(values.suffix(18).enumerated()), id: \.offset) { _, value in
+                        Capsule().fill(StrandPalette.metricCyan)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: max(4, min(32, CGFloat((value - 350) / 35))))
+                    }
+                }.frame(height: 36).accessibilityHidden(true)
             } else {
-                // Empty: a muted static tube so the strip reads as "waiting", not broken.
-                LiquidTube(frac: 0, tint: StrandPalette.metricCyan, height: 12, animated: false)
-                    .accessibilityHidden(true)
+                Capsule().fill(StrandPalette.surfaceInset).frame(height: 8).accessibilityHidden(true)
             }
             Text(values.isEmpty
                  ? String(localized: "Waiting for R-R intervals.")
@@ -1056,9 +1020,13 @@ private struct ActiveWorkoutLive: View {
                      tint: StrandPalette.strainColor(workout.liveStrain))
             }
             // A liquid effort tube — the live effort as a fraction of the 0–100 strain axis.
-            LiquidTube(frac: max(0, min(1, workout.liveStrain / 100)),
-                       tint: StrandPalette.strainColor(workout.liveStrain), height: 10, animated: true)
-                .accessibilityHidden(true)
+            GeometryReader { geo in
+                Capsule().fill(StrandPalette.surfaceInset)
+                    .overlay(alignment: .leading) {
+                        Capsule().fill(StrandPalette.strainColor(workout.liveStrain))
+                            .frame(width: geo.size.width * CGFloat(max(0, min(1, workout.liveStrain / 100))))
+                    }
+            }.frame(height: 8).accessibilityHidden(true)
         }
     }
 
@@ -1094,7 +1062,7 @@ private struct LiveLogCard: View {
                     .buttonStyle(.plain).font(StrandFont.mono).foregroundStyle(StrandPalette.accent)
             }
             ScrollViewReader { proxy in
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(Array(live.log.enumerated()), id: \.offset) { idx, line in
                             Text(line).font(StrandFont.mono)
@@ -1191,7 +1159,7 @@ private struct SignalTrustTile: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 // The signal's liquid gauge — a static-posed small vessel (no per-frame cost).
-                LiquidVessel(value: tile.frac, tint: tile.tint, animated: false)
+                Image(systemName: tile.icon).foregroundStyle(tile.tint)
                     .frame(width: 22, height: 22)
                     .accessibilityHidden(true)
                 Text(tile.title.uppercased())

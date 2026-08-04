@@ -573,7 +573,7 @@ private func prettyDay(_ key: String) -> String {
 
 #if DEBUG
 #Preview("Skin-temp cards") {
-    ScrollView {
+    ScrollView(showsIndicators: false) {
         VStack(spacing: NoopMetrics.sectionGap) {
             CycleAwarenessCard(
                 result: CyclePhaseEngine.Result(

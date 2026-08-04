@@ -18,11 +18,12 @@ enum HealthspanOrbMotion {
     }
 
     static func shellScale(at elapsed: TimeInterval) -> Double {
-        1 + 0.012 * sin(elapsed * 0.72)
+        // Keep the breathing amplitude restrained, but make the inhale/exhale cadence more present.
+        1 + 0.012 * sin(elapsed * 1.16)
     }
 
     static func shellPhase(at elapsed: TimeInterval) -> Double {
-        sin(elapsed * 0.18)
+        sin(elapsed * 0.36)
     }
 
     static func particle(index: Int, elapsed: TimeInterval) -> ParticleState {
@@ -38,7 +39,12 @@ enum HealthspanOrbMotion {
 
     static func particleAngularSpeed(index: Int) -> Double {
         let seed = Double(index) + 1
-        return 0.24 + unit(seed * 3.1) * 0.10
+        // Seeded depth matches the Canvas' base-depth field. Back particles move at roughly 1.7× the
+        // former rate; foreground particles reach about 2.2×, producing parallax without more frames
+        // or particles. The seed is stable, so view updates never restart or reshuffle motion.
+        let depth = unit(seed * 12.9898) * 2 - 1
+        let foregroundBoost = max(0, depth) * 0.15
+        return 0.41 + unit(seed * 3.1) * 0.14 + foregroundBoost
     }
 
     static func unit(_ value: Double) -> Double {
@@ -124,8 +130,12 @@ struct HealthspanView: View {
     @State private var healthspanDays: [HealthspanDay] = []
     @State private var selectedIndex = 0
     @State private var showsAllContributors = false
+    @State private var expandedContributor: String?
 
     private var selected: NoopAgeWeekResult? { history.indices.contains(selectedIndex) ? history[selectedIndex] : nil }
+    private var snapshotIdentity: HealthspanSnapshotIdentity {
+        HealthspanSnapshotIdentity(repo: repo, profile: profile)
+    }
 
     var body: some View {
         ScreenScaffold(title: "Healthspan", subtitle: "Your long-term fitness and health trajectory.",
@@ -134,20 +144,73 @@ struct HealthspanView: View {
                 missingAge
             } else if let result = selected, let age = result.noopAge {
                 weekNavigation(result.weekEndDay)
-                NoopAgeOrb(age: result.confidence == .calibrating ? age.rounded() : age,
-                           chronologicalAge: chronologicalAge(for: result.weekEndDay) ?? age,
-                           confidence: result.confidence)
-                    .frame(maxWidth: 380)
-                    .frame(maxWidth: .infinity)
+                healthspanHero(result, age: age)
+                interpretationCard(result)
                 paceSection(result)
-                contributorCard(result)
+                contributorBreakdown(result)
+                modelNote
+            } else if let result = selected {
+                weekNavigation(result.weekEndDay)
+                calibratingHero(result)
+                calibrationContributors(result)
                 modelNote
             } else {
                 ComingSoon(what: "Noop Age is calibrating. Keep wearing your device through sleep and daily activity so enough reliable coverage can build.", symbol: "heart.circle")
             }
         }
-        .task(id: repo.refreshSeq) { await load() }
+        .task(id: snapshotIdentity) { await load(identity: snapshotIdentity) }
         .onChange(of: selectedIndex) { _, _ in showsAllContributors = false }
+    }
+
+    private func healthspanHero(_ result: NoopAgeWeekResult, age: Double) -> some View {
+        let summary = HealthspanResultSummary.resolve(result: result, previous: nil, profile: profile)
+        let actual = summary.chronologicalAge
+        return VStack(spacing: 8) {
+
+               NoopAgeOrb(
+                   age: age,
+                   chronologicalAge: actual,
+                   confidence: result.confidence
+               )
+               .frame(maxWidth: 360)
+               .frame(maxWidth: .infinity)
+            }
+    }
+
+    private func heroMetric(_ value: String, _ label: String, _ color: Color) -> some View {
+        VStack(spacing: 2) {
+            Text(value).font(StrandFont.number(24)).foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.7)
+            Text(label).strandOverline()
+        }.accessibilityElement(children: .combine)
+    }
+
+    private func calibratingHero(_ result: NoopAgeWeekResult) -> some View {
+        let eligibility = NoopAgeEngine.paceEligibility(days: healthspanDays, cutoff: result.weekEndDay)
+        return SolidHealthMonitorCard(padding: 18) {
+            VStack(spacing: 10) {
+                NoopAgeOrb(age: Double(profile.age), chronologicalAge: Double(profile.age), confidence: .calibrating,
+                           neutralPreview: true, labelMode: .hidden)
+                    .frame(maxWidth: 340).frame(maxWidth: .infinity)
+                Text("Building your Healthspan baseline").font(StrandFont.title2).foregroundStyle(StrandPalette.textPrimary)
+                Text(HealthspanPacePresentation.calibrationDetail(eligibility))
+                    .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary).multilineTextAlignment(.center)
+            }
+        }
+    }
+
+    private func interpretationCard(_ result: NoopAgeWeekResult) -> some View {
+        let ranked = HealthspanAttribution.ranked(result: result, chronologicalAge: chronologicalAge(for: result.weekEndDay))
+        return SolidHealthMonitorCard(padding: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(HealthspanAttribution.headline(result: result)).font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                Text(HealthspanAttribution.interpretation(ranked: ranked, confidence: result.confidence))
+                    .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary).fixedSize(horizontal: false, vertical: true)
+                if result.confidence != .established {
+                    Text("These estimates will become more reliable as additional valid days are collected.")
+                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                }
+            }
+        }
     }
 
     private var missingAge: some View {
@@ -215,6 +278,60 @@ struct HealthspanView: View {
         }
     }
 
+    private func contributorBreakdown(_ result: NoopAgeWeekResult) -> some View {
+        let actual = chronologicalAge(for: result.weekEndDay)
+        let ranked = HealthspanAttribution.ranked(result: result, chronologicalAge: actual)
+        let grouped = Dictionary(grouping: ranked.filter { !$0.isCombined }, by: \.domain)
+        return VStack(alignment: .leading, spacing: 16) {
+            SectionHeader("What Shapes Your Noop Age", overline: "180-day estimated age impact",
+                          trailing: result.confidence.rawValue.capitalized)
+            Text("Negative values contribute toward a younger Noop Age. Positive values contribute toward an older Noop Age.")
+                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+            ForEach(HealthspanAttribution.domainOrder.filter { grouped[$0] != nil }, id: \.self) { domain in
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text(HealthspanAttribution.domainName(domain)).font(StrandFont.headline)
+                        Spacer()
+                        Text(HealthspanAttribution.years(grouped[domain, default: []].reduce(0) { $0 + $1.impact }))
+                            .font(StrandFont.number(16)).foregroundStyle(HealthspanAttribution.color(grouped[domain, default: []].reduce(0) { $0 + $1.impact }))
+                    }
+                    ForEach(grouped[domain, default: []]) { item in
+                        HealthspanContributorCard(item: item, isExpanded: expandedContributor == item.id) {
+                            withAnimation(StrandMotion.interactive) { expandedContributor = expandedContributor == item.id ? nil : item.id }
+                        }
+                    }
+                }
+            }
+            if let combined = ranked.first(where: \.isCombined), abs(combined.impact) >= 0.05 {
+                SolidHealthMonitorCard(padding: 16) {
+                    HStack { Text("Combined model effects").font(StrandFont.subhead); Spacer(); Text(HealthspanAttribution.years(combined.impact)).font(StrandFont.number(16)).foregroundStyle(HealthspanAttribution.color(combined.impact)) }
+                    Text("Confidence weighting, smoothing, domain interaction and safety caps that cannot be assigned honestly to one metric.")
+                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                }
+            }
+            Divider().overlay(StrandPalette.hairline)
+            HStack {
+                Text("Estimated total").font(StrandFont.headline)
+                Spacer()
+                Text(HealthspanAttribution.years(ranked.reduce(0) { $0 + $1.impact }))
+                    .font(StrandFont.number(20)).foregroundStyle(HealthspanAttribution.color(ranked.reduce(0) { $0 + $1.impact }))
+            }
+        }
+    }
+
+    private func calibrationContributors(_ result: NoopAgeWeekResult) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader("What Shapes Your Noop Age", overline: "Calibrating")
+            ForEach(["Sleep", "Activity", "Cardiovascular fitness"], id: \.self) { title in
+                SolidHealthMonitorCard(padding: 16) {
+                    HStack { Text(title).font(StrandFont.headline); Spacer(); Image(systemName: "clock").foregroundStyle(StrandPalette.textTertiary) }
+                    Text("Contribution will become available once enough valid days establish this baseline.")
+                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                }
+            }
+        }
+    }
+
     private func contributorCard(_ result: NoopAgeWeekResult) -> some View {
         let availability = HealthspanContributorAvailability.resolve(result)
         let sorted = availability == .valid
@@ -269,15 +386,16 @@ struct HealthspanView: View {
             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
     }
 
-    private func load() async {
+    private func load(identity: HealthspanSnapshotIdentity? = nil) async {
+        let requestedIdentity = identity ?? snapshotIdentity
         let snapshot = await repo.noopAgeSnapshot(profile: profile)
+        guard !Task.isCancelled, requestedIdentity == snapshotIdentity else { return }
         healthspanDays = snapshot.observations
         history = snapshot.results
         selectedIndex = HealthspanSelection.newestIndex(count: history.count)
     }
     private func chronologicalAge(for day: String) -> Double? {
-        guard let date = Self.parser.date(from: day) else { return profile.ageIsExplicit ? Double(profile.age) : nil }
-        return profile.chronologicalAge(on: date)
+        HealthspanResultSummary.chronologicalAge(for: day, profile: profile)
     }
     private func weekLabel(_ day: String) -> String {
         guard let end = Self.parser.date(from: day), let start = Calendar.current.date(byAdding: .day, value: -6, to: end) else { return day }
@@ -291,6 +409,157 @@ struct HealthspanView: View {
     }
     private static let parser: DateFormatter = { let f = DateFormatter(); f.locale = .init(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f }()
     private static let label: DateFormatter = { let f = DateFormatter(); f.locale = .current; f.setLocalizedDateFormatFromTemplate("MMM d"); return f }()
+}
+
+enum HealthspanAttribution {
+    struct Item: Identifiable, Equatable {
+        let id: String
+        let label: String
+        let domain: NoopAgeDomain
+        let impact: Double
+        let paceChange: Double?
+        let isCombined: Bool
+    }
+
+    static let domainOrder: [NoopAgeDomain] = [.sleep, .fitness, .activity, .body]
+
+    static func ranked(result: NoopAgeWeekResult, chronologicalAge: Double?) -> [Item] {
+        let domainCount = max(1, domainOrder.filter { domain in result.ageContributors.contains { $0.domain == domain } }.count)
+        let paceByKey = Dictionary(uniqueKeysWithValues: result.contributors.map { ($0.key, $0.recentAdjustmentYears) })
+        var items = result.ageContributors.map {
+            Item(id: $0.key, label: $0.label, domain: $0.domain,
+                 impact: $0.adjustmentYears / Double(domainCount), paceChange: paceByKey[$0.key] ?? nil,
+                 isCombined: false)
+        }
+        // Opportunity first, strongest helping signal second, then remaining absolute impacts.
+        items.sort {
+            if ($0.impact > 0) != ($1.impact > 0) { return $0.impact > 0 }
+            return abs($0.impact) > abs($1.impact)
+        }
+        if let age = result.noopAge, let chronologicalAge {
+            let target = age - chronologicalAge
+            let remainder = target - items.reduce(0) { $0 + $1.impact }
+            items.append(Item(id: "combined", label: "Combined model effects", domain: .body,
+                              impact: remainder, paceChange: nil, isCombined: true))
+        }
+        return items
+    }
+
+    static func headline(result: NoopAgeWeekResult) -> String {
+        guard result.noopAge != nil else { return "Building your baseline" }
+        if result.confidence != .established { return "Your estimate is taking shape" }
+        guard let pace = result.paceOfAging else { return "A stable overall picture" }
+        if pace < 0.95 { return "Strong overall trend" }
+        if pace > 1.05 { return "A clear opportunity to improve" }
+        return "A stable overall picture"
+    }
+
+    static func interpretation(ranked: [Item], confidence: NoopAgeConfidence) -> String {
+        let metrics = ranked.filter { !$0.isCombined }
+        let helping = metrics.filter { $0.impact < -0.05 }.min { $0.impact < $1.impact }
+        let holding = metrics.filter { $0.impact > 0.05 }.max { $0.impact < $1.impact }
+        var parts = ["Your available habits and health signals are currently influencing your estimated Noop Age."]
+        if let helping { parts.append("\(helping.label) is the strongest younger-associated contribution.") }
+        if let holding { parts.append("\(holding.label) is the clearest opportunity for improvement.") }
+        if helping == nil && holding == nil { parts.append("No single measured contributor is having a large effect right now.") }
+        return parts.joined(separator: " ")
+    }
+
+    static func years(_ value: Double) -> String { String(format: "%+.1f years", value) }
+    static func color(_ value: Double) -> Color {
+        if value < -0.05 { return StrandPalette.statusPositive }
+        if value > 0.05 { return StrandPalette.statusWarning }
+        return StrandPalette.textTertiary
+    }
+    static func domainName(_ domain: NoopAgeDomain) -> String {
+        switch domain { case .sleep: return "Sleep"; case .fitness: return "Fitness & Recovery"; case .activity: return "Daily Activity"; case .body: return "Body Composition" }
+    }
+}
+
+private struct HealthspanContributorCard: View {
+    let item: HealthspanAttribution.Item
+    let isExpanded: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        SolidHealthMonitorCard(padding: 16) {
+            Button(action: toggle) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(item.label.uppercased()).strandOverline()
+                        Spacer()
+                        Text(HealthspanAttribution.years(item.impact)).font(StrandFont.number(16)).foregroundStyle(HealthspanAttribution.color(item.impact))
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down").foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    impactBar
+                    HStack {
+                        Text(item.impact < -0.05 ? "Helping" : item.impact > 0.05 ? "Needs attention" : "Near neutral")
+                            .font(StrandFont.footnote.weight(.semibold)).foregroundStyle(HealthspanAttribution.color(item.impact))
+                        Spacer()
+                        if let pace = item.paceChange, abs(pace) >= 0.03 {
+                            Text(pace < 0 ? "Recent trend improving" : "Recent trend declining")
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        }
+                    }
+                    if isExpanded { expandedContent }
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.label), estimated impact \(HealthspanAttribution.years(item.impact))")
+        .accessibilityHint(isExpanded ? "Collapses details" : "Expands explanation and recommendation")
+    }
+
+    private var impactBar: some View {
+        GeometryReader { geo in
+            let cap = 2.0
+            let fraction = CGFloat(max(0, min(1, (cap - item.impact) / (cap * 2))))
+            ZStack(alignment: .leading) {
+                HStack(spacing: 2) {
+                    Rectangle().fill(StrandPalette.statusWarning.opacity(0.85))
+                    Rectangle().fill(StrandPalette.statusWarning.opacity(0.40))
+                    Rectangle().fill(StrandPalette.textTertiary.opacity(0.35))
+                    Rectangle().fill(StrandPalette.statusPositive.opacity(0.35))
+                    Rectangle().fill(StrandPalette.statusPositive.opacity(0.8))
+                }.clipShape(Capsule())
+                Rectangle().fill(StrandPalette.textPrimary).frame(width: 2, height: 17)
+                    .offset(x: max(0, min(geo.size.width - 2, geo.size.width * fraction)))
+            }
+        }.frame(height: 10)
+        .overlay(alignment: .top) { HStack { Text("Older"); Spacer(); Text("Neutral"); Spacer(); Text("Younger") }.font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary).offset(y: 13) }
+        .padding(.bottom, 14)
+    }
+
+    private var expandedContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider().overlay(StrandPalette.hairline)
+            Text(overview).font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary).fixedSize(horizontal: false, vertical: true)
+            Text("RECOMMENDATION").strandOverline()
+            Text(recommendation).font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var overview: String {
+        if abs(item.impact) < 0.05 { return "This metric is close to the model's neutral reference and currently has a limited estimated age impact." }
+        return item.impact < 0
+            ? "Your longer-term \(item.label.lowercased()) signal is currently associated with a younger Noop Age estimate."
+            : "Your longer-term \(item.label.lowercased()) signal is currently associated with an older Noop Age estimate."
+    }
+
+    private var recommendation: String {
+        switch item.id {
+        case "sleep_duration": return "Increase sleep gradually and protect a consistent wake time; avoid reacting aggressively to a single short night."
+        case "sleep_consistency": return "Keep sleep and wake timing reasonably consistent across the week."
+        case "steps": return "Build daily movement progressively with a level that is sustainable for you."
+        case "zone_1_3": return "Maintain regular moderate cardiovascular activity and increase volume gradually."
+        case "zone_4_5": return "Use higher-intensity work selectively and allow adequate recovery between demanding sessions."
+        case "strength": return "Maintain consistent resistance training with recoverable volume and sound technique."
+        case "rhr": return "Prioritize recovery fundamentals and review the longer trend rather than one isolated reading."
+        case "vo2max": return "Consistent aerobic training can support this fitness signal; progress conservatively."
+        case "lean_mass": return "Support strength with adequate recovery and nutrition; this is a broad wellness estimate, not a diagnosis."
+        default: return "Keep collecting valid data and focus on sustainable habits rather than short-term fluctuations."
+        }
+    }
 }
 
 private struct ContributorImpactRow: View {
@@ -340,22 +609,32 @@ private struct ContributorImpactRow: View {
     }
 }
 
-private enum HealthspanOrbPalette {
+enum HealthspanOrbPalette {
     static let improving = Color(red: 0.02, green: 0.84, blue: 0.50)
     static let neutral = Color(red: 0.95, green: 0.65, blue: 0.18)
     static let worsening = Color(red: 1.00, green: 0.38, blue: 0.10)
+    static let calibrating = Color(red: 0.55, green: 0.59, blue: 0.64)
 }
 
-private struct NoopAgeOrb: View {
+struct NoopAgeOrb: View {
+    enum LabelMode {
+        case full
+        case ageOnly
+        case hidden
+    }
+
     let age: Double
     let chronologicalAge: Double
     let confidence: NoopAgeConfidence
+    var neutralPreview = false
+    var labelMode: LabelMode = .full
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var appearedAt = Date()
     @State private var isVisible = false
 
     private var tint: Color {
+        if neutralPreview { return HealthspanOrbPalette.calibrating }
         let delta = age - chronologicalAge
         switch HealthspanDirection.classify(delta: delta) {
         case .improving: return HealthspanOrbPalette.improving
@@ -474,7 +753,7 @@ private struct NoopAgeOrb: View {
 
                         let twinkle =
                             0.90
-                            + 0.10 * sin(t * 0.9 + seed * 1.73)
+                            + 0.10 * sin(t * 1.65 + seed * 1.73)
 
                         opacity *= twinkle
 
@@ -496,11 +775,18 @@ private struct NoopAgeOrb: View {
                         style: StrokeStyle(lineWidth: 1.1, lineCap: .round)
                     )
                 }
-                VStack(spacing: 4) {
-                    Text(String(format: "%.1f", age)).font(StrandFont.display(50)).foregroundStyle(.white)
-                    Text("NOOP AGE").strandOverline().foregroundStyle(.white.opacity(0.72))
-                    Text(deltaText).font(StrandFont.headline).foregroundStyle(tint)
-                    Text(confidence.rawValue.capitalized).font(StrandFont.footnote).foregroundStyle(.white.opacity(0.55))
+                if labelMode == .full {
+                    VStack(spacing: 4) {
+                        Text(String(format: "%.1f", age)).font(StrandFont.display(50)).foregroundStyle(.white)
+                        Text("NOOP AGE").strandOverline().foregroundStyle(.white.opacity(0.72))
+                        Text(deltaText).font(StrandFont.headline).foregroundStyle(tint)
+                        Text(confidence.rawValue.capitalized).font(StrandFont.footnote).foregroundStyle(.white.opacity(0.55))
+                    }
+                } else if labelMode == .ageOnly {
+                    Text(String(format: "%.1f", age))
+                        .font(StrandFont.display(38))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
                 }
             }
         }
@@ -511,7 +797,7 @@ private struct NoopAgeOrb: View {
         }
         .onDisappear { isVisible = false }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Noop Age \(String(format: "%.1f", age)), \(deltaText), confidence \(confidence.rawValue)")
+        .accessibilityLabel(neutralPreview ? "Noop Age is calibrating" : "Noop Age \(String(format: "%.1f", age)), \(deltaText), confidence \(confidence.rawValue)")
     }
 
     private var deltaText: String {

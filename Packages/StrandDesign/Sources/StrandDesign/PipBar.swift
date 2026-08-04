@@ -231,7 +231,7 @@ public struct PipBarRow: View {
 
 #if DEBUG
 #Preview("PipBar") {
-    ScrollView {
+    ScrollView(showsIndicators: false) {
         VStack(alignment: .leading, spacing: 24) {
             Group {
                 Text("Values").strandOverline()

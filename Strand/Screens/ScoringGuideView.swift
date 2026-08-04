@@ -85,7 +85,7 @@ struct ScoringGuideView: View {
                 .background(StrandPalette.surfaceRaised)
             Divider().overlay(StrandPalette.hairline)
             ScrollViewReader { proxy in
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                         introCard
                         scoreCard(.charge,

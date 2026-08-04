@@ -393,7 +393,7 @@ struct CoachView: View {
                 emptyTranscript
             } else {
                 ScrollViewReader { proxy in
-                    ScrollView {
+                    ScrollView(showsIndicators: false) {
                         VStack(alignment: .leading, spacing: 12) {
                             ForEach(coach.messages) { message in
                                 bubble(message).id(message.id)

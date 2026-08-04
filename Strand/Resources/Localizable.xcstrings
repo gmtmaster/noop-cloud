@@ -2474,6 +2474,16 @@
         }
       }
     },
+    "%@ heart rate %lld beats per minute, zone %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ heart rate %2$lld beats per minute, zone %3$lld"
+          }
+        }
+      }
+    },
     "%@ in bed" : {
       "localizations" : {
         "de" : {
@@ -3726,6 +3736,16 @@
         }
       }
     },
+    "%@ workout%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ workout%2$@"
+          }
+        }
+      }
+    },
     "%@ wrist alerts" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -4300,6 +4320,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@，相關性 %@，%lld 天"
+          }
+        }
+      }
+    },
+    "%@, estimated impact %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, estimated impact %2$@"
           }
         }
       }
@@ -6715,6 +6745,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld bpm"
+          }
+        }
+      }
+    },
+    "%lld bpm · Zone %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld bpm · Zone %2$lld"
           }
         }
       }
@@ -9736,6 +9776,7 @@
       }
     },
     "%lld sessions" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -11067,6 +11108,9 @@
           }
         }
       }
+    },
+    "%lld×" : {
+
     },
     "%lldh" : {
       "localizations" : {
@@ -13362,6 +13406,7 @@
       }
     },
     "1 session" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -14983,6 +15028,9 @@
         }
       }
     },
+    "180-day estimated age impact" : {
+
+    },
     "365 DAYS" : {
       "localizations" : {
         "de" : {
@@ -16267,9 +16315,6 @@
 
     },
     "A limiting input today" : {
-
-    },
-    "A locally-adopted Oura ring, in beta." : {
 
     },
     "A logged caffeine is past your bedtime cutoff. It may still be on board and keep you up. Just a timing heads-up." : {
@@ -18080,6 +18125,9 @@
         }
       }
     },
+    "About Healthspan" : {
+
+    },
     "About in sync with your schedule" : {
       "localizations" : {
         "de" : {
@@ -19079,6 +19127,9 @@
         }
       }
     },
+    "Activities" : {
+
+    },
     "Activities are synchronizing…" : {
 
     },
@@ -19199,6 +19250,7 @@
       }
     },
     "Activity Breakdown" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -21151,6 +21203,9 @@
           }
         }
       }
+    },
+    "ALL ACTIVITIES" : {
+
     },
     "All caught up" : {
       "localizations" : {
@@ -25640,6 +25695,7 @@
       }
     },
     "avg %lld" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -27796,6 +27852,7 @@
       }
     },
     "Beats per minute across the session" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -31582,6 +31639,9 @@
         }
       }
     },
+    "Building your Healthspan baseline" : {
+
+    },
     "Building your typical %@ baseline." : {
 
     },
@@ -32639,6 +32699,7 @@
       }
     },
     "By sport" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -36590,6 +36651,9 @@
         }
       }
     },
+    "Choose an activity and begin tracking" : {
+
+    },
     "Choose CSV…" : {
 
     },
@@ -38767,6 +38831,9 @@
         }
       }
     },
+    "Collapses details" : {
+
+    },
     "Collect a few logged intervention days before reading the effect. Baseline and imported metrics stay in place." : {
       "localizations" : {
         "de" : {
@@ -38812,6 +38879,9 @@
           }
         }
       }
+    },
+    "Combined model effects" : {
+
     },
     "Coming soon" : {
       "extractionState" : "stale",
@@ -39370,6 +39440,9 @@
           }
         }
       }
+    },
+    "Confidence weighting, smoothing, domain interaction and safety caps that cannot be assigned honestly to one metric." : {
+
     },
     "Confidence: %@" : {
 
@@ -41434,6 +41507,9 @@
         }
       }
     },
+    "Contribution will become available once enough valid days establish this baseline." : {
+
+    },
     "Contributors" : {
       "localizations" : {
         "de" : {
@@ -43232,6 +43308,7 @@
 
     },
     "Current physiology, strap trust, and session controls in one working view." : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -43276,6 +43353,9 @@
           }
         }
       }
+    },
+    "Current physiology, telemetry, and developer diagnostics" : {
+
     },
     "CURRENT STATE" : {
 
@@ -44362,6 +44442,9 @@
           }
         }
       }
+    },
+    "Data is building up" : {
+
     },
     "Data kept" : {
 
@@ -47380,6 +47463,9 @@
         }
       }
     },
+    "Distribution" : {
+
+    },
     "Don't ask about donations again" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -48989,6 +49075,9 @@
           }
         }
       }
+    },
+    "Duration-weighted across sessions with available zone data." : {
+
     },
     "During quiet, still, resting windows, NOOP looks at the timing between your heartbeats (R-R intervals) and draws their Poincaré scatter. From the cloud it computes its short and long axes (SD1, SD2) and a few plain regularity numbers. Movement and noisy windows are skipped, not shown. These are transparent, published descriptive statistics: a picture of your timing, never a clinical measurement." : {
       "localizations" : {
@@ -51415,6 +51504,9 @@
         }
       }
     },
+    "End and save workout" : {
+
+    },
     "End session" : {
 
     },
@@ -51464,7 +51556,11 @@
         }
       }
     },
+    "End this workout?" : {
+
+    },
     "End workout" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -52622,6 +52718,9 @@
         }
       }
     },
+    "Estimated total" : {
+
+    },
     "Estimated vs your phone" : {
       "localizations" : {
         "de" : {
@@ -53159,6 +53258,7 @@
       }
     },
     "Every session, threaded together." : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -53748,6 +53848,9 @@
           }
         }
       }
+    },
+    "Expands explanation and recommendation" : {
+
     },
     "Experiment behaviour" : {
       "localizations" : {
@@ -57152,6 +57255,9 @@
         }
       }
     },
+    "FREQUENT" : {
+
+    },
     "Fri" : {
       "localizations" : {
         "de" : {
@@ -57455,6 +57561,9 @@
           }
         }
       }
+    },
+    "From recorded data" : {
+
     },
     "From strap HR" : {
       "localizations" : {
@@ -59020,6 +59129,9 @@
         }
       }
     },
+    "GPS" : {
+
+    },
     "Grab this when you report a bug. It tells me what the app saw." : {
       "localizations" : {
         "de" : {
@@ -60042,10 +60154,16 @@
         }
       }
     },
+    "HEALTH MONITOR" : {
+
+    },
     "Health records and history" : {
 
     },
     "Healthspan" : {
+
+    },
+    "HEALTHSPAN" : {
 
     },
     "Heart" : {
@@ -60502,6 +60620,7 @@
       }
     },
     "Heart rate %lld beats per minute" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -60560,6 +60679,7 @@
       }
     },
     "Heart rate during %@" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -60605,7 +60725,11 @@
         }
       }
     },
+    "Heart rate during workout" : {
+
+    },
     "Heart rate not available" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -61350,6 +61474,9 @@
           }
         }
       }
+    },
+    "Helping" : {
+
     },
     "HELPING" : {
 
@@ -70245,6 +70372,9 @@
         }
       }
     },
+    "last 6 months" : {
+
+    },
     "Last 6 months" : {
       "localizations" : {
         "de" : {
@@ -70382,6 +70512,9 @@
           }
         }
       }
+    },
+    "LAST 7 DAYS" : {
+
     },
     "Last 14 nights" : {
       "extractionState" : "stale",
@@ -71814,6 +71947,7 @@
       }
     },
     "last year" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -72196,6 +72330,9 @@
           }
         }
       }
+    },
+    "LATEST HEART RATE" : {
+
     },
     "Latest reading" : {
       "localizations" : {
@@ -73598,6 +73735,9 @@
           }
         }
       }
+    },
+    "LIVE HEART RATE" : {
+
     },
     "Live heart rate already works on a WHOOP 5/MG strap. These probes go further and try to coax more out of it. They are guesses, off by default, and only ever touch a 5/MG strap, WHOOP 4.0 is never affected." : {
       "extractionState" : "stale",
@@ -81060,6 +81200,7 @@
 
     },
     "Most Active" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -82431,6 +82572,9 @@
         }
       }
     },
+    "Near neutral" : {
+
+    },
     "needs a recent day" : {
       "localizations" : {
         "de" : {
@@ -82568,6 +82712,9 @@
           }
         }
       }
+    },
+    "Needs attention" : {
+
     },
     "needs baseline + logged days" : {
       "localizations" : {
@@ -82949,6 +83096,9 @@
           }
         }
       }
+    },
+    "Negative values contribute toward a younger Noop Age. Positive values contribute toward an older Noop Age." : {
+
     },
     "negligible" : {
       "localizations" : {
@@ -88252,6 +88402,9 @@
       }
     },
     "Noop Age is a deterministic, WHOOP-inspired functional fitness comparison built from your available data. It is not WHOOP’s formula, a biological age, diagnosis, lifespan estimate, or disease-risk score." : {
+
+    },
+    "Noop Age is calibrating" : {
 
     },
     "Noop Age is calibrating. Keep wearing your device through sleep and daily activity so enough reliable coverage can build." : {
@@ -93902,6 +94055,9 @@
         }
       }
     },
+    "Older" : {
+
+    },
     "Older backups beyond this many are pruned, oldest first (≈ that many days). If data ever corrupts, restore the newest." : {
 
     },
@@ -95191,6 +95347,7 @@
 
     },
     "Open live view" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -95626,6 +95783,12 @@
           }
         }
       }
+    },
+    "Opens Health Monitor" : {
+
+    },
+    "Opens Healthspan" : {
+
     },
     "Opens Sleep" : {
 
@@ -97508,6 +97671,9 @@
       }
     },
     "Pace of Aging" : {
+
+    },
+    "PACE OF AGING" : {
 
     },
     "Pair and manage the bands NOOP reads from." : {
@@ -104785,6 +104951,12 @@
     "Recent synced recovery, sleep, effort, and workouts." : {
 
     },
+    "Recent trend declining" : {
+
+    },
+    "Recent trend improving" : {
+
+    },
     "Recharge your WHOOP before tonight." : {
       "localizations" : {
         "de" : {
@@ -104922,6 +105094,9 @@
           }
         }
       }
+    },
+    "RECOMMENDATION" : {
+
     },
     "RECOMMENDED BEDTIME" : {
 
@@ -105522,6 +105697,7 @@
       }
     },
     "RECORDING WORKOUT" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -110389,7 +110565,6 @@
       }
     },
     "Resume" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -110483,6 +110658,9 @@
           }
         }
       }
+    },
+    "Return to Workout" : {
+
     },
     "Reveal in Finder" : {
       "extractionState" : "stale",
@@ -114645,6 +114823,9 @@
         }
       }
     },
+    "Segment" : {
+
+    },
     "Select" : {
 
     },
@@ -114652,6 +114833,12 @@
 
     },
     "SELECTED DAY" : {
+
+    },
+    "Selected range" : {
+
+    },
+    "Selected time" : {
 
     },
     "Self-tracking, not a clinical assessment. If low mood persists, talk to a professional. You deserve support." : {
@@ -115199,6 +115386,9 @@
         }
       }
     },
+    "Session Insight" : {
+
+    },
     "Session live" : {
       "localizations" : {
         "de" : {
@@ -115348,6 +115538,9 @@
           }
         }
       }
+    },
+    "Session timeline" : {
+
     },
     "Sessions" : {
       "localizations" : {
@@ -115992,6 +116185,7 @@
       }
     },
     "Share of imported zone time, duration-weighted across sessions (approximate)." : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -122145,6 +122339,9 @@
         }
       }
     },
+    "Start Workout" : {
+
+    },
     "Started %@ · testing %@" : {
       "localizations" : {
         "de" : {
@@ -123914,6 +124111,9 @@
         }
       }
     },
+    "STRAIN" : {
+
+    },
     "strain (0–21)" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -123960,6 +124160,9 @@
           }
         }
       }
+    },
+    "Strain & Recovery" : {
+
     },
     "Strain nudges and your smart alarm tap your wrist the moment they fire." : {
       "localizations" : {
@@ -125453,6 +125656,7 @@
       }
     },
     "Stress · M" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -130957,6 +131161,9 @@
         }
       }
     },
+    "These estimates will become more reliable as additional valid days are collected." : {
+
+    },
     "These power your heart-rate zones, calorie estimates and recovery baselines. Keep them accurate." : {
       "localizations" : {
         "de" : {
@@ -134616,6 +134823,7 @@
       }
     },
     "Total Calories" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -134674,6 +134882,7 @@
       }
     },
     "Total Distance" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -134732,6 +134941,7 @@
       }
     },
     "Total Time" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -134790,6 +135000,7 @@
       }
     },
     "Total Workouts" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -135130,6 +135341,9 @@
           }
         }
       }
+    },
+    "Training volume, intensity, and recent sessions" : {
+
     },
     "Treadmill, indoor bike, rower or cross-trainer (Bluetooth FTMS)" : {
       "localizations" : {
@@ -138354,6 +138568,9 @@
         }
       }
     },
+    "VITAL SIGNS" : {
+
+    },
     "Vitality" : {
       "localizations" : {
         "de" : {
@@ -138940,6 +139157,9 @@
         }
       }
     },
+    "vs. actual age" : {
+
+    },
     "W" : {
       "localizations" : {
         "de" : {
@@ -139262,6 +139482,9 @@
         }
       }
     },
+    "Waiting for a fresh sample" : {
+
+    },
     "Waiting for a live heartbeat…" : {
       "localizations" : {
         "de" : {
@@ -139353,6 +139576,12 @@
           }
         }
       }
+    },
+    "Waiting for heart-rate data" : {
+
+    },
+    "WAITING FOR HEART-RATE DATA" : {
+
     },
     "Waiting for R-R" : {
       "localizations" : {
@@ -141843,9 +142072,6 @@
         }
       }
     },
-    "What each band captures (and what NOOP uses it for)." : {
-
-    },
     "What Is Moving Your Noop Age" : {
 
     },
@@ -142274,6 +142500,9 @@
           }
         }
       }
+    },
+    "What Shapes Your Noop Age" : {
+
     },
     "What should today's training look like?" : {
       "localizations" : {
@@ -145554,6 +145783,7 @@
       }
     },
     "Workout" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -145598,6 +145828,12 @@
           }
         }
       }
+    },
+    "Workout active" : {
+
+    },
+    "Workout continues without live HR" : {
+
     },
     "Workout file (GPX / TCX / FIT)" : {
       "localizations" : {
@@ -145645,6 +145881,9 @@
         }
       }
     },
+    "Workout in progress" : {
+
+    },
     "WORKOUT IN PROGRESS" : {
       "localizations" : {
         "de" : {
@@ -145690,6 +145929,9 @@
           }
         }
       }
+    },
+    "Workout paused" : {
+
     },
     "Workout saved" : {
       "extractionState" : "stale",
@@ -147400,6 +147642,9 @@
         }
       }
     },
+    "Younger" : {
+
+    },
     "Your Apple Watch as a device" : {
       "localizations" : {
         "de" : {
@@ -147825,6 +148070,9 @@
           }
         }
       }
+    },
+    "Your current health and long-term trajectory" : {
+
     },
     "Your current strap" : {
       "localizations" : {
@@ -150065,7 +150313,11 @@
         }
       }
     },
+    "Zone %lld" : {
+
+    },
     "ZONE %lld" : {
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -150159,6 +150411,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "區間 %1$lld · %2$@"
+          }
+        }
+      }
+    },
+    "ZONE %lld · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "ZONE %1$lld · %2$@"
           }
         }
       }
@@ -150263,6 +150525,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "區間 %1$lld 百分之 %2$lld"
+          }
+        }
+      }
+    },
+    "Zone %lld was your dominant intensity, accounting for %lld%% of recorded zone time." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Zone %1$lld was your dominant intensity, accounting for %2$lld%% of recorded zone time."
           }
         }
       }

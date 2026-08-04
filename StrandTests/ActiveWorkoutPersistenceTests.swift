@@ -55,6 +55,14 @@ final class ActiveWorkoutPersistenceTests: XCTestCase {
         XCTAssertEqual(decoded!.sport, "Traditional Strength Training")
     }
 
+    func testPausedSessionRoundTripsWithoutLosingElapsedState() {
+        var original = snapshot(sport: "Stair Climber")
+        original.pausedAtSec = 1_700_000_300
+        original.pausedDurationS = 42
+        let decoded = ActiveWorkoutPersistence.decode(ActiveWorkoutPersistence.encode(original))
+        XCTAssertEqual(decoded, original)
+    }
+
     // MARK: - UserDefaults store / load / clear
 
     func testStoreLoadClearRoundTrip() {

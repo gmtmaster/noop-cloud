@@ -29,7 +29,7 @@ struct TermsGateView: View {
                 .padding(.top, 36)
                 .padding(.bottom, 22)
 
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
                         ForEach(Terms.points, id: \.0) { point in
                             VStack(alignment: .leading, spacing: 4) {

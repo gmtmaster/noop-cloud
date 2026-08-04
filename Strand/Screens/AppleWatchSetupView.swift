@@ -39,7 +39,7 @@ struct AppleWatchSetupView: View {
             header
                 .background(StrandPalette.surfaceRaised)
             Divider().overlay(StrandPalette.hairline)
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                     switch step {
                     case .intro:      introBody

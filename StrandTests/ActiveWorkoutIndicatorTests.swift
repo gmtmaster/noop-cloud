@@ -28,6 +28,14 @@ final class ActiveWorkoutIndicatorTests: XCTestCase {
         XCTAssertEqual(NavRouter.Destination(deepLinkKey: "activeWorkout"), .activeWorkout)
     }
 
+    func testLiveHeartRateFreshnessStates() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(LiveHeartRateDisplay.freshness(bpm: nil, lastSample: nil, now: now), .waiting)
+        XCTAssertEqual(LiveHeartRateDisplay.freshness(bpm: 145, lastSample: now.addingTimeInterval(-3), now: now), .fresh)
+        XCTAssertEqual(LiveHeartRateDisplay.freshness(bpm: 145, lastSample: now.addingTimeInterval(-20), now: now), .stale)
+        XCTAssertEqual(LiveHeartRateDisplay.freshness(bpm: nil, lastSample: now, now: now), .waiting)
+    }
+
     func testClearingRouteAndWorkoutStateLeavesNoStaleRequest() {
         let router = NavRouter()
         var workout = AppModel.ActiveWorkout(start: Date(timeIntervalSince1970: 200))
@@ -40,10 +48,13 @@ final class ActiveWorkoutIndicatorTests: XCTestCase {
         XCTAssertEqual(router.requestedDestination, .activeWorkout)
         XCTAssertEqual(ActiveWorkoutIndicatorModel.make(from: workout)?.sport, "Rowing")
 
-        // The shell clears the request once handled; the indicator clears once the workout ends. Neither
+        // The shell presents LiveWorkoutView directly and clears both routing fields once handled; the
+        // indicator clears once the workout ends. Neither
         // leaves a stale request that would re-route on the next appearance.
         router.requestedDestination = nil
+        router.presentActiveWorkout = false
         XCTAssertNil(router.requestedDestination)
+        XCTAssertFalse(router.presentActiveWorkout)
         XCTAssertNil(ActiveWorkoutIndicatorModel.make(from: nil))
     }
 

@@ -285,6 +285,7 @@ private struct RestorePickerSheet: View {
                 }
                 .accessibilityLabel(accessibilityLabel(snap))
             }
+            .scrollIndicators(.hidden)
             .navigationTitle("Choose a backup")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

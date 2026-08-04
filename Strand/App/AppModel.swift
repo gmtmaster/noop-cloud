@@ -113,6 +113,9 @@ final class AppModel: ObservableObject {
         var liveStrain: Double = 0
         var avgHr: Int = 0
         var peakHr: Int = 0
+        var pausedAt: Date?
+        var pausedDurationS: TimeInterval = 0
+        var isPaused: Bool { pausedAt != nil }
     }
     /// Illness/strain early-warning (recent RHR up + HRV down + skin-temp up vs baseline). nil = clear.
     @Published var healthAlert: String?
@@ -597,7 +600,9 @@ final class AppModel: ObservableObject {
                 samples: w.samples,
                 avgHr: w.avgHr,
                 peakHr: w.peakHr,
-                liveStrain: w.liveStrain))
+                liveStrain: w.liveStrain,
+                pausedAtSec: w.pausedAt.map { Int($0.timeIntervalSince1970) },
+                pausedDurationS: w.pausedDurationS))
     }
 
     /// If a manual workout was in flight when iOS killed the app, rebuild `activeWorkout` from the durable
@@ -612,7 +617,20 @@ final class AppModel: ObservableObject {
         w.avgHr = snap.avgHr
         w.peakHr = snap.peakHr
         w.liveStrain = snap.liveStrain
+        w.pausedAt = snap.pausedAtSec.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        w.pausedDurationS = snap.pausedDurationS ?? 0
         activeWorkout = w
+    }
+
+    func pauseWorkout() {
+        guard var w = activeWorkout, !w.isPaused else { return }
+        w.pausedAt = Date(); activeWorkout = w; persistActiveWorkout()
+    }
+
+    func resumeWorkout() {
+        guard var w = activeWorkout, let pausedAt = w.pausedAt else { return }
+        w.pausedDurationS += Date().timeIntervalSince(pausedAt)
+        w.pausedAt = nil; activeWorkout = w; persistActiveWorkout()
     }
 
     /// Finish the active workout: finalize the GPS route (#524), score the captured HR window, and save it
@@ -646,7 +664,8 @@ final class AppModel: ObservableObject {
             lastWorkout = nil
             return
         }
-        let end = Date()
+        let end = w.pausedAt ?? Date()
+        let activeDuration = max(0, end.timeIntervalSince(w.start) - w.pausedDurationS)
         let avg = samples.isEmpty ? nil
             : Int((Double(samples.map(\.bpm).reduce(0, +)) / Double(samples.count)).rounded())
         let peak = samples.map(\.bpm).max()
@@ -670,12 +689,13 @@ final class AppModel: ObservableObject {
         let startTs = Int(w.start.timeIntervalSince1970)
         let row = WorkoutRow(
             startTs: startTs, endTs: Int(end.timeIntervalSince1970),
-            sport: w.sport, source: "manual", durationS: end.timeIntervalSince(w.start),
+            sport: w.sport, source: "manual", durationS: activeDuration,
             energyKcal: kcal > 0 ? kcal : nil, avgHr: avg, maxHr: peak, strain: strain,
             // GPS distance rides the shared row so the Workouts list / detail show it like any other
             // distance workout; the polyline itself is persisted alongside in RouteStore (the shared
             // WorkoutRow has no route column on Apple). Only a real route sets distance , honest ",".
-            distanceM: route?.distanceM, zonesJSON: nil, notes: nil)
+            distanceM: route?.distanceM,
+            zonesJSON: WorkoutZones.derivedJSON(samples: samples, hrMax: Double(profile.hrMax)), notes: nil)
         // Persist the route polyline under the row's natural key so WorkoutDetailView can draw it. On
         // device only; mirrors the moments / sleepMarks UserDefaults persistence. (#524)
         if let route { RouteStore.store(route, startTs: startTs, sport: w.sport) }
@@ -686,7 +706,7 @@ final class AppModel: ObservableObject {
         // (not reset by stop), 0 for a non-GPS session. Zero-cost when off.
         emitWorkoutsTrace(WorkoutsTrace.sessionLine(
             event: "end", sportKey: WorkoutSource.traceSportKey(w.sport), hrSamples: samples.count,
-            durationSec: Int(end.timeIntervalSince(w.start)),
+            durationSec: Int(activeDuration),
             gpsPoints: wasGps ? gpsRecorder.pointCount : nil))
         buzz(loops: 2)
         Task { [weak self] in
@@ -702,7 +722,7 @@ final class AppModel: ObservableObject {
     /// from `ingestHR` on every fresh sample; a no-op when no workout is running. Recomputing strain
     /// over the growing window each sample is cheap at the ~1 Hz live-HR cadence.
     private func captureWorkoutSample() {
-        guard var w = activeWorkout, let hr = bpm else { return }
+        guard var w = activeWorkout, !w.isPaused, let hr = bpm else { return }
         w.samples.append(HRSample(ts: Int(Date().timeIntervalSince1970), bpm: hr))
         w.peakHr = max(w.peakHr, hr)
         w.avgHr = Int((Double(w.samples.map(\.bpm).reduce(0, +)) / Double(w.samples.count)).rounded())

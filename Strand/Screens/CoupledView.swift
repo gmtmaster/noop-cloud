@@ -514,7 +514,7 @@ struct CoupledView: View {
     @ViewBuilder
     private var chargeBreakdownSheet: some View {
         NavigationStack {
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                     let drivers = chargeDrivers
                     if drivers.isEmpty {

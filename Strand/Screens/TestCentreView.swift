@@ -697,7 +697,7 @@ private struct ReportReviewSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 NoopCard {
-                    ScrollView {
+                    ScrollView(showsIndicators: false) {
                         Text(preview.isEmpty ? String(localized: "(nothing to share yet)") : preview)
                             .font(StrandFont.mono)
                             .foregroundStyle(StrandPalette.textSecondary)

@@ -455,7 +455,7 @@ struct TrendsReportSheet: View {
 
     var body: some View {
         let rpt = report
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 VStack(alignment: .leading, spacing: NoopMetrics.space2) {
                     Text("Export trends report")
@@ -562,7 +562,7 @@ private func previewDays() -> [DailyMetric] {
 }
 
 #Preview("Trends report — page") {
-    ScrollView {
+    ScrollView(showsIndicators: false) {
         TrendsReportPage(
             report: TrendsReportData.report(for: .days90, days: previewDays(),
                                             today: Repository.localDayKey(Date())),

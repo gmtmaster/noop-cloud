@@ -26,6 +26,8 @@ enum ActiveWorkoutPersistence {
         var avgHr: Int
         var peakHr: Int
         var liveStrain: Double
+        var pausedAtSec: Int? = nil
+        var pausedDurationS: Double? = nil
     }
 
     /// The single `UserDefaults` key (JSON-encoded `Snapshot`). Namespaced like `moments`/`sleepMarks`.
@@ -53,7 +55,9 @@ enum ActiveWorkoutPersistence {
             samples: samples,
             avgHr: max(0, raw.avgHr),
             peakHr: max(0, raw.peakHr),
-            liveStrain: raw.liveStrain.isFinite ? max(0, raw.liveStrain) : 0
+            liveStrain: raw.liveStrain.isFinite ? max(0, raw.liveStrain) : 0,
+            pausedAtSec: raw.pausedAtSec,
+            pausedDurationS: raw.pausedDurationS.map { $0.isFinite ? max(0, $0) : 0 }
         )
     }
 

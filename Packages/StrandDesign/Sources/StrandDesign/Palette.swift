@@ -505,7 +505,7 @@ extension Color {
 
 #if DEBUG
 #Preview("Palette") {
-    ScrollView {
+    ScrollView(showsIndicators: false) {
         VStack(alignment: .leading, spacing: 24) {
             swatchRow("Surfaces", [
                 ("base", StrandPalette.surfaceBase),

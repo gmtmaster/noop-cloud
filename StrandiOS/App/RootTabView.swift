@@ -9,6 +9,7 @@ enum HealthNavigationContract {
     static let healthTabIndex = 1
     static let sleepIsContextual = true
     static let trendsRemainsSecondary = true
+    static let healthRoot = "HealthOverview"
 }
 
 /// Testable contract for the iPhone More information architecture. Primary-tab/contextual duplicates are
@@ -33,6 +34,8 @@ enum MoreInformationArchitecture {
 /// "More" list. Every screen is the same `StrandDesign`-built view the macOS app uses.
 struct RootTabView: View {
     @EnvironmentObject private var repo: Repository
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var live: LiveState
     /// Cross-screen navigation requests (e.g. Live → "Manage devices"). Devices isn't a tab — it lives
     /// behind the More list — so a request presents it as a sheet, matching the quick-action screens.
     @EnvironmentObject private var router: NavRouter
@@ -41,6 +44,7 @@ struct RootTabView: View {
     @State private var quickAction: QuickAction?
     /// Presents the Devices manager (pair / switch bands) when a screen asks the shell to open it.
     @State private var showDevices = false
+    @State private var showActiveWorkout = false
     /// A routed v5 pillar screen (Insights hub / Lab Book / fused record / Rhythm) presented as a sheet
     /// when a hub row deep-links to it via NavRouter. nil = closed.
     @State private var routedPillar: NavRouter.Destination?
@@ -80,7 +84,7 @@ struct RootTabView: View {
             // native TabView still drives content + per-tab nav state; only its bar is hidden.
             TabView(selection: $selectedTab) {
                 tab(TodayView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[0]), "square.grid.2x2").tag(0)
-                tab(HealthspanView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[1]), "heart.text.square.fill").tag(1)
+                tab(HealthOverviewView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[1]), "heart.text.square.fill").tag(1)
                 tab(FriendsView(), LocalizedStringKey(HealthNavigationContract.primaryTabs[2]), "person.2.fill").tag(2)
                 moreTab.tag(3)
             }
@@ -134,6 +138,12 @@ struct RootTabView: View {
         .sheet(isPresented: $showDevices) {
             devicesScreen
         }
+        // Active workout is a shell-level destination, not a Live Console destination. Presenting it
+        // directly prevents the old nested LiveView sheet + workout sheet stack.
+        .sheet(isPresented: $showActiveWorkout) {
+            LiveWorkoutView(onClose: { showActiveWorkout = false })
+                .environmentObject(model).environmentObject(live)
+        }
         // v5 pillar deep-links (Insights hub / Lab Book / fused record / Rhythm) present as a sheet in
         // their own nav stack — the same idiom the quick-action + Devices screens use on iPhone.
         .sheet(item: $routedPillar) { dest in
@@ -157,10 +167,8 @@ struct RootTabView: View {
                 routedPillar = .sleep
                 router.requestedDestination = nil
             case .activeWorkout:
-                // The Today active-workout indicator opens Live through the quick-action Live sheet; once
-                // it's up, LiveView consumes the one-shot `presentActiveWorkout` flag and presents the
-                // in-exercise screen. Calm sheet easing, matching the other quick-action presents.
-                withAnimation(Self.sheetEase) { quickAction = .live }
+                router.presentActiveWorkout = false
+                if model.activeWorkout != nil { showActiveWorkout = true }
                 router.requestedDestination = nil
             case .liveSession:
                 // Live Sessions is presented from Today's own Start entry (a cover, not a routed sheet),

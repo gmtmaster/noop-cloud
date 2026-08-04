@@ -123,6 +123,25 @@ final class NoopAgeEngineTests: XCTestCase {
         XCTAssertEqual(result(recent).rawAge!, result(ancient + recent).rawAge!, accuracy: 1e-12)
     }
 
+    func testAllRollingWindowsAdvanceAtConsecutiveDailyCutoffs() {
+        let days = (0..<220).map { day($0) }
+        let firstCutoff = add(start, 199)
+        let secondCutoff = add(start, 200)
+
+        let first = NoopAgeEngine.paceEligibility(days: days, cutoff: firstCutoff)
+        let second = NoopAgeEngine.paceEligibility(days: days, cutoff: secondCutoff)
+        XCTAssertEqual(first.recentWearDays, 30)
+        XCTAssertEqual(second.recentWearDays, 30)
+        XCTAssertEqual(second.olderWearDays, first.olderWearDays + 1)
+
+        let healthyWindow = (20..<200).map { day($0, healthy: true) }
+        let shiftedWindow = (21..<201).map { day($0, healthy: true) }
+        let oldOutsideWindow = day(20, healthy: false)
+        XCTAssertEqual(result(healthyWindow, cutoff: firstCutoff).rawAge,
+                       result([oldOutsideWindow] + shiftedWindow, cutoff: secondCutoff).rawAge,
+                       "the 180-day window must drop the day that rolls off its lower boundary")
+    }
+
     func testHistoricalSnapshotHasStrictNoLookAhead() {
         let prefix = (0..<90).map { day($0) }
         let cutoff = prefix.last!.day

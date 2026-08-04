@@ -254,7 +254,7 @@ private struct NoopMotionDemo: View {
     private let labels = ["SLEEP", "RECOVERY", "STRAIN", "HRV", "RHR", "CALORIES"]
 
     var body: some View {
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 28) {
 
                 // CountUpText — the big score ticks to a new value.

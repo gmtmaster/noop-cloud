@@ -186,7 +186,7 @@ struct LiquidTodayView: View {
     }()
 
     var body: some View {
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
                 // Scroll-offset probe at the very top (before padding), so its minY in the scroll's
                 // coordinate space reads the top OVERSCROLL: ~0 at rest, positive as you pull down.

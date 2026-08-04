@@ -249,6 +249,7 @@ struct RootView: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .scrollIndicators(.hidden)
                 // Hide the macOS system sidebar VIBRANCY material so the list rows sit on the same
                 // flat surfaceBase as the brand header above — without this the translucent list read
                 // as a lighter panel below an opaque black header strip (the "black upper" seam).

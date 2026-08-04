@@ -529,7 +529,7 @@ private func previewDigest() -> WeeklyDigest {
 }
 
 #Preview("Weekly digest – full") {
-    ScrollView {
+    ScrollView(showsIndicators: false) {
         WeeklyDigestContent(digest: previewDigest(), compact: false)
             .padding(24)
     }

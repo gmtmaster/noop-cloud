@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 import StrandDesign
 import StrandAnalytics
 import WhoopStore
@@ -47,6 +48,7 @@ struct WorkoutDetailView: View {
     /// True when the zones bar came from imported WHOOP percentages (vs derived from raw strap HR).
     @State private var zonesFromImport = false
     @State private var loaded = false
+    @State private var selectedHRDate: Date?
 
     /// The GPS route captured for this session on-device (#524), if any. Decoded from `RouteStore` by the
     /// row's natural key. nil = no route was recorded (honest — the map only shows when points exist).
@@ -59,20 +61,13 @@ struct WorkoutDetailView: View {
                        // zone-split chart and the effort card). The LazyVStack path builds the off-screen
                        // ones on demand — byte-identical layout — so a tall detail doesn't materialise the
                        // map + both charts before the header is even on screen.
-                       lazy: true,
-                       // The day-of-sky liquid backdrop, matching the Workouts list this detail opens from
-                       // and every other liquid screen. Fixed and full-bleed; it does not scroll. This
-                       // screen is presented in a sheet wrapped in a NavigationStack by WorkoutsView, so it
-                       // needs no extra macOS NavigationStack of its own.
-                       topBackground: liquidScaffoldSky()) {
+                       lazy: true) {
             headerCard
             statStrip
             routeCard
             hrCurveCard
             zonesCard
-            if let strain = row.strain {
-                effortCard(strain: strain)
-            }
+            insightsCard
         }
         .toolbar {
             // A Done affordance for the sheet on both platforms (iOS gets the grabber too).
@@ -128,7 +123,7 @@ struct WorkoutDetailView: View {
     // MARK: - Header
 
     private var headerCard: some View {
-        NoopCard(tint: StrandPalette.effortColor) {
+        SolidHealthMonitorCard(padding: 18) {
             HStack(alignment: .center, spacing: 14) {
                 Image(systemName: sportSymbol(row.sport))
                     .font(.system(size: 22, weight: .semibold))
@@ -161,6 +156,12 @@ struct WorkoutDetailView: View {
                      value: durationLabel(row.durationS),
                      caption: String(localized: "active"),
                      accent: StrandPalette.effortColor)
+            if let strain = row.strain {
+                StatTile(label: "Effort",
+                         value: UnitFormatter.effortDisplay(strain, scale: effortScale),
+                         caption: effortScale == .whoop ? "of 21" : "of 100",
+                         accent: StrandPalette.effortColor)
+            }
             StatTile(label: "Avg HR",
                      value: row.avgHr.map { "\($0)" } ?? "–",
                      caption: row.avgHr != nil ? "bpm" : nil,
@@ -255,27 +256,26 @@ struct WorkoutDetailView: View {
             let lo = max(0, (values.min() ?? 60) - 8)
             let hi = (values.max() ?? 180) + 8
             VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-                ChartCard(
-                    title: "HEART RATE",
-                    subtitle: String(localized: "Beats per minute across the session"),
-                    trailing: row.avgHr.map { String(localized: "avg \($0)") },
-                    tint: StrandPalette.effortColor
-                ) {
-                    TrendChart(
-                        points: hrPoints,
-                        gradient: StrandPalette.effortGradient,
-                        valueRange: lo...hi,
-                        showsArea: true,
-                        valueFormat: { String(localized: "\(Int($0.rounded())) bpm") },
-                        dateFormat: { Self.tooltipTime.string(from: $0) },
-                        accessibilityLabel: String(localized: "Heart rate during \(WorkoutSource.displaySport(row.sport))")
-                    )
-                } footer: {
-                    ChartFooter([
-                        ("Avg", row.avgHr.map { String(localized: "\($0) bpm") } ?? "–"),
-                        ("Peak", row.maxHr.map { String(localized: "\($0) bpm") } ?? String(localized: "\(Int((values.max() ?? 0).rounded())) bpm")),
-                        ("Low", String(localized: "\(Int((values.min() ?? 0).rounded())) bpm")),
-                    ])
+                SectionHeader("Heart Rate", overline: "Session timeline", trailing: row.avgHr.map { "avg \($0)" })
+                SolidHealthMonitorCard(padding: 16) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if let selected = selectedPoint {
+                            HStack {
+                                Text(Self.tooltipTime.string(from: selected.date)).font(StrandFont.subhead)
+                                Spacer()
+                                Text("\(Int(selected.value.rounded())) bpm · Zone \(zone(for: selected.value))")
+                                    .font(StrandFont.number(15)).foregroundStyle(StrandPalette.hrZoneColor(zone(for: selected.value)))
+                            }
+                        }
+                        WorkoutHeartRateChart(points: hrPoints, hrMax: Double(profile.hrMax),
+                                              valueRange: lo...hi, selection: $selectedHRDate)
+                            .frame(height: 230)
+                        ChartFooter([
+                            ("Avg", row.avgHr.map { String(localized: "\($0) bpm") } ?? "–"),
+                            ("Peak", row.maxHr.map { String(localized: "\($0) bpm") } ?? String(localized: "\(Int((values.max() ?? 0).rounded())) bpm")),
+                            ("Low", String(localized: "\(Int((values.min() ?? 0).rounded())) bpm")),
+                        ])
+                    }
                 }
                 // #18: the row's Avg HR can be EDITED on the manual sheet while the graph, zones and Effort
                 // stay from the recorded session (preservingCaptured keeps the captured strain/zones). When
@@ -289,7 +289,7 @@ struct WorkoutDetailView: View {
                 }
             }
         } else if loaded {
-            NoopCard {
+            SolidHealthMonitorCard(padding: 16) {
                 emptyNote("No heart-rate samples were recorded over this session's window.")
             }
         }
@@ -304,6 +304,15 @@ struct WorkoutDetailView: View {
         return abs(Double(avg) - traceMean) > 3
     }
 
+    private var selectedPoint: TrendPoint? {
+        guard let selectedHRDate else { return nil }
+        return hrPoints.min { abs($0.date.timeIntervalSince(selectedHRDate)) < abs($1.date.timeIntervalSince(selectedHRDate)) }
+    }
+
+    private func zone(for bpm: Double) -> Int {
+        WorkoutHeartRateChart.zone(for: bpm, hrMax: Double(profile.hrMax))
+    }
+
     // MARK: - HR zones
 
     @ViewBuilder private var zonesCard: some View {
@@ -314,7 +323,7 @@ struct WorkoutDetailView: View {
                 SectionHeader("HR Zones",
                               overline: zonesFromImport ? "Whoop import" : "From strap HR",
                               trailing: String(localized: "\(Int(total.rounded()))m in zone"))
-                NoopCard(tint: StrandPalette.effortColor) {
+                SolidHealthMonitorCard(padding: 16) {
                     VStack(alignment: .leading, spacing: 12) {
                         GeometryReader { geo in
                             HStack(spacing: 2) {
@@ -368,6 +377,28 @@ struct WorkoutDetailView: View {
                 .foregroundStyle(StrandPalette.textTertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private var insightsCard: some View {
+        let total = zoneMinutes?.reduce(0, +) ?? 0
+        if let minutes = zoneMinutes, total > 0,
+           let busiest = minutes.indices.max(by: { minutes[$0] < minutes[$1] }) {
+            let zone = busiest + 1
+            let share = Int((minutes[busiest] / total * 100).rounded())
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                SectionHeader("Session Insight", overline: "From recorded data")
+                SolidHealthMonitorCard(padding: 16) {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "waveform.path.ecg")
+                            .foregroundStyle(StrandPalette.hrZoneColor(zone))
+                            .accessibilityHidden(true)
+                        Text("Zone \(zone) was your dominant intensity, accounting for \(share)% of recorded zone time.")
+                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Effort contribution
@@ -485,6 +516,60 @@ struct WorkoutDetailView: View {
     private static let intFmt: NumberFormatter = {
         let f = NumberFormatter(); f.numberStyle = .decimal; f.maximumFractionDigits = 0; return f
     }()
+}
+
+/// A session trace whose stroke changes color at the same %HRmax boundaries used by
+/// the zone summary. Each adjacent pair is its own series so Charts never connects
+/// unrelated colored segments. Dragging updates the detail readout above the plot.
+private struct WorkoutHeartRateChart: View {
+    let points: [TrendPoint]
+    let hrMax: Double
+    let valueRange: ClosedRange<Double>
+    @Binding var selection: Date?
+
+    private struct Segment: Identifiable {
+        let id: Int
+        let a: TrendPoint
+        let b: TrendPoint
+    }
+
+    private var segments: [Segment] {
+        guard points.count > 1 else { return [] }
+        return (1..<points.count).map { Segment(id: $0, a: points[$0 - 1], b: points[$0]) }
+    }
+
+    static func zone(for bpm: Double, hrMax: Double) -> Int {
+        guard hrMax > 0 else { return 1 }
+        switch bpm / hrMax {
+        case ..<0.60: return 1
+        case ..<0.70: return 2
+        case ..<0.80: return 3
+        case ..<0.90: return 4
+        default: return 5
+        }
+    }
+
+    var body: some View {
+        Chart {
+            ForEach(segments) { segment in
+                let zone = Self.zone(for: (segment.a.value + segment.b.value) / 2, hrMax: hrMax)
+                LineMark(x: .value("Time", segment.a.date), y: .value("BPM", segment.a.value), series: .value("Segment", segment.id))
+                    .foregroundStyle(StrandPalette.hrZoneColor(zone)).lineStyle(.init(lineWidth: 3, lineCap: .round))
+                LineMark(x: .value("Time", segment.b.date), y: .value("BPM", segment.b.value), series: .value("Segment", segment.id))
+                    .foregroundStyle(StrandPalette.hrZoneColor(zone)).lineStyle(.init(lineWidth: 3, lineCap: .round))
+            }
+            if let selection {
+                RuleMark(x: .value("Selected time", selection))
+                    .foregroundStyle(StrandPalette.textSecondary.opacity(0.7))
+            }
+        }
+        .chartYScale(domain: valueRange)
+        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { AxisGridLine().foregroundStyle(StrandPalette.hairline); AxisValueLabel(format: .dateTime.hour().minute()) } }
+        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { AxisGridLine().foregroundStyle(StrandPalette.hairline); AxisValueLabel() } }
+        .chartXSelection(value: $selection)
+        .animation(.easeInOut(duration: 0.35), value: points.count)
+        .accessibilityLabel("Heart rate during workout")
+    }
 }
 
 // MARK: - Route map (#524)

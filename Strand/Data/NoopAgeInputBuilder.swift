@@ -6,14 +6,19 @@ import WhoopStore
 enum NoopAgeInputBuilder {
     static func evaluate(days: [HealthspanDay], chronologicalAge: Double?, birthDate: Date? = nil) -> [NoopAgeWeekResult] {
         guard let first = days.map(\.day).min() else { return [] }
-        let latest = HealthspanWeekCutoff.latestCompletedWeekEnd(now: Date(), calendar: .current)
+        let today = dayFormatter.string(from: Date())
+        let latestCompletedWeek = HealthspanWeekCutoff.latestCompletedWeekEnd(now: Date(), calendar: .current)
         var cutoffs: [String] = [], cursor = saturdayKey(onOrAfter: first)
-        while cursor <= latest {
+        while cursor <= latestCompletedWeek {
             cutoffs.append(cursor)
             guard let date = dayFormatter.date(from: cursor),
                   let next = Calendar.utc.date(byAdding: .day, value: 7, to: date) else { break }
             cursor = dayFormatter.string(from: next)
         }
+        // Historical snapshots remain weekly, but the leading snapshot must be anchored to today.
+        // Otherwise every nominally rolling window (180-day age, recent 30-day pace, and the older
+        // comparison window) is frozen at Saturday's boundary for the rest of the week.
+        if cutoffs.last != today { cutoffs.append(today) }
         return NoopAgeEngine.evaluate(days: days, weekEndDays: cutoffs) { key in
             if let birthDate, let end = dayFormatter.date(from: key), birthDate <= end {
                 let p = Calendar.current.dateComponents([.year, .day], from: birthDate, to: end)
@@ -137,6 +142,66 @@ extension Repository {
         // returned to Healthspan and Today above.
         await persistNoopAgeHistory(results)
         return NoopAgeHistorySnapshot(observations: observations, results: results)
+    }
+}
+
+/// The single presentation source for the current Healthspan result. Keeping result selection and
+/// cutoff-date age resolution together prevents overview surfaces from mixing a current Noop Age with
+/// today's rounded profile age while the detail screen uses the member's precise birth-date age.
+@MainActor
+struct HealthspanResultSummary {
+    let result: NoopAgeWeekResult
+    let previous: NoopAgeWeekResult?
+    let chronologicalAge: Double
+
+    var ageDifference: Double? { result.noopAge.map { chronologicalAge - $0 } }
+
+    static func current(snapshot: Repository.NoopAgeHistorySnapshot,
+                        profile: ProfileStore) -> HealthspanResultSummary? {
+        let index = HealthspanSelection.newestIndex(count: snapshot.results.count)
+        guard snapshot.results.indices.contains(index) else { return nil }
+        let result = snapshot.results[index]
+        let previous = index > 0 ? snapshot.results[index - 1] : nil
+        return resolve(result: result, previous: previous, profile: profile)
+    }
+
+    static func resolve(result: NoopAgeWeekResult, previous: NoopAgeWeekResult?,
+                        profile: ProfileStore) -> HealthspanResultSummary {
+        let age = chronologicalAge(for: result.weekEndDay, profile: profile)
+            ?? result.noopAge
+            ?? Double(profile.age)
+        return HealthspanResultSummary(result: result, previous: previous, chronologicalAge: age)
+    }
+
+    static func chronologicalAge(for day: String, profile: ProfileStore) -> Double? {
+        guard let date = dayFormatter.date(from: day) else {
+            return profile.ageIsExplicit ? Double(profile.age) : nil
+        }
+        return profile.chronologicalAge(on: date)
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+}
+
+struct HealthspanSnapshotIdentity: Hashable {
+    let refreshSequence: Int
+    let age: Int
+    let ageIsExplicit: Bool
+    let birthDate: Date?
+
+    @MainActor
+    init(repo: Repository, profile: ProfileStore) {
+        refreshSequence = repo.refreshSeq
+        age = profile.age
+        ageIsExplicit = profile.ageIsExplicit
+        birthDate = profile.birthDate
     }
 }
 

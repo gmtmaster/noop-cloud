@@ -133,7 +133,7 @@ public extension View {
 
 #if DEBUG
 #Preview("Typography") {
-    ScrollView {
+    ScrollView(showsIndicators: false) {
         VStack(alignment: .leading, spacing: 18) {
             Text("88").font(StrandFont.display(72)).tracking(StrandFont.displayTracking(72)).foregroundStyle(StrandPalette.textPrimary)
             Text("Title 1 / Bold 28").font(StrandFont.title1).foregroundStyle(StrandPalette.textPrimary)

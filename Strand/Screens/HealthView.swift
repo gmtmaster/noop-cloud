@@ -11,7 +11,10 @@ private enum HealthMonitorPalette {
 
 /// Health Monitor deliberately opts out of the app-wide frosted/tinted card surface. It is opaque,
 /// untinted and unaffected by the card-transparency preference so vital values always retain contrast.
-private struct SolidHealthMonitorCard<Content: View>: View {
+/// Shared opaque metric surface used by Health Monitor and workout analytics.
+/// Keeping this in the design layer's screen primitives prevents workout cards
+/// from drifting back toward the translucent presentation used elsewhere.
+struct SolidHealthMonitorCard<Content: View>: View {
     let padding: CGFloat
     @ViewBuilder let content: () -> Content
     @Environment(\.colorScheme) private var colorScheme
@@ -93,7 +96,103 @@ private struct HealthSectionsStack: View {
             // The static vitals grid is its own view depending only on `repo`,
             // so it is unaffected by live HR ticks.
             VitalsSection()
+            DailyHeartRateHistorySection()
         }
+    }
+}
+
+/// The unchanged five-minute daily overview formerly shown at the foot of Today.
+/// It owns its read here so Health Monitor refreshes it whenever new history is published.
+private struct DailyHeartRateHistorySection: View {
+    @EnvironmentObject private var repo: Repository
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var points: [TrendPoint] = []
+    @State private var axis: ClosedRange<Date>?
+    @State private var zoom: ClosedRange<Date>?
+    @State private var sleep: OverviewHRChart.SleepSpan?
+    @State private var workouts: [OverviewHRChart.WorkoutSpan] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Heart Rate", overline: "VITAL SIGNS")
+            if points.count > 1 {
+                let values = points.map(\.value)
+                ChartCard(title: "Beats per minute",
+                          subtitle: String(localized: "5-minute average · since midnight"),
+                          trailing: values.last.map { String(localized: "\(Int($0.rounded())) bpm") },
+                          tint: StrandPalette.metricRose) {
+                    OverviewHRChart(
+                        points: points, sleep: sleep, workouts: workouts, recovery: nil, effort: nil,
+                        gradient: Gradient(colors: [StrandPalette.metricRose.opacity(0.55), StrandPalette.metricRose]),
+                        valueRange: valueRange(values), xRange: axis, height: NoopMetrics.chartHeight,
+                        zoomDomain: $zoom, zoomBounds: axis,
+                        valueFormat: { String(localized: "\(Int($0.rounded())) bpm") },
+                        dateFormat: { $0.formatted(date: .omitted, time: .shortened) })
+                } footer: {
+                    ChartFooter([("Min", "\(Int((values.min() ?? 0).rounded()))"),
+                                 ("Avg", "\(Int((values.reduce(0, +) / Double(values.count)).rounded()))"),
+                                 ("Max", "\(Int((values.max() ?? 0).rounded()))")])
+                }
+                zoomHint
+            } else {
+                ChartCard(title: "Beats per minute",
+                          subtitle: String(localized: "Calibrating, no heart rate banked yet today"),
+                          trailing: nil, tint: StrandPalette.metricRose) {
+                    Text("Your curve fills in as the strap offloads its history.")
+                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
+        }
+        .task(id: repo.refreshSeq) { await load() }
+    }
+
+    private var zoomHint: some View {
+        HStack(spacing: NoopMetrics.space2) {
+            Image(systemName: zoom == nil ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                .accessibilityHidden(true)
+            #if os(macOS)
+            Text(zoom == nil ? "Drag to pan · double-tap to reset" : "Zoomed in · drag to pan")
+            #else
+            Text(zoom == nil ? "Pinch to zoom · drag to pan" : "Zoomed in · drag to pan")
+            #endif
+            Spacer()
+            if zoom != nil {
+                Button("Reset") {
+                    withAnimation(NoopMotion.gated(StrandMotion.interactive, reduced: reduceMotion)) { zoom = nil }
+                }.buttonStyle(.plain).foregroundStyle(StrandPalette.accent)
+            }
+        }
+        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+    }
+
+    private func load() async {
+        let requestedSequence = repo.refreshSeq
+        let start = Calendar.current.startOfDay(for: Date())
+        let end = max(start.addingTimeInterval(1), Date())
+        let newAxis = start...end
+        async let pointRows = repo.hrBuckets(from: Int(start.timeIntervalSince1970),
+                                             to: Int(end.timeIntervalSince1970), bucketSeconds: 300)
+        async let annotationLoad = OverviewHRAnnotationSource.load(repo: repo, window: newAxis, daysBack: 2)
+        let loadedPoints = await pointRows
+            .map { TrendPoint(date: Date(timeIntervalSince1970: TimeInterval($0.ts)), value: $0.bpm) }
+        let annotations = await annotationLoad
+        guard !Task.isCancelled, requestedSequence == repo.refreshSeq else { return }
+        if let zoom, let oldAxis = axis, oldAxis.lowerBound == newAxis.lowerBound {
+            self.zoom = OverviewHRChart.panned(zoom, deltaSeconds: 0, bounds: newAxis)
+        } else {
+            zoom = nil
+        }
+        points = loadedPoints
+        axis = newAxis
+        sleep = annotations.sleep
+        workouts = annotations.workouts
+    }
+
+    private func valueRange(_ values: [Double]) -> ClosedRange<Double> {
+        guard let low = values.min(), let high = values.max() else { return 40...120 }
+        let pad = max(5, (high - low) * 0.12)
+        return max(30, low - pad)...min(220, high + pad)
     }
 }
 
@@ -214,7 +313,7 @@ private struct SyncStatusSection: View {
 
 /// Live HR hero, split into its own view so the ~1Hz HR stream only re-renders this
 /// subtree — the static vitals grid does not. Depends on `live` and `profile` only.
-private struct HeartRateSection: View {
+struct HeartRateSection: View {
     @EnvironmentObject var live: LiveState
     @EnvironmentObject var profile: ProfileStore
     @EnvironmentObject var model: AppModel

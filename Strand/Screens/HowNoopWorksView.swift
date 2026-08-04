@@ -93,7 +93,7 @@ struct HowNoopWorksView: View {
                     ScenicHeroBackground(domain: .rest, starCount: 28, fadesToBase: true)
                 }
             Divider().overlay(StrandPalette.hairline)
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                     introCard
                     ForEach(Section.allCases) { section in

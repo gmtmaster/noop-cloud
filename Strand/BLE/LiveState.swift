@@ -34,7 +34,12 @@ public final class LiveState: ObservableObject {
     /// source sets it true in its streaming branch and false at every teardown (stop / needs-pairing /
     /// radio-off / connect-fail / disconnect). Twin of the Android LiveState.streamingLiveHR.
     @Published public var streamingLiveHR: Bool = false
-    @Published public var heartRate: Int? = nil
+    @Published public var heartRate: Int? = nil {
+        didSet { if heartRate != nil { lastHeartRateAt = Date() } }
+    }
+    /// Arrival time of the latest valid live-HR packet. Presentation uses this to distinguish a
+    /// genuinely live value from a retained latest value without adding another timer or HR source.
+    @Published public private(set) var lastHeartRateAt: Date?
     /// Whether the heavy R10/R11 realtime burst is currently armed (the "live feed"). Tracks the
     /// realtime INTENT (startRealtime/stopRealtime), NOT `heartRate` — the lightweight 0x2A37 profile
     /// keeps setting heartRate while bonded, so a heartRate-driven toggle could never read "off". The

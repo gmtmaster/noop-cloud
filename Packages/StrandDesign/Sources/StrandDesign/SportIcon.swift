@@ -26,6 +26,8 @@ public func sportSymbol(_ sport: String) -> String {
     case s.contains("hiit") || s.contains("functional"):
                                                      return "figure.highintensity.intervaltraining"
     case s.contains("elliptical"):                  return "figure.elliptical"
+    case s.contains("stair") || s.contains("stepmill"):
+                                                     return "figure.stair.stepper"
     case s.contains("snowboard"):                   return "figure.snowboarding"
     case s.contains("ski"):                         return "figure.skiing.downhill"
     // "padel"/"pickleball" deliberately precede "tennis" so they don't get swallowed by a

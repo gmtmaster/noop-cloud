@@ -36,15 +36,14 @@ struct LiveWorkoutView: View {
 
     private var zoneSet: HRZoneSet { HRZones.zones(maxHR: Double(model.profile.hrMax)) }
     private var zone: Int { model.bpm.map { zoneSet.zoneNumber(forBPM: Double($0)) } ?? 0 }
+    @State private var confirmEnd = false
 
     var body: some View {
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 let cards: [AnyView] = [
                     AnyView(header),
-                    AnyView(heroHeartRate),
-                    AnyView(effortGauge),
-                    AnyView(zoneRail),
+                    AnyView(liveHeartRateCard),
                     AnyView(statsGrid),
                 ]
                 ForEach(Array(cards.enumerated()), id: \.offset) { index, card in
@@ -61,11 +60,10 @@ struct LiveWorkoutView: View {
             .padding(.vertical, NoopMetrics.space6)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        // A scenic Effort-tinted backdrop behind the whole in-exercise screen, fading to the base — the
-        // live workout reads as an Effort-world hero, not a flat panel.
-        .background {
-            ScenicHeroBackground(domain: .effort)
-                .ignoresSafeArea()
+        .background(StrandPalette.surfaceBase.ignoresSafeArea())
+        .confirmationDialog("End this workout?", isPresented: $confirmEnd, titleVisibility: .visible) {
+            Button("End and save workout", role: .destructive) { model.endWorkout(); onClose() }
+            Button("Cancel", role: .cancel) {}
         }
         // If the workout ended elsewhere (process restart cleared it), close the screen.
         .onChangeCompat(of: model.activeWorkout == nil) { gone in if gone { onClose() } }
@@ -90,22 +88,32 @@ struct LiveWorkoutView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("RECORDING WORKOUT")
-                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
-                    .foregroundStyle(StrandPalette.metricRose)
-                Text("Workout")
-                    .font(StrandFont.title1).foregroundStyle(StrandPalette.textPrimary)
-            }
-            Spacer()
-            if let start = model.activeWorkout?.start {
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(Self.elapsed(since: start))
-                        .font(StrandFont.number(34)).monospacedDigit()
-                        .foregroundStyle(StrandPalette.textPrimary)
+        SolidHealthMonitorCard(padding: 18) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    Image(systemName: sportSymbol(model.activeWorkout?.sport ?? "Workout"))
+                        .font(.system(size: 22, weight: .semibold)).foregroundStyle(StrandPalette.effortColor)
+                        .frame(width: 42, height: 42).background(StrandPalette.effortColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 11))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.activeWorkout?.sport ?? "Workout").font(StrandFont.title2)
+                        Text(model.activeWorkout?.isPaused == true ? "Workout paused" : "Workout in progress")
+                            .font(StrandFont.footnote).foregroundStyle(model.activeWorkout?.isPaused == true ? StrandPalette.statusWarning : StrandPalette.statusPositive)
+                    }
+                }
+                if let workout = model.activeWorkout {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(Self.elapsed(workout, now: context.date))
+                            .font(StrandFont.number(58)).monospacedDigit().foregroundStyle(StrandPalette.textPrimary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
+        }
+    }
+
+    private var liveHeartRateCard: some View {
+        SolidHealthMonitorCard(padding: 0) {
+            LiveHeartRateDisplay(hrMax: model.profile.hrMax, context: .workout)
         }
     }
 
@@ -194,7 +202,7 @@ struct LiveWorkoutView: View {
 
     private var statsGrid: some View {
         let w = model.activeWorkout
-        return HStack(spacing: NoopMetrics.gap) {
+        return LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: NoopMetrics.gap) {
             stat(String(localized: "AVG"), (w?.avgHr ?? 0) > 0 ? "\(w!.avgHr)" : "—",
                  tint: (w?.avgHr ?? 0) > 0 ? StrandPalette.metricRose : StrandPalette.textPrimary)
             stat(String(localized: "PEAK"), (w?.peakHr ?? 0) > 0 ? "\(w!.peakHr)" : "—",
@@ -205,7 +213,7 @@ struct LiveWorkoutView: View {
     }
 
     private func stat(_ title: String, _ value: String, tint: Color = StrandPalette.textPrimary) -> some View {
-        NoopCard(padding: 14, tint: tint) {
+        SolidHealthMonitorCard(padding: 14) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
                     .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
@@ -220,9 +228,15 @@ struct LiveWorkoutView: View {
     }
 
     private var endButton: some View {
-        NoopButton("End workout", systemImage: "stop.fill", kind: .destructive, fullWidth: true) {
-            model.endWorkout()
-            onClose()
+        HStack(spacing: 12) {
+            if model.activeWorkout?.isPaused == true {
+                NoopButton("Resume", systemImage: "play.fill", kind: .primary, fullWidth: true) { model.resumeWorkout() }
+            } else {
+                NoopButton("Pause", systemImage: "pause.fill", kind: .secondary, fullWidth: true) { model.pauseWorkout() }
+            }
+            NoopButton("End", systemImage: "stop.fill", kind: .destructive, fullWidth: true) {
+                confirmEnd = true
+            }
         }
     }
 
@@ -230,6 +244,12 @@ struct LiveWorkoutView: View {
 
     private static func elapsed(since start: Date) -> String {
         let s = max(0, Int(Date().timeIntervalSince(start)))
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    private static func elapsed(_ workout: AppModel.ActiveWorkout, now: Date) -> String {
+        let endpoint = workout.pausedAt ?? now
+        let s = max(0, Int(endpoint.timeIntervalSince(workout.start) - workout.pausedDurationS))
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 
@@ -242,6 +262,54 @@ struct LiveWorkoutView: View {
         case 5: return String(localized: "Maximum")
         default: return ""
         }
+    }
+}
+
+/// Shared live-HR presentation used by Active Workout and Live Body Console. It observes the existing
+/// AppModel/LiveState stream directly, owns no polling, and derives freshness from the packet timestamp.
+struct LiveHeartRateDisplay: View {
+    enum Context { case workout, console }
+    enum Freshness: Equatable { case waiting, fresh, stale }
+
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var live: LiveState
+    let hrMax: Int
+    let context: Context
+
+    static func freshness(bpm: Int?, lastSample: Date?, now: Date) -> Freshness {
+        guard bpm != nil, let lastSample else { return .waiting }
+        return now.timeIntervalSince(lastSample) <= 8 ? .fresh : .stale
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 2)) { contextTime in
+            let bpm = model.bpm
+            let freshness = Self.freshness(bpm: bpm, lastSample: live.lastHeartRateAt, now: contextTime.date)
+            let zones = HRZones.zones(maxHR: Double(hrMax))
+            let zone = bpm.map { zones.zoneNumber(forBPM: Double($0)) } ?? 0
+            let tint = zone > 0 ? StrandPalette.hrZoneColor(zone) : StrandPalette.textTertiary
+            VStack(spacing: 7) {
+                Text(freshness == .fresh ? "LIVE HEART RATE" : freshness == .stale ? "LATEST HEART RATE" : "HEART RATE")
+                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking).foregroundStyle(StrandPalette.textSecondary)
+                Text(bpm.map(String.init) ?? "—")
+                    .font(StrandFont.rounded(context == .workout ? 88 : 72, weight: .semibold))
+                    .foregroundStyle(StrandPalette.textPrimary).monospacedDigit()
+                Text("BPM").font(StrandFont.captionNumber).foregroundStyle(StrandPalette.textSecondary)
+                Text(zone > 0 ? "ZONE \(zone) · \(zoneName(zone))" : "WAITING FOR HEART-RATE DATA")
+                    .font(StrandFont.headline).foregroundStyle(tint)
+                if freshness == .stale { Text("Waiting for a fresh sample").font(StrandFont.footnote).foregroundStyle(StrandPalette.statusWarning) }
+                if freshness == .waiting { Text("Workout continues without live HR").font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary) }
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 28)
+            .background(tint.opacity(freshness == .waiting ? 0.02 : 0.09))
+            .overlay(alignment: .leading) { Rectangle().fill(tint).frame(width: 3) }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(bpm.map { "\(freshness == .fresh ? "Live" : "Latest") heart rate \($0) beats per minute, zone \(zone)" } ?? "Waiting for heart-rate data")
+        }
+    }
+
+    private func zoneName(_ zone: Int) -> String {
+        switch zone { case 1: return "RECOVERY"; case 2: return "FAT BURN"; case 3: return "AEROBIC"; case 4: return "THRESHOLD"; case 5: return "MAXIMUM"; default: return "BELOW ZONE 1" }
     }
 }
 

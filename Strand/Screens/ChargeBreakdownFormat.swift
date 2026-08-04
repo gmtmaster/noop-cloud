@@ -318,7 +318,7 @@ struct SkinTempDeviationRow: View {
 
 #if DEBUG
 #Preview("Charge breakdown") {
-    ScrollView {
+    ScrollView(showsIndicators: false) {
         VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
             HStack(spacing: 10) {
                 ConfidenceTierChip(confidence: .calibrating)
@@ -355,7 +355,7 @@ struct SkinTempDeviationRow: View {
 struct ChargeBreakdownDemoHost: View {
     var body: some View {
         NavigationStack {
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 VStack(spacing: NoopMetrics.gap) {
                     NoopCard(padding: 18, tint: StrandPalette.chargeColor) {
                         ChargeBreakdownSection(

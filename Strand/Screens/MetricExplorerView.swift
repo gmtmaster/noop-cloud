@@ -548,7 +548,7 @@ struct MetricDetailView: View {
         let effRange = effectiveRange
         let win = slice(for: effRange)
         let fellBack = effRange != range
-        return ScrollView {
+        return ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 if loaded && series.isEmpty {
                     // No data in the entire history — keep the range bar for context, then the

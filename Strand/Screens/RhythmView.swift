@@ -117,7 +117,7 @@ struct RhythmConsentGate: View {
                 .padding(.bottom, 22)
                 .padding(.horizontal, 24)
 
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
                         ForEach(RhythmConsent.points, id: \.0) { point in
                             VStack(alignment: .leading, spacing: 4) {

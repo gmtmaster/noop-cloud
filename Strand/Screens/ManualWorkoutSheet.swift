@@ -139,7 +139,7 @@ struct ManualWorkoutSheet: View {
                 .overlay(inputShape.strokeBorder(StrandPalette.hairline, lineWidth: 1))
                 .accessibilityLabel("Sport")
             if showSportSuggestions {
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(sportSuggestions) { sp in
                             Button {
@@ -336,8 +336,10 @@ struct StartWorkoutSheet: View {
     }
 
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var repo: Repository
     @State private var query = ""
     @State private var selected = WorkoutCatalog.defaultSportName
+    @State private var frequent: [WorkoutCatalog.Sport] = []
 
     private var filtered: [WorkoutCatalog.Sport] { WorkoutCatalog.matching(query) }
     private var inputShape: RoundedRectangle { RoundedRectangle(cornerRadius: 10, style: .continuous) }
@@ -353,10 +355,11 @@ struct StartWorkoutSheet: View {
                                 in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(heading)
+                    Text(heading == String(localized: "Start a workout") ? String(localized: "Start Workout") : heading)
                         .font(StrandFont.title2)
                         .foregroundStyle(StrandPalette.textPrimary)
-                    Text(explainer)
+                    Text(heading == String(localized: "Start a workout")
+                         ? String(localized: "Choose an activity and begin tracking") : explainer)
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -373,30 +376,16 @@ struct StartWorkoutSheet: View {
                 .overlay(inputShape.strokeBorder(StrandPalette.hairline, lineWidth: 1))
                 .accessibilityLabel("Search sport")
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if query.isEmpty && !frequent.isEmpty {
+                        Text("FREQUENT").strandOverline().padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 5)
+                        ForEach(frequent) { activityRow($0, recent: true) }
+                        Divider().overlay(StrandPalette.hairline).padding(.vertical, 5)
+                    }
+                    Text("ALL ACTIVITIES").strandOverline().padding(.horizontal, 12).padding(.vertical, 7)
                     ForEach(filtered) { sp in
-                        Button {
-                            selected = sp.name
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text(sp.name)
-                                    .font(StrandFont.body)
-                                    .foregroundStyle(sp.name == selected
-                                                     ? StrandPalette.accent : StrandPalette.textPrimary)
-                                if sp.isDistanceSport {
-                                    Text("· GPS")
-                                        .font(StrandFont.footnote)
-                                        .foregroundStyle(StrandPalette.textTertiary)
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .contentShape(Rectangle())
-                            .padding(.horizontal, 12).padding(.vertical, 9)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Pick \(sp.name)")
-                        .accessibilityAddTraits(sp.name == selected ? [.isSelected] : [])
+                        activityRow(sp, recent: false)
                     }
                 }
             }
@@ -421,7 +410,32 @@ struct StartWorkoutSheet: View {
         .frame(maxWidth: .infinity)
         .noopSheetPresentation(largeFirst: false)
         #endif
-        .background(StrandPalette.surfaceOverlay)
+        .background(StrandPalette.surfaceBase)
+        .task {
+            let rows = await repo.workoutRows(days: 90)
+            let counts = Dictionary(grouping: rows, by: { WorkoutSource.sportKey($0.sport) }).mapValues(\.count)
+            frequent = WorkoutCatalog.all.filter { counts[WorkoutSource.sportKey($0.name)] != nil }
+                .sorted { counts[WorkoutSource.sportKey($0.name), default: 0] > counts[WorkoutSource.sportKey($1.name), default: 0] }
+                .prefix(4).map { $0 }
+        }
+    }
+
+    private func activityRow(_ sp: WorkoutCatalog.Sport, recent: Bool) -> some View {
+        Button { selected = sp.name } label: {
+            HStack(spacing: 12) {
+                Image(systemName: sportSymbol(sp.name)).font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(sp.name == selected ? StrandPalette.effortColor : StrandPalette.textSecondary)
+                    .frame(width: 28, height: 28)
+                Text(sp.name).font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                if recent { Text("Recent").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary) }
+                if sp.isDistanceSport { Text("GPS").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary) }
+                Spacer()
+                if sp.name == selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(StrandPalette.effortColor) }
+            }.contentShape(Rectangle()).padding(.horizontal, 12).padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(sp.name) workout\(recent ? ", frequently used" : "")")
+        .accessibilityAddTraits(sp.name == selected ? [.isSelected] : [])
     }
 }
 

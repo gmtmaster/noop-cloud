@@ -6,6 +6,7 @@ final class HealthNavigationContractTests: XCTestCase {
         XCTAssertEqual(HealthNavigationContract.primaryTabs,
                        ["Today", "Health", "Friends", "More"])
         XCTAssertEqual(HealthNavigationContract.healthTabIndex, 1)
+        XCTAssertEqual(HealthNavigationContract.healthRoot, "HealthOverview")
         XCTAssertTrue(HealthNavigationContract.sleepIsContextual)
         XCTAssertFalse(HealthNavigationContract.primaryTabs.contains("Sleep"))
         XCTAssertFalse(HealthNavigationContract.primaryTabs.contains("Trends"))
@@ -14,6 +15,23 @@ final class HealthNavigationContractTests: XCTestCase {
     func testTrendsRemainsASecondaryDestination() {
         XCTAssertTrue(HealthNavigationContract.trendsRemainsSecondary)
         XCTAssertTrue(NavItem.allCases.contains(.trends))
+    }
+
+    func testHealthspanAttributionFormattingUsesSignedAgeConvention() {
+        XCTAssertEqual(HealthspanAttribution.years(-1.24), "-1.2 years")
+        XCTAssertEqual(HealthspanAttribution.years(0.76), "+0.8 years")
+    }
+
+    func testDeterministicInterpretationRanksHelpingAndHoldingSignals() {
+        let ranked = [
+            HealthspanAttribution.Item(id: "sleep_duration", label: "Sleep duration", domain: .sleep,
+                                       impact: 0.8, paceChange: 0.1, isCombined: false),
+            HealthspanAttribution.Item(id: "strength", label: "Strength activity", domain: .activity,
+                                       impact: -1.6, paceChange: -0.2, isCombined: false),
+        ]
+        let text = HealthspanAttribution.interpretation(ranked: ranked, confidence: .established)
+        XCTAssertTrue(text.contains("Strength activity is the strongest younger-associated contribution"))
+        XCTAssertTrue(text.contains("Sleep duration is the clearest opportunity"))
     }
 
     func testTonightSleepDistinguishesAlarmAndWakeTarget() {
@@ -74,6 +92,14 @@ final class HealthNavigationContractTests: XCTestCase {
         }.reduce(0, +) / Double(samples)
         XCTAssertEqual(xMean, 0, accuracy: 0.000_001)
         XCTAssertEqual(yMean, 0, accuracy: 0.000_001)
+    }
+
+    func testOrbForegroundParticlesCanMoveFasterWithoutChangingSeeds() {
+        let speeds = (0..<320).map { (index: $0, speed: HealthspanOrbMotion.particleAngularSpeed(index: $0)) }
+        XCTAssertGreaterThan(speeds.map(\.speed).max() ?? 0, 0.60)
+        XCTAssertGreaterThanOrEqual(speeds.map(\.speed).min() ?? 0, 0.41)
+        XCTAssertEqual(HealthspanOrbMotion.particleAngularSpeed(index: 42),
+                       HealthspanOrbMotion.particleAngularSpeed(index: 42))
     }
 
     func testContributorScaleSortsByMagnitudeAndBoundsOutliers() {

@@ -43,7 +43,7 @@ struct WorkoutsView: View {
     @State private var allRows: [WorkoutRow]
     @State private var loaded: Bool
     @State private var seededInitialRange = false
-    @State private var range: Range = .all
+    @State private var range: Range = .week
     /// #797: how many trailing days of workouts are currently LOADED into `allRows`. First paint loads
     /// `Self.firstPaintWindowDays`; picking "All" (or a range wider than this) pages the full history in on
     /// demand. nil means the full history is loaded (the user expanded to "All"). Preview rows are treated
@@ -123,16 +123,13 @@ struct WorkoutsView: View {
     }
 
     var body: some View {
-        ScreenScaffold(title: "Workouts", subtitle: "Every session, threaded together.",
+        ScreenScaffold(title: "Workouts", subtitle: "Training volume, intensity, and recent sessions",
                        onRefresh: { await repo.refresh() },
                        // PERF: the column ends in the full "All Sessions" log (the breakdown grid, the
                        // zones card, and a row-per-session table). On a large imported history the eager
                        // VStack built every section + the whole table up-front; the LazyVStack path (which
                        // is byte-identical layout) builds the off-screen sections/rows on demand instead.
-                       lazy: true,
-                       // The day-of-sky liquid backdrop, matching Today / Health / Sleep / Trends: a fixed,
-                       // full-bleed time-of-day sky behind the scroll content (it does not scroll).
-                       topBackground: liquidScaffoldSky()) {
+                       lazy: true) {
             if allRows.isEmpty {
                 VStack(alignment: .leading, spacing: NoopMetrics.space4) {
                     ComingSoon(what: loaded
@@ -157,7 +154,6 @@ struct WorkoutsView: View {
                 HStack { startLiveWorkoutButton; Spacer() }
                 rangeBar(rows: windowRows, effectiveRange: resolved)
                 if let postLogNote { postLogBanner(postLogNote) }
-                effortHero(rows: windowRows, effectiveRange: resolved, groups: groups)
                 summarySection(rows: windowRows, effectiveRange: resolved, groups: groups)
                 breakdownSection(groups: groups, rows: windowRows)
                 if let z = zonesSummary {
@@ -174,14 +170,14 @@ struct WorkoutsView: View {
             let wasLoaded = loaded
             loaded = true
             if !wasLoaded {
-                range = defaultRange(for: r)
+                range = .week
                 seededInitialRange = true
             }
         }
         .onAppear {
             // Preview-seeded rows skip `.task`; still choose a range that has data.
             if loaded && !seededInitialRange {
-                range = defaultRange(for: allRows)
+                range = .week
                 seededInitialRange = true
             }
         }
@@ -725,32 +721,28 @@ struct WorkoutsView: View {
         let totalCount = rows.count
         let totalTimeH = rows.compactMap(\.durationS).reduce(0, +) / 3600.0
         let totalKcal = rows.compactMap(\.energyKcal).reduce(0, +)
-        let totalKmRaw = rows.compactMap(\.distanceM).reduce(0, +) / 1000.0
         let modal = modalSport(from: groups)
 
-        return LazyVGrid(columns: tileColumns, alignment: .leading, spacing: NoopMetrics.gap) {
-            StatTile(label: "Total Workouts",
-                     value: "\(totalCount)",
-                     caption: effectiveRange.caption,
-                     accent: StrandPalette.effortColor)
-            StatTile(label: "Total Time",
-                     value: String(localized: "\(oneDecimal(totalTimeH))h"),
-                     caption: String(localized: "active"),
-                     accent: StrandPalette.textPrimary)
-            StatTile(label: "Total Calories",
-                     value: grouped(totalKcal),
-                     caption: "kcal",
-                     accent: StrandPalette.metricAmber)
-            StatTile(label: "Total Distance",
-                     value: UnitFormatter.distanceFromKilometers(totalKmRaw, system: unitSystem),
-                     caption: String(localized: "covered"),
-                     accent: StrandPalette.metricCyan)
-            StatTile(label: "Most Active",
-                     value: modal.sport,
-                     caption: modal.count > 0
-                         ? (modal.count == 1 ? String(localized: "1 session") : String(localized: "\(modal.count) sessions"))
-                         : nil,
-                     accent: StrandPalette.textPrimary)
+        return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Summary", overline: "Selected range", trailing: effectiveRange.caption)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: NoopMetrics.gap) {
+                summaryMetric("Total time", String(localized: "\(oneDecimal(totalTimeH))h"), tint: StrandPalette.textPrimary)
+                summaryMetric("Sessions", "\(totalCount)", tint: StrandPalette.effortColor)
+                summaryMetric("Calories", grouped(totalKcal), caption: "kcal", tint: StrandPalette.metricAmber)
+                summaryMetric("Frequent activity", modal.count > 0 ? WorkoutSource.displaySport(modal.sport) : "–",
+                              caption: modal.count > 0 ? "\(modal.count)×" : nil, tint: activityColor(modal.sport))
+            }
+        }
+    }
+
+    private func summaryMetric(_ label: String, _ value: String, caption: String? = nil, tint: Color) -> some View {
+        SolidHealthMonitorCard(padding: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(label.uppercased()).strandOverline()
+                Text(value).font(StrandFont.number(24)).foregroundStyle(tint)
+                    .lineLimit(1).minimumScaleFactor(0.65)
+                if let caption { Text(caption).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -758,18 +750,39 @@ struct WorkoutsView: View {
 
     private func breakdownSection(groups: [SportGroup], rows: [WorkoutRow]) -> some View {
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-            SectionHeader("Activity Breakdown",
-                          overline: "By sport",
+            SectionHeader("Activities",
+                          overline: "Distribution",
                           trailing: groups.count == 1
                               ? String(localized: "1 sport")
                               : String(localized: "\(groups.count) sports"))
-            LazyVGrid(columns: breakdownColumns, alignment: .leading, spacing: NoopMetrics.gap) {
-                ForEach(groups) { g in
-                    // This sport's own sessions, so the card can carry an HR-zone mini-bar.
-                    sportCard(g, zones: WorkoutZones.summary(from: rows.filter { $0.sport == g.sport }))
+            SolidHealthMonitorCard(padding: 16) {
+                VStack(spacing: 14) {
+                    ForEach(groups) { g in
+                        HStack(spacing: 12) {
+                            Image(systemName: sportIcon(g.sport)).foregroundStyle(activityColor(g.sport)).frame(width: 24)
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack { Text(WorkoutSource.displaySport(g.sport)).font(StrandFont.subhead.weight(.semibold)); Spacer(); Text("\(g.count)×").font(StrandFont.number(14)) }
+                                GeometryReader { geo in
+                                    Capsule().fill(StrandPalette.surfaceInset)
+                                        .overlay(alignment: .leading) { Capsule().fill(activityColor(g.sport)).frame(width: geo.size.width * CGFloat(g.count) / CGFloat(max(groups.map(\.count).max() ?? 1, 1))) }
+                                }.frame(height: 6)
+                            }
+                        }.accessibilityElement(children: .combine)
+                        if g.id != groups.last?.id { Divider().overlay(StrandPalette.hairline) }
+                    }
                 }
             }
         }
+    }
+
+    private func activityColor(_ sport: String) -> Color {
+        let key = sport.lowercased()
+        if key.contains("run") { return StrandPalette.effortColor }
+        if key.contains("cycl") { return StrandPalette.metricCyan }
+        if key.contains("strength") || key.contains("weight") { return StrandPalette.metricAmber }
+        if key.contains("walk") || key.contains("hik") { return StrandPalette.statusPositive }
+        if key.contains("swim") { return StrandPalette.accent }
+        return StrandPalette.textSecondary
     }
 
     private func sportCard(_ g: SportGroup, zones: WorkoutZones.Summary?) -> some View {
@@ -811,9 +824,9 @@ struct WorkoutsView: View {
         let busiest = z.minutes.indices.max(by: { z.minutes[$0] < z.minutes[$1] }) ?? 0
         return GeometryReader { geo in
             HStack(spacing: 2) {
-                ForEach(0..<5, id: \.self) { i in
+                ForEach(0..<6, id: \.self) { i in
                     RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(StrandPalette.hrZoneColor(i + 1))
+                        .fill(i == 0 ? StrandPalette.textTertiary : StrandPalette.hrZoneColor(i))
                         .frame(width: max(0, CGFloat(z.minutes[i] / max(z.totalMinutes, 0.001)) * geo.size.width))
                         .overlay {
                             if i == busiest {
@@ -827,7 +840,7 @@ struct WorkoutsView: View {
         .frame(height: 8)
         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(String(localized: "Heart-rate zone split: \((1...5).map { String(localized: "zone \($0) \(Int((z.minutes[$0 - 1] / max(z.totalMinutes, 0.001) * 100).rounded())) percent") }.joined(separator: ", "))"))
+        .accessibilityLabel(String(localized: "Heart-rate zone split: \((0...5).map { String(localized: "zone \($0) \(Int((z.minutes[$0] / max(z.totalMinutes, 0.001) * 100).rounded())) percent") }.joined(separator: ", "))"))
     }
 
     private func miniStat(_ label: String, _ value: String, tint: Color = StrandPalette.textPrimary) -> some View {
@@ -851,41 +864,32 @@ struct WorkoutsView: View {
                           trailing: totalSessions == 1
                               ? String(localized: "\(z.sessionsWithZones) of 1 session")
                               : String(localized: "\(z.sessionsWithZones) of \(totalSessions) sessions"))
-            NoopCard(tint: StrandPalette.effortColor) {
-                VStack(alignment: .leading, spacing: 12) {
-                    // Proportional stacked bar — same construction as SleepView's stage bar, with the
-                    // busiest zone carrying a crisp bright end-cap stroke so it reads as a chart. No glow.
-                    let busiest = z.minutes.indices.max(by: { z.minutes[$0] < z.minutes[$1] }) ?? 0
-                    GeometryReader { geo in
-                        HStack(spacing: 2) {
-                            ForEach(0..<5, id: \.self) { i in
-                                Rectangle()
-                                    .fill(StrandPalette.hrZoneColor(i + 1))
-                                    .frame(width: max(0, CGFloat(z.minutes[i] / z.totalMinutes) * geo.size.width))
-                                    .overlay {
-                                        if i == busiest {
-                                            Rectangle()
-                                                .strokeBorder(StrandPalette.textPrimary.opacity(0.85), lineWidth: 1.5)
-                                        }
-                                    }
+            SolidHealthMonitorCard(padding: 16) {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array((0...5).reversed()), id: \.self) { zone in
+                        let minutes = z.minutes[zone]
+                        VStack(spacing: 6) {
+                            HStack {
+                                Text("Zone \(zone)").font(StrandFont.subhead)
+                                Spacer()
+                                Text(durationLabel(minutes * 60)).font(StrandFont.number(14))
+                                Text("\(Int((minutes / max(z.totalMinutes, 0.001) * 100).rounded()))%")
+                                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary).frame(width: 34, alignment: .trailing)
                             }
+                            GeometryReader { geo in
+                                Capsule().fill(StrandPalette.surfaceInset)
+                                    .overlay(alignment: .leading) {
+                                        Capsule().fill(zone == 0 ? StrandPalette.textTertiary : StrandPalette.hrZoneColor(zone))
+                                            .frame(width: geo.size.width * CGFloat(minutes / max(z.totalMinutes, 0.001)))
+                                    }
+                            }.frame(height: 8)
                         }
                     }
-                    .frame(height: 34)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(String(localized: "Heart-rate zone split: \((1...5).map { String(localized: "zone \($0) \(Int((z.minutes[$0 - 1] / z.totalMinutes * 100).rounded())) percent") }.joined(separator: ", "))"))
-                    Divider().overlay(StrandPalette.hairline)
-                    // 5-up stat strip, identical rhythm to the sport cards' miniStat row.
-                    HStack(spacing: 0) {
-                        ForEach(0..<5, id: \.self) { i in
-                            zoneStat(i + 1, minutes: z.minutes[i], total: z.totalMinutes)
-                        }
-                    }
-                    Text("Share of imported zone time, duration-weighted across sessions (approximate).")
+                    Text("Duration-weighted across sessions with available zone data.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
                 }
+                .accessibilityElement(children: .combine)
             }
         }
     }
@@ -929,7 +933,7 @@ struct WorkoutsView: View {
                 selectPill(rows: rows)
             }
             if selectionMode { selectionToolbar(rows: rows) }
-            NoopCard(padding: 0) {
+            SolidHealthMonitorCard(padding: 0) {
                 if usesCompactSessions {
                     // #64: full-width native rows, no horizontal scroll — the iPhone list reads like the
                     // rest of the app (Apple-Fitness x WHOOP), and the Android weight-column list. The
@@ -1446,13 +1450,14 @@ struct WorkoutsView: View {
     // MARK: - Range model
 
     private enum Range: CaseIterable, Hashable {
-        case week, month, quarter, year, all
+        case week, month, quarter, halfYear, all
+        static var allCases: [Range] { [.week, .month, .quarter, .halfYear] }
         var label: String {
             switch self {
             case .week:    return String(localized: "7D")
             case .month:   return String(localized: "30D")
             case .quarter: return String(localized: "90D")
-            case .year:    return String(localized: "1Y")
+            case .halfYear:return String(localized: "6M")
             case .all:     return String(localized: "All")
             }
         }
@@ -1461,7 +1466,7 @@ struct WorkoutsView: View {
             case .week:    return String(localized: "last 7 days")
             case .month:   return String(localized: "last 30 days")
             case .quarter: return String(localized: "last 90 days")
-            case .year:    return String(localized: "last year")
+            case .halfYear:return String(localized: "last 6 months")
             case .all:     return String(localized: "all time")
             }
         }
@@ -1471,7 +1476,7 @@ struct WorkoutsView: View {
             case .week:    return String(localized: "week")
             case .month:   return String(localized: "month")
             case .quarter: return String(localized: "quarter")
-            case .year:    return String(localized: "year")
+            case .halfYear:return String(localized: "6 months")
             case .all:     return String(localized: "log")
             }
         }
@@ -1481,14 +1486,14 @@ struct WorkoutsView: View {
             case .week:    return 7
             case .month:   return 30
             case .quarter: return 90
-            case .year:    return 365
+            case .halfYear:return 180
             case .all:     return nil
             }
         }
         /// This range plus every LARGER range, ascending — the auto-expand search
         /// order when the selected window holds zero sessions.
         var widening: [Range] {
-            let order: [Range] = [.week, .month, .quarter, .year, .all]
+            let order: [Range] = [.week, .month, .quarter, .halfYear, .all]
             guard let i = order.firstIndex(of: self) else { return [.all] }
             return Array(order[i...])
         }

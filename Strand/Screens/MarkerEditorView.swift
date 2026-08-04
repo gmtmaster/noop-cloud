@@ -129,7 +129,7 @@ struct MarkerEditorView: View {
     private var catalogList: some View {
         // A ScrollView (capped at 280pt) so all ~30 markers are reachable — a bare VStack
         // under .frame(maxHeight: 280) clipped everything past the first handful with no scroll.
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
                 ForEach(Array(filteredCatalog.enumerated()), id: \.element.key) { idx, def in
                 Button {

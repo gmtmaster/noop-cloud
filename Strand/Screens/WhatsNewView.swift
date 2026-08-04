@@ -16,7 +16,7 @@ struct WhatsNewView: View {
                     ScenicHeroBackground(domain: .charge, starCount: 28, fadesToBase: true)
                 }
             Divider().overlay(StrandPalette.hairline)
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 // PERF: the changelog grows with every release, so this is an ever-lengthening column.
                 // LazyVStack (byte-identical layout to VStack inside a ScrollView — same leading
                 // alignment + sectionGap spacing) builds the off-screen release cards on demand instead

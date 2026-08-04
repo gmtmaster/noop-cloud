@@ -64,6 +64,7 @@ struct DashboardCardsEditorSheet: View {
                 }
                 .listRowBackground(StrandPalette.surfaceRaised)
             }
+            .scrollIndicators(.hidden)
             .scrollContentBackground(.hidden)
             .background(StrandPalette.surfaceBase)
             #if os(iOS)

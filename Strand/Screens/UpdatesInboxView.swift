@@ -78,7 +78,7 @@ struct UpdatesInboxView: View {
         if updateStore.items.isEmpty {
             emptyState
         } else {
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                     if !unread.isEmpty {
                         section("NEW", items: unread)
