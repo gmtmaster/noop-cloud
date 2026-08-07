@@ -197,7 +197,15 @@ private struct StrainRecoveryHistoryCard: View {
     private func strainLabel(_ value: Double) -> String {
         String(format: "%.1f", value)
     }
-    private func whoopStrain(_ value: Double) -> Double { value <= 21 ? value : min(21, value / 100 * 21) }
+    // Strain/Effort is ALWAYS stored on NOOP's native 0–100 axis (StrainScorer.maxStrain = 100), the
+    // same axis `effortStrain(_:)`/the hero ring read — including for today's still-forming value.
+    // The old `value <= 21 ? value : …` short-circuit misread a raw 0–100 value under 21 as already
+    // being on the WHOOP 0–21 axis and plotted it unconverted, which is silently correct for a
+    // finished day (whose full-day strain is almost always > 21) but wrong for today's still-climbing
+    // total, which sits under 21 for most of the day — exactly the divergence from the hero Effort
+    // value. Always apply the same 21/100 conversion the rest of the app uses (`UnitFormatter.
+    // effortScaleFactor`) so today's point matches the authoritative Effort value everywhere else.
+    private func whoopStrain(_ value: Double) -> Double { min(21, value * UnitFormatter.effortScaleFactor) }
     private func recoveryColor(_ value: Double) -> Color {
         if value >= 67 { return StrandPalette.statusPositive }
         if value >= 34 { return Color.yellow }

@@ -89,10 +89,8 @@ struct HealthView: View {
 private struct HealthSectionsStack: View {
     var body: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
-            // The live HR section is its own view: it owns `live`/`profile`,
-            // so the ~1Hz HR stream re-renders only this subtree — the static
-            // vitals grid below does not re-render on each HR tick.
-            HeartRateSection()
+            // The live Heart Rate hero (HeartRateSection) was removed from this page: Health Monitor
+            // now opens straight onto Vital Signs + the 5-minute Average Heart Rate history below.
             // The static vitals grid is its own view depending only on `repo`,
             // so it is unaffected by live HR ticks.
             VitalsSection()
