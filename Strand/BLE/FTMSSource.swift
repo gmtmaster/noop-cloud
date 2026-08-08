@@ -167,7 +167,7 @@ public final class FTMSSource: NSObject, ObservableObject {
         latest = reading
         guard feedsLive else { return }
         if let hr = reading.heartRate, hr >= 30, hr <= 220 {
-            live.heartRate = hr
+            live.updateHeartRate(hr)
         }
         live.connected = true
     }

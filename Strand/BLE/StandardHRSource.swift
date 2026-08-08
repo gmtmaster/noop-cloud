@@ -239,6 +239,16 @@ public final class StandardHRSource: NSObject, ObservableObject {
         if let rpm = rates.crankRpm { live.sensorCadence = rpm }
     }
 
+    /// Testable packet-to-live-state seam shared by the CoreBluetooth callback. A standard 0x2A37
+    /// measurement owns both fields, so it commits exactly one AppModel metric update.
+    static func publishMeasurement(hr: Int, rr: [Int], to live: LiveState) {
+        live.performBiometricUpdate {
+            live.heartRate = hr
+            live.setRRIntervals(rr)
+        }
+        live.markConnected()
+    }
+
     // CB delegate callbacks live in the @preconcurrency extensions below. The queue-less central
     // delivers them on the main thread, so MainActor isolation is sound; @preconcurrency lets this
     // @MainActor type satisfy the nonisolated CoreBluetooth requirements (same pattern as BLEManager).
@@ -435,9 +445,7 @@ extension StandardHRSource: @preconcurrency CBPeripheralDelegate {
             loggedFirstHR = true
             log("HR-strap: receiving data — first sample \(parsed.hr) bpm (rr beats: \(parsed.rr.count))")
         }
-        live.heartRate = parsed.hr
-        live.setRRIntervals(parsed.rr)
-        live.connected = true
+        Self.publishMeasurement(hr: parsed.hr, rr: parsed.rr, to: live)
         enqueue(hr: parsed.hr, rr: parsed.rr)
     }
 }

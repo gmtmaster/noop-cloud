@@ -192,6 +192,19 @@ final class AppModel: ObservableObject {
     @Published var bpm: Int?
     private var hrWindow: [(t: Date, v: Double)] = []
     private var hrCancellables = Set<AnyCancellable>()
+    #if DEBUG
+    /// Lightweight regression instrumentation for the one-update/one-ingestion contract. These are
+    /// intentionally neither published nor logged, so they have no SwiftUI or production-log cost.
+    private(set) var liveMetricIngestionCount = 0
+    private(set) var liveMetricWorkoutCaptureCount = 0
+    private(set) var liveMetricStressEvaluationCount = 0
+
+    func resetLiveMetricDebugCounts() {
+        liveMetricIngestionCount = 0
+        liveMetricWorkoutCaptureCount = 0
+        liveMetricStressEvaluationCount = 0
+    }
+    #endif
     /// Drives the READ spine off the registry's active device (#814 HIGH-1). A Devices-screen
     /// switch/remove/re-add calls `registry.setActive` DIRECTLY (not through `registerDevice`), so without
     /// this subscription the reads stayed pinned to whatever id was active at wiring time for the whole
@@ -237,8 +250,9 @@ final class AppModel: ObservableObject {
             }
         }.store(in: &hrCancellables)
         // Smooth HR centrally so it's solid everywhere it's shown.
-        live.$heartRate.sink { [weak self] _ in self?.ingestHR() }.store(in: &hrCancellables)
-        live.$rr.sink { [weak self] _ in self?.ingestHR() }.store(in: &hrCancellables)
+        // HR and R-R are still independently @Published for UI/HRV consumers. Metric work follows the
+        // logical packet/update boundary instead, so a packet carrying both fields is ingested once.
+        live.biometricUpdates.sink { [weak self] in self?.ingestHR() }.store(in: &hrCancellables)
 
         // Physical-input + wear hooks (fired live by FrameRouter).
         live.onDoubleTap = { [weak self] in self?.handleDoubleTap() }
@@ -491,6 +505,9 @@ final class AppModel: ObservableObject {
     /// Prefers the strap's reported HR; falls back to 60000/R-R. Clamps to a plausible
     /// 30–220 range (rejects 0 / garbage spikes) and publishes the window MEDIAN.
     private func ingestHR() {
+        #if DEBUG
+        liveMetricIngestionCount += 1
+        #endif
         var inst: Double?
         if let hr = live.heartRate, hr >= 30, hr <= 220 {
             inst = Double(hr)
@@ -722,6 +739,9 @@ final class AppModel: ObservableObject {
     /// from `ingestHR` on every fresh sample; a no-op when no workout is running. Recomputing strain
     /// over the growing window each sample is cheap at the ~1 Hz live-HR cadence.
     private func captureWorkoutSample() {
+        #if DEBUG
+        liveMetricWorkoutCaptureCount += 1
+        #endif
         guard var w = activeWorkout, !w.isPaused, let hr = bpm else { return }
         w.samples.append(HRSample(ts: Int(Date().timeIntervalSince1970), bpm: hr))
         w.peakHr = max(w.peakHr, hr)
@@ -752,6 +772,9 @@ final class AppModel: ObservableObject {
     ///     can't re-fire. Honest / non-clinical: "stress" is an autonomic proxy vs the user's own
     ///     baseline, never a diagnosis.
     private func evaluateStress() {
+        #if DEBUG
+        liveMetricStressEvaluationCount += 1
+        #endif
         let fresh = live.rr.filter { $0 > 300 && $0 < 2000 }   // plausible R-R (30–200 bpm)
         guard !fresh.isEmpty else { return }
         rrBuf.append(contentsOf: fresh)

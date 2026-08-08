@@ -333,8 +333,15 @@ extension Repository {
         let activities = activityRows.map { DaytimeStress.ActivityInterval(startTs: $0.startTs, endTs: $0.endTs) }
         let noon = calendar.date(byAdding: .hour, value: 12, to: start) ?? start
         let offset = calendar.timeZone.secondsFromGMT(for: noon)
-        let result = DaytimeStress.analyze(hr: hr, rr: rr, gravity: gravity,
-                                           activities: activities, tzOffsetSeconds: offset)
+        // `Repository` is MainActor-isolated for its published caches, but this analysis is a pure
+        // full-day transform over captured value arrays. Sorting up to 200k HR/RR/gravity rows and
+        // building the rolling five-minute windows on the main actor caused a visible once-per-minute
+        // hitch on Today (and a second copy while Stress Monitor was open). Keep all reads and score
+        // semantics identical; only move the CPU work to utility priority.
+        let result = await Task.detached(priority: .utility) {
+            DaytimeStress.analyze(hr: hr, rr: rr, gravity: gravity,
+                                  activities: activities, tzOffsetSeconds: offset)
+        }.value
         return StressPresentation.summarize(date: start, points: result.hours,
                                             end: calendar.isDate(date, inSameDayAs: now) ? now : nil)
     }

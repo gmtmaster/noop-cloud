@@ -512,7 +512,11 @@ public enum AnalyticsEngine {
         // original calendar-day HR stream; no workout detector or workout filtering participates.
         let effMaxHR: Double? = maxHROverride ?? (profile.age > 0 ? StrainScorer.tanakaHRmax(age: profile.age) : nil)
         let restForStrain = restingHRDaily.map(Double.init) ?? StrainScorer.defaultRestingHR
-        let strain = StrainScorer.strain(dayHr ?? hr, maxHR: effMaxHR, restingHR: restForStrain,
+        // Keep the durable/raw HR stream intact, but prevent short bracketed optical spikes from
+        // receiving metabolic time credit. Effort and daily Calories deliberately share this exact
+        // derived stream so a rejected artifact cannot contaminate one while surviving in the other.
+        let metabolicHR = HRArtifactFilter.filteringShortSpikes(dayHr ?? hr)
+        let strain = StrainScorer.strain(metabolicHR, maxHR: effMaxHR, restingHR: restForStrain,
                                          sex: profile.sex)
         let workouts: [ExerciseSession] = []
 
@@ -561,7 +565,7 @@ public enum AnalyticsEngine {
         // (dayString(ts, tzOffset)) so it agrees with the bucket (#277). Fall back to the
         // night-window hr for pure-function callers that don't supply dayHr. Strain keeps the full
         // window (bounded log).
-        let dayHrFiltered = (dayHr ?? hr).filter { tsInDay($0.ts) }
+        let dayHrFiltered = metabolicHR.filter { tsInDay($0.ts) }
         let activeKcalEst: Double? = dayHrFiltered.isEmpty ? nil : Calories.estimateDayCalories(
             dayHrFiltered, profile: profile, hrmax: effMaxHR,
             restingHR: restingHRDaily.map(Double.init))

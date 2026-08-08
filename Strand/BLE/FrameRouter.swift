@@ -69,19 +69,25 @@ public final class FrameRouter {
             // BLE_REALTIME_HR_ON, so the UI can consume it even though persistence still ignores raw43.
             // live perf: skip the publish when HR is unchanged — the raw flood carries the same HR
             // byte across many frames, so an unguarded write re-renders the whole console for nothing.
-            if let hr = parsed.parsed["heart_rate"]?.intValue, hr >= 30, hr <= 220, state.heartRate != hr {
-                state.heartRate = hr
-                // Sleep & Rest test mode (Group E): bank the live HR sample for the readout's HR-density
-                // figure. Gated on the zero-cost active() Bool, so this is a no-op when the mode is off.
-                if TestCentre.active(.sleep) {
-                    state.recordSleepLiveHr(ts: Int(Date().timeIntervalSince1970), bpm: hr)
-                }
+            let hr = parsed.parsed["heart_rate"]?.intValue.flatMap {
+                ($0 >= 30 && $0 <= 220 && state.heartRate != $0) ? $0 : nil
             }
             // The realtime stream usually reports rr_count=0; only update R-R when this frame
             // actually carries intervals, so we don't wipe R-R sourced from the 0x2A37 profile.
             // setRRIntervals also feeds the Live console's rolling rrRecent buffer.
-            if let rr = parsed.parsed["rr_intervals"]?.intArrayValue, !rr.isEmpty {
-                state.setRRIntervals(rr)
+            let rr = parsed.parsed["rr_intervals"]?.intArrayValue.flatMap { $0.isEmpty ? nil : $0 }
+            if hr != nil || rr != nil {
+                state.performBiometricUpdate {
+                    if let hr {
+                        state.heartRate = hr
+                        // Sleep & Rest test mode (Group E): bank the live HR sample for the readout's
+                        // HR-density figure. Gated to zero cost when the test mode is off.
+                        if TestCentre.active(.sleep) {
+                            state.recordSleepLiveHr(ts: Int(Date().timeIntervalSince1970), bpm: hr)
+                        }
+                    }
+                    if let rr { state.setRRIntervals(rr) }
+                }
             }
 
         case "COMMAND_RESPONSE":

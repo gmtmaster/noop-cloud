@@ -2963,12 +2963,20 @@ public final class BLEManager: NSObject, ObservableObject {
         // R-R: the standard profile is the RELIABLE source (the custom REALTIME_DATA stream
         // usually reports rr_count=0), so always surface intervals when present. setRRIntervals also
         // feeds the Live console's rolling rrRecent buffer.
-        if !m.rr.isEmpty { state.setRRIntervals(m.rr) }
+        let rr = m.rr.isEmpty ? nil : m.rr
         // HR: the standard 0x2A37 profile is the RELIABLE source (BLE-standard, ~1Hz). Let it
         // drive the value whenever it's physiologically plausible; reject 0/garbage (off-wrist).
         // AppModel medians these into a stable display value. live perf: only publish on a real
         // change so a steady resting HR doesn't re-render the whole Live console every second.
-        if m.hr >= 30 && m.hr <= 220, state.heartRate != m.hr { state.heartRate = m.hr }
+        let hr = (m.hr >= 30 && m.hr <= 220 && state.heartRate != m.hr) ? m.hr : nil
+        if rr != nil || hr != nil {
+            // Preserve this WHOOP path's existing R-R-then-HR publication order, but commit the pair as
+            // one logical update for AppModel's metric pipeline.
+            state.performBiometricUpdate {
+                if let rr { state.setRRIntervals(rr) }
+                if let hr { state.heartRate = hr }
+            }
+        }
         // Record it continuously — independent of the realtime stream or the open screen.
         collector?.ingestStandardHR(hr: m.hr, rr: m.rr, at: Int(Date().timeIntervalSince1970))
     }

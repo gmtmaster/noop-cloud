@@ -8,6 +8,12 @@ import WhoopProtocol
 /// `@MainActor` so SwiftUI views observe it safely; mutators are called on the main queue.
 @MainActor
 public final class LiveState: ObservableObject {
+    /// One event per logical live-biometric update. HR and R-R remain independently `@Published` for
+    /// presentation/HRV consumers, but metric ingestion subscribes here so a packet carrying both does
+    /// not run the expensive AppModel pipeline twice. Packet decoders call `performBiometricUpdate`;
+    /// genuinely independent HR-only/R-R-only sources use the convenience mutators below.
+    public let biometricUpdates = PassthroughSubject<Void, Never>()
+
     @Published public var connected: Bool = false
     // NOTE: do NOT auto-clear `pairingHint` when `bonded` flips true. On a 5/MG, `bonded` is also set by
     // the live-HR shortcut (BLEManager — HR over the unbonded standard profile), so clearing the hint
@@ -454,6 +460,29 @@ public final class LiveState: ObservableObject {
         }
     }
 
+    /// Apply all fields from one physical/logical sensor update, then notify metric consumers once.
+    /// The closure deliberately leaves assignment order to the decoder because existing sources differ
+    /// (generic 0x2A37 publishes HR first; the WHOOP standard-profile path publishes R-R first).
+    public func performBiometricUpdate(_ updates: () -> Void) {
+        updates()
+        biometricUpdates.send(())
+    }
+
+    /// Publish a legitimate HR-only sensor update without requiring an R-R value.
+    public func updateHeartRate(_ value: Int?) {
+        performBiometricUpdate { heartRate = value }
+    }
+
+    /// Publish a legitimate R-R-only sensor update while preserving all existing R-R/HRV publications.
+    public func updateRRIntervals(_ intervals: [Int], recentLimit: Int = 60) {
+        performBiometricUpdate { setRRIntervals(intervals, recentLimit: recentLimit) }
+    }
+
+    /// Mark a live source connected without re-publishing an unchanged `true` value on every sample.
+    public func markConnected() {
+        if !connected { connected = true }
+    }
+
     /// Blank all live biometric readouts (HR + R-R + the rolling buffer) so a stale heart rate or
     /// R-R strip can't outlive the link. Called on CoreBluetooth disconnect (BLEManager), the twin of
     /// the `charging = nil` / `encryptedBond = false` clears on the same path.
@@ -466,6 +495,7 @@ public final class LiveState: ObservableObject {
         recentGravitySamples.removeAll()
         clearStrapRange()                 // a stale clock-drift window must not outlive the link either
         lastFrameAtUnix = nil             // #987: a stale "last frame" freshness must not outlive it either
+        biometricUpdates.send(())         // reset AppModel smoothing once for the logical disconnect
         Self.persistTail(log)
         logsSincePersist = 0
     }

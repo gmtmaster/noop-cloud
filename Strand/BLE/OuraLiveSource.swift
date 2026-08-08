@@ -596,7 +596,12 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private func ingest(_ events: [OuraEvent]) {
         guard !events.isEmpty, let driver else { return }
         let now = Int(Date().timeIntervalSince1970)
-        for e in events {
+        var liveHeartRate: Int?
+        var liveRR: [Int] = []
+        var firstHRIndex: Int?
+        var firstRRIndex: Int?
+        var receivedLiveHR = false
+        for (eventIndex, e) in events.enumerated() {
             switch e {
             case .hr(let hr):
                 guard hr.bpm >= 30, hr.bpm <= 220 else { continue }   // physiological gate
@@ -605,13 +610,17 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                     log("Oura: receiving live data - first HR \(hr.bpm) bpm")
                 }
                 if feedsLive {
-                    live.heartRate = hr.bpm
-                    live.connected = true
+                    liveHeartRate = hr.bpm
+                    if firstHRIndex == nil { firstHRIndex = eventIndex }
+                    receivedLiveHR = true
                 }
                 enqueue([e], ts: now)
 
             case .ibi(let ibi):
-                if feedsLive { live.setRRIntervals([ibi.ibiMs]) }
+                if feedsLive {
+                    liveRR.append(ibi.ibiMs)
+                    if firstRRIndex == nil { firstRRIndex = eventIndex }
+                }
                 enqueue([e], ts: now)
 
             case .battery(let bat):
@@ -691,6 +700,18 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 break   // motion / state / rtcBeacon / debugText: not a durable Streams row (see OuraStreamMapping)
             }
         }
+        // A secure live-HR push legitimately decodes to [.hr, .ibi]. Preserve both independent
+        // @Published mutations (and their order), but commit the physical notification once so AppModel
+        // does not duplicate smoothing/workout/stress work. IBI-only notifications still commit once.
+        if liveHeartRate != nil || !liveRR.isEmpty {
+            live.performBiometricUpdate {
+                let rrWasFirst = (firstRRIndex ?? .max) < (firstHRIndex ?? .max)
+                if rrWasFirst, !liveRR.isEmpty { live.setRRIntervals(liveRR) }
+                if let liveHeartRate { live.heartRate = liveHeartRate }
+                if !rrWasFirst, !liveRR.isEmpty { live.setRRIntervals(liveRR) }
+            }
+        }
+        if receivedLiveHR { live.connected = true }
     }
 
     // MARK: - Re-engagement timer (daytime-HR auto-reverts ~20s)
