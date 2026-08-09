@@ -4,6 +4,69 @@ import GRDB
 
 final class MetricsCacheTests: XCTestCase {
 
+    func testRecoveredSleepInsertIsAdditiveOnlyAndCannotMutateDailyMetricsOrExistingSleep() async throws {
+        let store = try await WhoopStore.inMemory()
+        let daily = DailyMetric(day: "2026-08-08", totalSleepMin: 510.05, efficiency: 0.914806,
+                                deepMin: 174.55, remMin: 148, lightMin: 187.5, disturbances: 3,
+                                restingHr: 57, avgHrv: 42.8506, recovery: 10.7854,
+                                strain: 28.92, exerciseCount: 2, spo2Pct: 96.4,
+                                skinTempDevC: 0.2, respRateBpm: 12, steps: 17_084,
+                                activeKcalEst: 1846.456)
+        _ = try await store.upsertDailyMetrics([daily], deviceId: "my-whoop-noop")
+        let existing = CachedSleepSession(startTs: 100, endTs: 200, efficiency: 0.91,
+                                          restingHr: 51, avgHrv: 63, stagesJSON: "[\"existing\"]",
+                                          userEdited: true, startTsAdjusted: 90)
+        _ = try await store.upsertSleepSessions([existing], deviceId: "my-whoop-noop")
+
+        let conflicting = CachedSleepSession(startTs: 100, endTs: 999, efficiency: 0.1,
+                                             restingHr: 99, avgHrv: 1, stagesJSON: "[\"replacement\"]")
+        let conflictingInsert = try await store.insertRecoveredSleepSession(conflicting,
+                                                                             deviceId: "my-whoop-noop")
+        XCTAssertEqual(conflictingInsert, 0)
+        let recovered = CachedSleepSession(startTs: 300, endTs: 600, efficiency: 0.88,
+                                           restingHr: 49, avgHrv: 71, stagesJSON: "[\"recovered\"]")
+        let firstInsert = try await store.insertRecoveredSleepSession(recovered, deviceId: "my-whoop-noop")
+        let secondInsert = try await store.insertRecoveredSleepSession(recovered, deviceId: "my-whoop-noop")
+        XCTAssertEqual(firstInsert, 1)
+        XCTAssertEqual(secondInsert, 0)
+
+        let dailies = try await store.dailyMetrics(deviceId: "my-whoop-noop",
+                                                   from: "2026-08-08", to: "2026-08-08")
+        XCTAssertEqual(dailies, [daily], "sleep recovery must not alter any dailyMetric field")
+        let sleeps = try await store.sleepSessions(deviceId: "my-whoop-noop", from: 0, to: 1_000,
+                                                   limit: 100)
+        XCTAssertEqual(sleeps.count, 2)
+        XCTAssertEqual(sleeps.first, existing, "an existing edited sleep must remain byte-for-byte unchanged")
+        XCTAssertEqual(sleeps.last, recovered)
+    }
+
+    func testRecoveredSleepCanLaterBeRefreshedByCanonicalFullAnalysis() async throws {
+        let store = try await WhoopStore.inMemory()
+        let recovered = CachedSleepSession(startTs: 300, endTs: 600, efficiency: 0.80,
+                                           restingHr: 52, avgHrv: 60, stagesJSON: "[\"recovered\"]")
+        let inserted = try await store.insertRecoveredSleepSession(recovered, deviceId: "my-whoop-noop")
+        XCTAssertEqual(inserted, 1)
+
+        // The ordinary full-width analytics path keeps its existing upsert semantics. Once enough
+        // baseline/history is available it may refresh the recovered session and create the canonical
+        // daily row; the additive recovery API does not block or fork that later ownership.
+        let canonical = CachedSleepSession(startTs: 300, endTs: 630, efficiency: 0.90,
+                                           restingHr: 49, avgHrv: 71, stagesJSON: "[\"canonical\"]")
+        _ = try await store.upsertSleepSessions([canonical], deviceId: "my-whoop-noop")
+        let daily = DailyMetric(day: "2026-08-09", totalSleepMin: 460, efficiency: 0.8733,
+                                deepMin: 120, remMin: 110, lightMin: 230, disturbances: 2,
+                                restingHr: 49, avgHrv: 71, recovery: 74, strain: 8,
+                                exerciseCount: 0, activeKcalEst: 900)
+        _ = try await store.upsertDailyMetrics([daily], deviceId: "my-whoop-noop")
+
+        let sleeps = try await store.sleepSessions(deviceId: "my-whoop-noop", from: 0, to: 1_000,
+                                                   limit: 100)
+        let dailies = try await store.dailyMetrics(deviceId: "my-whoop-noop",
+                                                   from: "2026-08-09", to: "2026-08-09")
+        XCTAssertEqual(sleeps, [canonical])
+        XCTAssertEqual(dailies, [daily])
+    }
+
     func testV4CreatesDerivedTables() async throws {
         let store = try await WhoopStore.inMemory()
         let tables = try await store.tableNames()

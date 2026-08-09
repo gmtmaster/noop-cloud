@@ -7,10 +7,11 @@ import WhoopStore
 @MainActor
 enum SleepHistoryInputBuilder {
     static func build(days: [DailyMetric], sessions: [CachedSleepSession],
-                      habitualMidsleepSec: Int?, importedSleep: [String: ImportedSleepFigures])
+                      habitualMidsleepSec: Int?, importedSleep: [String: ImportedSleepFigures],
+                      timeZone: TimeZone = .current)
         -> [SleepPlanningNightInput] {
         let grouped = Dictionary(grouping: sessions) {
-            Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
+            Repository.sleepWakeDayKey($0, timeZone: timeZone)
         }
         let parts = grouped.reduce(into: [String: (main: Double, naps: Double)]()) { result, pair in
             let ordered = pair.value.sorted { $0.effectiveStartTs < $1.effectiveStartTs }
@@ -29,13 +30,18 @@ enum SleepHistoryInputBuilder {
             }
         }
 
-        let all = days.map { day in
-            let split = parts[day.day]
+        let dailyByDay = Dictionary(days.map { ($0.day, $0) }, uniquingKeysWith: { _, last in last })
+        let dayKeys = Set(dailyByDay.keys).union(parts.keys).sorted()
+        let all = dayKeys.map { dayKey in
+            let day = dailyByDay[dayKey]
+            let split = parts[dayKey]
             return SleepPlanningNightInput(
-                day: day.day, mainSleepMinutes: split?.main ?? day.totalSleepMin,
-                napSleepMinutes: split?.naps ?? 0, strain: day.strain, efficiency: day.efficiency,
-                importedWhoopNeedMinutes: importedSleep[day.day]?.needMin,
-                importedWhoopDebtMinutes: importedSleep[day.day]?.debtMin)
+                day: dayKey, mainSleepMinutes: split?.main ?? day?.totalSleepMin,
+                napSleepMinutes: split?.naps ?? 0, strain: day?.strain,
+                efficiency: split != nil ? canonicalMainEfficiency(grouped[dayKey] ?? [],
+                    habitualMidsleepSec: habitualMidsleepSec, timeZone: timeZone) : day?.efficiency,
+                importedWhoopNeedMinutes: importedSleep[dayKey]?.needMin,
+                importedWhoopDebtMinutes: importedSleep[dayKey]?.debtMin)
         }
 
         // Keep enough valid sleeps to establish the baseline for every contribution in the debt window,
@@ -50,8 +56,30 @@ enum SleepHistoryInputBuilder {
         return Array(all[start...])
     }
 
+    private static func canonicalMainEfficiency(_ sessions: [CachedSleepSession],
+                                                habitualMidsleepSec: Int?,
+                                                timeZone: TimeZone) -> Double? {
+        guard !sessions.isEmpty else { return nil }
+        let offset = sessions.map {
+            timeZone.secondsFromGMT(for: Date(timeIntervalSince1970: TimeInterval($0.endTs)))
+        }.max() ?? 0
+        guard let indices = SleepStageTotals.mainNightGroupIndices(
+            sessions.map { SleepStageTotals.NightBlock(start: $0.effectiveStartTs, end: $0.endTs) },
+            offsetSec: offset, habitualMidsleepSec: habitualMidsleepSec) else { return nil }
+        let group = indices.map { sessions[$0] }
+        let inBed = group.reduce(0.0) { $0 + Double(max(0, $1.endTs - $1.effectiveStartTs)) }
+            + SleepStageTotals.interFragmentAwakeSeconds(
+                group.map { (start: $0.effectiveStartTs, end: $0.endTs) })
+        guard inBed > 0 else { return nil }
+        let asleep = group.reduce(0.0) { total, session in
+            total + (SleepStageTotals.minutes(fromStagesJSON: session.stagesJSON)?.asleep ?? 0) * 60
+        }
+        return asleep > 0 ? asleep / inBed : nil
+    }
+
     static func tonightNapMinutes(in inputs: [SleepPlanningNightInput], now: Date = Date()) -> Double {
-        let today = Repository.localDayKey(Repository.logicalDay(now))
+        // Planning uses canonical local calendar wake-days, never Today's 04:00 presentation rollover.
+        let today = Repository.localDayKey(now)
         return inputs.last(where: { $0.day == today })?.napSleepMinutes ?? 0
     }
 }

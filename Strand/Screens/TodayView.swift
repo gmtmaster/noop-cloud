@@ -10,6 +10,15 @@ struct OverviewHRAnnotationContext {
     let workouts: [OverviewHRChart.WorkoutSpan]
 }
 
+/// Presentation state for Today's Rest ring. A finalized session and a scored Rest value are deliberately
+/// separate states: sleep-only recovery may bank the former before canonical daily analysis produces the
+/// latter. Keeping this explicit prevents the UI from hiding real sleep or fabricating a partial score.
+enum TodayRestRingState: Equatable {
+    case scored(Double)
+    case needsTrackedNight
+    case noData
+}
+
 /// Canonical app-level annotation source for every whole-day Overview HR chart. Repository workout
 /// rows are already cross-source deduplicated and dismissal-filtered; sleep reads include imported and
 /// on-device computed sessions. Selection then uses OverviewHRChart's original overlap rules.
@@ -922,6 +931,25 @@ struct TodayView: View {
         guard isTodaySelected, let lastDay, let lastValue,
               !isCarryStale(priorDayKey: lastDay, todayKey: todayKey) else { return nil }
         return lastValue
+    }
+
+    /// Wake-day-aware wrapper for the Rest score. Once a newer finalized sleep exists for the selected
+    /// day, an older carried score must not be relabelled as that sleep's score. The session remains visible
+    /// through `restRingState`; its Rest score stays nil until canonical daily analysis creates one.
+    static func restScoreForWakeDay(todayValue: Double?, lastDay: String?, lastValue: Double?,
+                                    isTodaySelected: Bool, todayKey: String,
+                                    hasFinalizedSleep: Bool) -> Double? {
+        if hasFinalizedSleep && todayValue == nil { return nil }
+        return freshRestScore(todayValue: todayValue, lastDay: lastDay, lastValue: lastValue,
+                              isTodaySelected: isTodaySelected, todayKey: todayKey)
+    }
+
+    /// Pure selector behind the Rest hero ring. Finalized sleep becomes scored through the sleep-specific
+    /// metric-series projection; the view itself never substitutes duration for a missing score.
+    static func restRingState(restScore: Double?, sleepSession _: CachedSleepSession?,
+                              hasRecovery: Bool) -> TodayRestRingState {
+        if let restScore { return .scored(restScore) }
+        return hasRecovery ? .needsTrackedNight : .noData
     }
 
     /// The carried recovery caption stamp, keyed on that scored day's own date and its recency. Within the
@@ -3846,17 +3874,19 @@ struct TodayView: View {
     /// Rest (sleep composite 0–100) hero ring.
     @ViewBuilder
     private func restRing(diameter: CGFloat) -> some View {
-        if let s = restScore {
+        switch Self.restRingState(restScore: restScore, sleepSession: sleepToday,
+                                  hasRecovery: displayDay?.recovery != nil) {
+        case .scored(let s):
             GlowRing(fraction: s / 100, value: s, format: { "\(Int($0.rounded()))" },
                      color: StrandPalette.restColor, diameter: diameter, lineWidth: diameter * 0.10)
-        } else if displayDay?.recovery != nil {
+        case .needsTrackedNight:
             // #898: an aggregate-import user (a daily HRV/RHR import, no in-bed session) gets a Charge from
             // WatchRecovery but NO sleep_performance, so Rest read a bare "No data" next to a lit Charge ,
             // reading as broken. When a Charge IS present for the day but Rest is absent, say WHY honestly
             // instead. We do NOT fabricate a Rest number , an aggregate genuinely has no scored night. A day
             // with no Charge either (truly empty) still falls through to "No data". Mirrors Android.
             emptyHeroRing(diameter: diameter) { ringNeedsTrackedNight() }
-        } else {
+        case .noData:
             emptyHeroRing(diameter: diameter) { ringNoData(diameter: diameter) }
         }
     }
@@ -4991,11 +5021,18 @@ struct TodayView: View {
         async let restSeriesA       = repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
         async let recoveryResolvedA = repo.resolvedSeries(key: "recovery", source: Repository.whoopSource)
         async let restResolvedA     = repo.resolvedSeries(key: "sleep_performance", source: Repository.whoopSource)
+        async let sleepRowsA        = repo.allSleepSessions(days: selectedDayOffset + 2)
+        async let habitualMidsleepA = repo.habitualMidsleepSec()
 
         // Rest SCORE for the logical day. `exploreSeries` already merges imported + computed
         // `sleep_performance` (imported-wins), so a Bluetooth-only user sees the on-device Rest
         // composite and an importer sees the export's figure, exactly like the Rest detail screen.
         let restSeries = await restSeriesA
+        let sleepRows = await sleepRowsA
+        let habitualMidsleep = await habitualMidsleepA
+        let sleepTodayLocal = Repository.sleepSession(forWakeDay: loadDayKey, in: sleepRows,
+                                                      habitualMidsleepSec: habitualMidsleep)
+        sleepToday = sleepTodayLocal
         let restByDay = Dictionary(restSeries.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
         // The Rest TILE's sparkline (#614 follow-up). The tile's number is `restScore` (the Rest composite,
         // 0–100) but its mini-graph used to plot raw sleep MINUTES (`sparks["sleep_total_min"]`), so the
@@ -5008,10 +5045,10 @@ struct TodayView: View {
         // tail night is still fresh. #977: a live 5.0 whose sleep never scores used to pin Rest to the
         // weeks-old series tail forever; gate the tail-fallback on freshness so a stale tail falls through
         // to the No-Data state instead of freezing.
-        let restScoreLocal = Self.freshRestScore(
+        let restScoreLocal = Self.restScoreForWakeDay(
             todayValue: restByDay[selectedDayKey], lastDay: restSeries.last?.day,
             lastValue: restSeries.last?.value, isTodaySelected: selectedDayOffset == 0,
-            todayKey: selectedDayKey)
+            todayKey: selectedDayKey, hasFinalizedSleep: sleepTodayLocal != nil)
         restScore = restScoreLocal
 
         // Component 4, resolve the REAL per-day merge winner for the selected day's derived scores. The
@@ -5087,16 +5124,9 @@ struct TodayView: View {
         hrZoomDomain = Self.reclampHrZoom(hrZoomDomain, oldAxis: hrAxis, newAxis: newAxis)
         hrAxis = newAxis
 
-        // Sleep session overlapping the window. Uses `allSleepSessions` (BOTH the imported and the
-        // on-device COMPUTED source), a Bluetooth-only user's sleep lives under the computed source,
-        // so the imported-only `sleepSessions` returns nothing. Keep blocks that actually overlap the
-        // displayed window, then pick the LONGEST, the main night, not an afternoon nap. Drives the
-        // HR sleep band + the recovery marker's wake anchor.
-        let sleepTodayLocal = await repo.allSleepSessions(days: selectedDayOffset + 2)
-            .filter { $0.endTs > windowStart && $0.startTs < windowEnd }
-            .max(by: { ($0.endTs - $0.startTs) < ($1.endTs - $1.startTs) })
-        sleepToday = sleepTodayLocal
-
+        // `sleepTodayLocal` was resolved above through Repository's canonical wake-day/main-night path.
+        // It drives Activities, the Rest-ring logged state, the HR sleep band, and the wake marker alike.
+        // Crucially, this selection does not require or create a DailyMetric row.
         // #932: snapshot everything just computed onto the long-lived `repo`, keyed by the (seq, day) this
         // pass loaded FOR (both captured at entry), so a later re-mount with the same (seq, day) restores it
         // in-memory instead of re-running the heavy reads. Skip the store when the pass was overtaken

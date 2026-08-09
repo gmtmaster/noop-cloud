@@ -176,6 +176,10 @@ final class Repository: ObservableObject {
     /// date string within a day and would freeze e.g. the Today HR trend until the date rolls over.
     @Published private(set) var refreshSeq = 0
 
+    /// A derived metric-series write does not alter the merged daily/sleep caches, so `refresh()` correctly
+    /// diffs it as unchanged. Explicitly invalidate day-scoped score readers after such a write.
+    func noteSleepPerformanceChanged() { refreshSeq += 1 }
+
     /// #989: bumped by every hydration mutation (log / edit / delete). Today's hydration card re-reads on
     /// this instead of waiting for a full `refreshSeq` data refresh, which a hydration write never causes,
     /// so the card sat stale until an unrelated sync landed. Race-free: Repository is @MainActor.
@@ -790,7 +794,7 @@ final class Repository: ObservableObject {
         var days = Set<String>()
         for s in sessions where s.userEdited {
             let offsetSec = TimeZone.current.secondsFromGMT(for: Date(timeIntervalSince1970: TimeInterval(s.endTs)))
-            days.insert(AnalyticsEngine.dayString(s.endTs, offsetSec: offsetSec))
+            days.insert(AnalyticsEngine.sleepWakeDayKey(endTs: s.endTs, offsetSec: offsetSec))
         }
         return days
     }
@@ -821,7 +825,7 @@ final class Repository: ObservableObject {
     nonisolated private static func mergeSleep(imported: [CachedSleepSession], computed: [CachedSleepSession]) -> [CachedSleepSession] {
         func endDay(_ s: CachedSleepSession) -> String {
             let offsetSec = TimeZone.current.secondsFromGMT(for: Date(timeIntervalSince1970: TimeInterval(s.endTs)))
-            return AnalyticsEngine.dayString(s.endTs, offsetSec: offsetSec)
+            return AnalyticsEngine.sleepWakeDayKey(endTs: s.endTs, offsetSec: offsetSec)
         }
         // #715, preserve EVERY session (a day with a main night + a nap must keep both); imported still
         // wins per end-day. Shared, unit-tested grouping (WhoopStore.SleepMerge / SleepMergeTests) replaces
@@ -947,6 +951,44 @@ final class Repository: ObservableObject {
         for s in imported { importedDays.insert(endDay(s)) }
         let computedKept = computed.filter { !importedDays.contains(endDay($0)) }
         return (imported + computedKept).sorted { $0.effectiveStartTs < $1.effectiveStartTs }
+    }
+
+    /// Canonical wake-day key for a finalized sleep session. Sleep is attributed to the LOCAL calendar
+    /// day on which the user woke, matching `AnalyticsEngine.analyzeDay`, `mergeSleep`, and dailyMetric.
+    /// The timezone is injectable so date-boundary behavior is deterministic in tests and during travel.
+    nonisolated static func sleepWakeDayKey(_ session: CachedSleepSession,
+                                            timeZone: TimeZone = .current) -> String {
+        let wake = Date(timeIntervalSince1970: TimeInterval(session.endTs))
+        return AnalyticsEngine.sleepWakeDayKey(endTs: session.endTs,
+                                               offsetSec: timeZone.secondsFromGMT(for: wake))
+    }
+
+    /// The already-precedence-resolved finalized blocks belonging to one local wake-day. Callers pass the
+    /// result of `allSleepSessions`, so imported/computed precedence and cross-source deduplication happen
+    /// once in Repository rather than being reimplemented by each UI surface.
+    nonisolated static func sleepSessions(_ sessions: [CachedSleepSession],
+                                          forWakeDay day: String,
+                                          timeZone: TimeZone = .current) -> [CachedSleepSession] {
+        sessions
+            .filter { sleepWakeDayKey($0, timeZone: timeZone) == day }
+            .sorted { $0.effectiveStartTs < $1.effectiveStartTs }
+    }
+
+    /// The canonical main finalized session for a wake-day. This uses the same shared main-night selector
+    /// as analytics and SleepView; a nap cannot replace the night's sleep merely because it overlaps the
+    /// displayed calendar window. No dailyMetric is consulted or created.
+    nonisolated static func sleepSession(forWakeDay day: String,
+                                         in sessions: [CachedSleepSession],
+                                         timeZone: TimeZone = .current,
+                                         habitualMidsleepSec: Int? = nil) -> CachedSleepSession? {
+        let blocks = sleepSessions(sessions, forWakeDay: day, timeZone: timeZone)
+        guard !blocks.isEmpty else { return nil }
+        let offset = blocks.map {
+            timeZone.secondsFromGMT(for: Date(timeIntervalSince1970: TimeInterval($0.endTs)))
+        }.max() ?? 0
+        return SleepStageTotals.mainNightIndex(
+            blocks.map { SleepStageTotals.NightBlock(start: $0.effectiveStartTs, end: $0.endTs) },
+            offsetSec: offset, habitualMidsleepSec: habitualMidsleepSec).map { blocks[$0] }
     }
 
     /// The persisted per-epoch MOTION series for each of `starts` (detected session start keys), keyed by

@@ -501,6 +501,18 @@ final class AppModel: ObservableObject {
         #endif
     }
 
+    /// Foreground repair for a night whose raw backfill completed but whose finalized sleep row was never
+    /// banked. This is intentionally separate from daily analysis: it can only add missing sleep-session
+    /// state and therefore cannot regress Charge, Effort, calories, steps, or historical daily rows.
+    func recoverMissingSleepOnForeground() async {
+        let result = await intelligence.recoverMissingRecentSleep(maxWakeDays: 2)
+        guard !result.inserted.isEmpty else { return }
+        for session in result.inserted {
+            live.append(log: "SleepRecovery: inserted finalized session startTs=\(session.startTs) "
+                        + "endTs=\(session.endTs)", domain: .sleep)
+        }
+    }
+
     /// Fold a fresh reading into the smoothing window and republish a stable bpm.
     /// Prefers the strap's reported HR; falls back to 60000/R-R. Clamps to a plausible
     /// 30–220 range (rejects 0 / garbage spikes) and publishes the window MEDIAN.

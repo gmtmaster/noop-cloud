@@ -35,6 +35,27 @@ final class AnalyticsEngineTests: XCTestCase {
                        AnalyticsEngine.dayString(ts + 45_000))
     }
 
+    func testCanonicalSleepWakeDayIgnoresFourAMPresentationBoundary() {
+        let offset = 2 * 3_600
+        func utc(_ iso: String) -> Int {
+            Int(ISO8601DateFormatter().date(from: iso)!.timeIntervalSince1970)
+        }
+        // Budapest local: 23:00→07:00, 01:00→09:00, and the reported 03:27→11:07 case.
+        let wakes = [
+            utc("2026-08-09T05:00:00Z"),
+            utc("2026-08-09T07:00:00Z"),
+            utc("2026-08-09T09:07:00Z"),
+        ]
+        for wake in wakes {
+            XCTAssertEqual(AnalyticsEngine.sleepWakeDayKey(endTs: wake, offsetSec: offset),
+                           "2026-08-09")
+        }
+        // 03:27 local is still before Today's 04:00 presentation rollover, but wake ownership remains
+        // entirely determined by the 11:07 local wake above.
+        XCTAssertEqual(AnalyticsEngine.dayString(utc("2026-08-09T01:27:00Z") - 4 * 3_600,
+                                                 offsetSec: offset), "2026-08-08")
+    }
+
     func testDayStringSamplesSpanningOneLocalDayMapToOneKey() {
         // Every wall-clock second across a UTC-4 user's local 2021-06-15 (00:00 → 23:59:59 local)
         // must map to the single key "2021-06-15", even though the late-evening hours cross midnight
@@ -111,6 +132,50 @@ final class AnalyticsEngineTests: XCTestCase {
         XCTAssertNotNil(result.cachedSleep[0].stagesJSON)
         XCTAssertEqual(result.cachedSleep[0].restingHr, 50)
         XCTAssertTrue(result.workouts.isEmpty)
+    }
+
+
+    func testPersistedSleepRestProjectionMatchesCanonicalFullAnalysis() throws {
+        let day = "2026-08-09"
+        let n = night(endDay: day, hours: 8)
+        let profile = UserProfile(weightKg: 75, heightCm: 178, age: 30, sex: "male")
+        let canonical = AnalyticsEngine.analyzeDay(
+            day: day, hr: n.hr, rr: n.rr, gravity: n.gravity, profile: profile)
+        let fullScore = try XCTUnwrap(canonical.restScore)
+        let persistedScore = try XCTUnwrap(AnalyticsEngine.Rest.composite(
+            finalized: canonical.cachedSleep, offsetSec: 0))
+        XCTAssertEqual(persistedScore, fullScore, accuracy: 0.000_001)
+    }
+
+    func testDaytimeNapCannotReplacePrimaryNightRestProjection() throws {
+        func json(awake: Double, light: Double, deep: Double, rem: Double) -> String {
+            "{\"awake\":\(awake),\"light\":\(light),\"deep\":\(deep),\"rem\":\(rem)}"
+        }
+        let night = CachedSleepSession(startTs: 1_786_228_200, endTs: 1_786_257_000,
+                                       efficiency: 0.90, restingHr: nil, avgHrv: nil,
+                                       stagesJSON: json(awake: 48, light: 330, deep: 110, rem: 92))
+        let nap = CachedSleepSession(startTs: 1_786_278_600, endTs: 1_786_285_800,
+                                     efficiency: 0.95, restingHr: nil, avgHrv: nil,
+                                     stagesJSON: json(awake: 6, light: 70, deep: 24, rem: 20))
+        let scoreWithNap = try XCTUnwrap(AnalyticsEngine.Rest.composite(
+            finalized: [night, nap], offsetSec: 2 * 3_600))
+        let nightOnly = try XCTUnwrap(AnalyticsEngine.Rest.composite(
+            finalized: [night], offsetSec: 2 * 3_600))
+        XCTAssertEqual(scoreWithNap, nightOnly, accuracy: 0.000_001)
+    }
+
+    func testReportedAug9PersistedStageFixtureScores887() throws {
+        // Exact persisted-stage totals and efficiency reproduced read-only from the copied Aug 9 backup:
+        // 03:27:14→11:07:34 Budapest, 28m50s awake, 204m light, 98m deep, 129m30s REM.
+        let stages = #"{"awake":28.833333333333332,"light":204.0,"deep":98.0,"rem":129.5}"#
+        let session = CachedSleepSession(startTs: 1_786_238_834, endTs: 1_786_266_454,
+                                         efficiency: 0.9373642288196958,
+                                         restingHr: nil, avgHrv: nil, stagesJSON: stages)
+        let score = try XCTUnwrap(AnalyticsEngine.Rest.composite(
+            finalized: [session], offsetSec: 2 * 3_600))
+        XCTAssertEqual(AnalyticsEngine.sleepWakeDayKey(endTs: session.endTs,
+                                                       offsetSec: 2 * 3_600), "2026-08-09")
+        XCTAssertEqual(score, 88.7, accuracy: 0.000_001)
     }
 
     func testElevatedHeartRateAndMotionNeverCreateAutomaticWorkoutAndEffortStillCalculates() {

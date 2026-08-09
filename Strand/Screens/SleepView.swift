@@ -59,6 +59,9 @@ struct SleepView: View {
     /// merges each day into one Night, so a split day reads as one correctly-totalled night with the
     /// gaps preserved. Oldest→newest. Falls back to `repo.sleeps` until loaded. (#170)
     @State private var allSessions: [CachedSleepSession] = []
+    /// Canonical imported/computed Rest series from Repository. Unlike the old `repo.days` projection,
+    /// this includes sleep-only recovered wake-days that intentionally have no DailyMetric row.
+    @State private var sleepPerformancePoints: [MetricPoint] = []
 
     /// The user's LEARNED habitual midsleep (local time-of-day seconds), or nil under the cold-start
     /// threshold. Loaded from `repo.habitualMidsleepSec()` — the SAME value `AnalyticsEngine.analyzeDay`
@@ -170,6 +173,7 @@ struct SleepView: View {
             // `decodedNight` JSON-decodes and body re-evaluates at 1Hz while HR streams. (#160)
             .onChangeCompat(of: nightOffset) { newOffset in
                 navNight = newOffset == 0 ? nil : decodedNight(at: newOffset)
+                model = buildModel(at: newOffset)
             }
             .onAppear {
                 if modelKey != key {
@@ -185,7 +189,13 @@ struct SleepView: View {
             // refreshSeq; snaps back to the newest day and rebuilds the model so offset 0 reflects
             // the freshly-loaded blocks. (#170)
             .task(id: repo.refreshSeq) {
-                allSessions = await repo.allSleepSessions()
+                async let sessions = repo.allSleepSessions()
+                async let performance = repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
+                allSessions = await sessions
+                let resolvedPerformance = await performance
+                sleepPerformancePoints = resolvedPerformance.map {
+                    MetricPoint(day: $0.day, key: "sleep_performance", value: $0.value)
+                }
                 // Load the learned habitual midsleep the engine used, so the main-night pick aligns to it
                 // (a shift/late sleeper) instead of only the cold-start band. nil under threshold. (#547)
                 habitualMidsleepSec = await repo.habitualMidsleepSec()
@@ -485,7 +495,8 @@ struct SleepView: View {
     /// Whether the night's sleep-performance score is WHOOP's own imported figure or NOOP's
     /// on-device approximation — so the hero is honest about provenance, like Today's badges.
     private func sleepScoreSource(_ model: SleepModel) -> LocalizedStringKey {
-        if let lastDay = repo.days.last?.day, repo.importedSleep[lastDay]?.performancePct != nil {
+        let wakeDay = Repository.sleepWakeDayKey(model.night.session)
+        if repo.importedSleep[wakeDay]?.performancePct != nil {
             return "Whoop"
         }
         return "On-device"
@@ -1792,7 +1803,7 @@ struct SleepView: View {
     /// Build every expensive derivation exactly once. Called only when `dataKey` changes,
     /// so each full pass over repo.days / repo.sleeps runs once per data change rather than
     /// once per render. Returns nil when there is no usable latest night (renders empty state).
-    private func buildModel() -> SleepModel? {
+    private func buildModel(at offset: Int = 0) -> SleepModel? {
         // #940: ONE un-mergeable newest day (e.g. an impossible hand-edit staged all-awake) must
         // not blank the whole tab behind the first-run empty state; every older night is still in
         // the DB. Degrade to the SAME honest stage-less stub the ◀/▶ browse shows for such a day,
@@ -1800,30 +1811,32 @@ struct SleepView: View {
         // (the true empty state) only when there is genuinely no day to show.
         let night: Night
         let isStub: Bool
-        if let merged = latestNight {
+        if let merged = decodedNight(at: offset) {
             night = merged
             isStub = false
-        } else if let stubSession = SleepView.stubDaySession(dayBlocks(at: 0),
+        } else if let stubSession = SleepView.stubDaySession(dayBlocks(at: offset),
                                                              habitualMidsleepSec: habitualMidsleepSec) {
             night = Night(session: stubSession, stages: Stages(awake: 0, light: 0, deep: 0, rem: 0),
-                          sourceBlocks: dayBlocks(at: 0), habitualMidsleepSec: habitualMidsleepSec)
+                          sourceBlocks: dayBlocks(at: offset), habitualMidsleepSec: habitualMidsleepSec)
             isStub = true
         } else {
             return nil
         }
+        let wakeDay = Repository.sleepWakeDayKey(night.session)
         return SleepModel(
             night: night,
             intervals: night.intervals,
             isPersistedHypnogram: (night.realSegments?.count ?? 0) >= 2,
             isStubNight: isStub,
-            performance: performanceSeries,
+            performance: performanceSeries(forWakeDay: wakeDay),
             efficiency: efficiencySeries,
             consistency: consistencySeries,
             hoursVsNeeded: hoursVsNeededSeries,
             restorative: restorativeSeries,
             respiratory: respiratorySeries,
             sleepDebt: sleepDebtSeries,
-            sleepNeed: currentSleepNeed,
+            sleepNeed: sleepNeedHistory.last(where: { $0.day == wakeDay })?.planBeforeNight
+                ?? currentSleepNeed,
             sleepDebtHistory: sleepNeedHistory,
             typicalTotalMin: typicalTotalMin,
             typicalDeepMin: typicalStageMin(\.deepMin),
@@ -1869,11 +1882,16 @@ struct SleepView: View {
     /// is ONE ◀/▶ stop, so a split-sleep day reads as a single night and the "N nights ago" label
     /// stays truthful — two blocks of the same day are never "1 night ago" AND "2 nights ago". (#170)
     private var navDays: [[CachedSleepSession]] {
-        let cal = Calendar.current
-        func endDay(_ s: CachedSleepSession) -> Date {
-            cal.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(s.endTs)))
+        Self.wakeDayGroups(navSessions)
+    }
+
+    /// Pure wake-day grouping used by the Sleep page. Exposed internally for regression coverage so a
+    /// finalized session-only day cannot disappear merely because `repo.days` has no matching row.
+    static func wakeDayGroups(_ sessions: [CachedSleepSession],
+                              timeZone: TimeZone = .current) -> [[CachedSleepSession]] {
+        let groups = Dictionary(grouping: sessions) {
+            Repository.sleepWakeDayKey($0, timeZone: timeZone)
         }
-        let groups = Dictionary(grouping: navSessions, by: endDay)
         return groups.keys.sorted(by: >).map { key in
             (groups[key] ?? []).sorted { $0.effectiveStartTs < $1.effectiveStartTs }
         }
@@ -2162,18 +2180,18 @@ struct SleepView: View {
         return (series.last, mean(series), series)
     }
 
-    /// Sleep performance %: the imported WHOOP figure (sleep_performance, 0–100) when the
-    /// export carried one for that day; else the REAL resolved Rest composite for that day —
-    /// the same single source of truth the Today Rest score reads (AnalyticsEngine.Rest.composite,
-    /// what Repository.dailyColumn resolves "sleep_performance" to), NOT a local hours-vs-need
-    /// approximation. Keeps the Rest detail graph in agreement with the Today Rest score. (#614
-    /// follow-up) Values land 0–100 via the composite; the metric() finite filter drops the rest.
-    private var performanceSeries: Metric {
-        let imported = repo.importedSleep
-        return metric { d in
-            if let p = imported[d.day]?.performancePct { return p }   // export-verbatim
-            return AnalyticsEngine.Rest.composite(daily: d)            // real resolved Rest composite
-        }
+    /// Sleep performance from Repository's canonical resolved series. Imported values retain their
+    /// precedence and computed sleep-only projections remain visible without requiring DailyMetric.
+    private func performanceSeries(forWakeDay wakeDay: String) -> Metric {
+        let values = sleepPerformancePoints.map(\.value)
+        return (Self.performanceValue(forWakeDay: wakeDay, in: sleepPerformancePoints),
+                mean(values), values)
+    }
+
+    /// Pure lookup used by the screen and UI regression tests. Points have already passed through
+    /// Repository's canonical imported/computed precedence resolver.
+    static func performanceValue(forWakeDay wakeDay: String, in points: [MetricPoint]) -> Double? {
+        points.last(where: { $0.day == wakeDay && $0.key == "sleep_performance" })?.value
     }
 
     private var efficiencySeries: Metric {

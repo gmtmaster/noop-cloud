@@ -40,6 +40,10 @@ final class IntelligenceEngine: ObservableObject {
     /// `defer` re-invokes `analyzeRecent(force: true)` ONCE when it clears. A single re-arm (the flag is
     /// cleared BEFORE the re-invoke) bounds it to one extra pass , no recompute storm.
     private var pendingForcedRescore = false
+    /// Foreground activation can be delivered more than once while another activation task is still
+    /// finishing. Keep the additive sleep recovery single-flight; the store insert is independently
+    /// conflict-safe, so this is a cheap-work guard rather than a correctness dependency.
+    private var recoveringMissingSleep = false
     /// #899 heal bound: true while the last heal already re-armed a rescore, so a heal firing again on
     /// the very next pass cannot re-arm a second time (the Android twin is hard-bounded to exactly one
     /// re-pass; this mirrors it). Reset by any pass whose heal finds nothing, restoring the budget.
@@ -161,6 +165,187 @@ final class IntelligenceEngine: ObservableObject {
 
     init(repo: Repository, profile: ProfileStore, deviceId: String) {
         self.repo = repo; self.profile = profile; self.deviceId = deviceId
+    }
+
+    struct SleepRecoveryResult: Equatable {
+        var checkedDays = 0
+        var existingDays = 0
+        var rejectedDays = 0
+        var inserted: [CachedSleepSession] = []
+        var sleepPerformancePoints: [MetricPoint] = []
+    }
+
+    /// Reconstruct finalized sleep sessions from already-persisted raw streams without running daily
+    /// analysis. The only writes allowed here are additive `sleepSession` inserts and the two auxiliary
+    /// per-session epoch columns (`motionJSON` / `sleepStateJSON`) for rows this invocation inserted.
+    /// In particular this path never calls `analyzeRecent` and never writes `dailyMetric`.
+    ///
+    /// A wake-day that already has any finalized imported/computed session is skipped before raw streams
+    /// are loaded. A newly detected session is finalizable only when at least one detector merge window of
+    /// raw data exists after its wake; this prevents a foreground activation during an ongoing sleep from
+    /// banking a provisional end at the current data frontier.
+    func recoverMissingRecentSleep(maxWakeDays: Int = 2, now: Date = Date(),
+                                   tzOffsetSeconds explicitOffset: Int? = nil) async -> SleepRecoveryResult {
+        guard !recoveringMissingSleep, maxWakeDays > 0 else { return SleepRecoveryResult() }
+        recoveringMissingSleep = true
+        defer { recoveringMissingSleep = false }
+
+        guard let store = await repo.storeHandle() else { return SleepRecoveryResult() }
+        let nowTs = Int(now.timeIntervalSince1970)
+        let tzOffset = explicitOffset ?? TimeZone.current.secondsFromGMT(for: now)
+        let nowLocalMidnight = Self.midnightLocal(nowTs, offsetSec: tzOffset)
+        let computedId = deviceId + "-noop"
+
+        let registry = DeviceRegistryStore(dbQueue: store.registryWriter)
+        let devices = (try? registry.all()) ?? []
+        let activeId = (try? registry.activeDeviceId()) ?? deviceId
+        let existingIds = Array(Set([deviceId, computedId, activeId, activeId + "-noop"]))
+        let importedIds = [activeId, deviceId].reduce(into: [String]()) {
+            if !$0.contains($1) { $0.append($1) }
+        }
+        let computedIds = [activeId + "-noop", computedId].reduce(into: [String]()) {
+            if !$0.contains($1) { $0.append($1) }
+        }
+        let dismissed = repo.dismissedSleepWindows()
+        let useSleepStagerV2 = PuffinExperiment.experimentalSleepV2Enabled
+        let habitualMidsleepSec = await repo.habitualMidsleepSec()
+
+        var result = SleepRecoveryResult()
+        for offset in 0..<maxWakeDays {
+            result.checkedDays += 1
+            let dayStart = nowLocalMidnight - offset * 86_400
+            let day = AnalyticsEngine.dayString(dayStart, offsetSec: tzOffset)
+            let from = dayStart - 30 * 3_600
+            let nextMidnight = dayStart + 86_400
+            let to = min(nowTs, dayStart < nowLocalMidnight ? nextMidnight : dayStart + 18 * 3_600)
+
+            // Cheap/idempotent fast path. Query every namespace Repository can surface so an imported,
+            // manually edited, or prior recovered session all suppress re-detection for this wake-day.
+            var existingById: [String: [CachedSleepSession]] = [:]
+            for id in existingIds {
+                let rows = (try? await store.sleepSessions(deviceId: id, from: from, to: to, limit: 100)) ?? []
+                existingById[id] = rows.filter {
+                    AnalyticsEngine.sleepWakeDayKey(endTs: $0.endTs, offsetSec: tzOffset) == day
+                }
+            }
+            let importedSessions = SleepSessionDedup.dedupe(
+                importedIds.flatMap { existingById[$0] ?? [] }).kept
+            let computedSessions = SleepSessionDedup.dedupe(
+                computedIds.flatMap { existingById[$0] ?? [] }).kept
+            let existingSessions = importedSessions.isEmpty ? computedSessions : importedSessions
+            if !existingSessions.isEmpty {
+                result.existingDays += 1
+                if let point = await persistMissingSleepPerformance(
+                    day: day, sessions: existingSessions, metricReadIds: existingIds,
+                    computedId: computedId, offsetSec: tzOffset,
+                    habitualMidsleepSec: habitualMidsleepSec, store: store) {
+                    result.sleepPerformancePoints.append(point)
+                }
+                continue
+            }
+
+            let owner = await Self.resolveDayOwner(day: day, from: from, to: to, store: store,
+                                                   devices: devices, activeId: activeId,
+                                                   registry: registry, fallbackDeviceId: deviceId)
+            let hr = (try? await store.hrSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
+            guard hr.count >= 200 else { result.rejectedDays += 1; continue }
+            let gravity = (try? await store.gravitySamples(deviceId: owner, from: from, to: to,
+                                                           limit: 200_000)) ?? []
+            guard gravity.count >= 2 else { result.rejectedDays += 1; continue }
+            let rr = (try? await store.rrIntervals(deviceId: owner, from: from, to: to,
+                                                   limit: 200_000)) ?? []
+            let resp = (try? await store.respSamples(deviceId: owner, from: from, to: to,
+                                                     limit: 200_000)) ?? []
+            let events = (try? await store.events(deviceId: owner, from: from, to: to, limit: 50_000)) ?? []
+            let wristOff = AnalyticsEngine.offWristIntervals(events: events, windowEnd: to)
+            var bandState = (try? await store.sleepStateSamples(deviceId: owner, from: from, to: to))?
+                .map { (ts: $0.ts, state: $0.state) } ?? []
+            if bandState.isEmpty {
+                bandState = await Self.bandSleepStateSamples(computedId: computedId, from: from,
+                                                             to: to, store: store)
+            }
+
+            let detected = SleepStager.detectSleep(hr: hr, rr: rr, resp: resp, gravity: gravity,
+                                                   tzOffsetSeconds: tzOffset, wristOff: wristOff,
+                                                   bandSleepState: bandState,
+                                                   useSleepStagerV2: useSleepStagerV2)
+                .filter { AnalyticsEngine.sleepWakeDayKey(endTs: $0.end, offsetSec: tzOffset) == day }
+                .filter { session in
+                    !dismissed.contains { session.start < $0.end && $0.start < session.end }
+                }
+
+            // Both primary detector streams must continue past the inferred wake. Using the earlier
+            // frontier prevents an HR-only live tail from finalizing a gravity stream that simply stopped
+            // while the user may still be asleep (and vice versa).
+            let rawFrontier = min(hr.last?.ts ?? Int.min, gravity.last?.ts ?? Int.min)
+            let finalizable = detected.filter {
+                rawFrontier - $0.end >= SleepStager.mergeMin * 60
+            }
+            guard !finalizable.isEmpty else { result.rejectedDays += 1; continue }
+
+            var insertedForDay: [CachedSleepSession] = []
+            for session in finalizable {
+                let cached = CachedSleepSession(startTs: session.start, endTs: session.end,
+                                                efficiency: session.efficiency,
+                                                restingHr: session.restingHR, avgHrv: session.avgHRV,
+                                                stagesJSON: AnalyticsEngine.encodeStages(session.stages))
+                // Insert-only is the race guard: if normal analysis or another recovery won after the
+                // wake-day check, this returns zero and we do not touch that winner's auxiliary columns.
+                guard (try? await store.insertRecoveredSleepSession(cached, deviceId: computedId)) == 1 else {
+                    continue
+                }
+                let motion = SleepStager.sessionEpochMotion(start: session.start, end: session.end,
+                                                             grav: gravity)
+                if !motion.isEmpty {
+                    _ = try? await store.persistSessionMotion(deviceId: computedId,
+                                                              sessionStart: session.start,
+                                                              motionEpochs: motion)
+                }
+                let states = SleepStager.sessionEpochSleepState(start: session.start, end: session.end,
+                                                                sleepState: bandState)
+                if !states.isEmpty {
+                    _ = try? await store.persistSessionSleepState(deviceId: computedId,
+                                                                  sessionStart: session.start,
+                                                                  states: states)
+                }
+                result.inserted.append(cached)
+                insertedForDay.append(cached)
+            }
+            if !insertedForDay.isEmpty,
+               let point = await persistMissingSleepPerformance(
+                    day: day, sessions: insertedForDay, metricReadIds: existingIds,
+                    computedId: computedId, offsetSec: tzOffset,
+                    habitualMidsleepSec: habitualMidsleepSec, store: store) {
+                result.sleepPerformancePoints.append(point)
+            }
+        }
+
+        if !result.inserted.isEmpty {
+            await repo.refresh()
+        } else if !result.sleepPerformancePoints.isEmpty {
+            repo.noteSleepPerformanceChanged()
+        }
+        return result
+    }
+
+    /// Project one real Rest point from finalized persisted sleep only. Existing imported/computed points
+    /// win, making foreground recovery idempotent. The sole write is `(computedId, wakeDay,
+    /// sleep_performance)` in metricSeries; no DailyMetric API is reachable from this helper.
+    private func persistMissingSleepPerformance(
+        day: String, sessions: [CachedSleepSession], metricReadIds: [String],
+        computedId: String, offsetSec: Int, habitualMidsleepSec: Int?, store: WhoopStore
+    ) async -> MetricPoint? {
+        for id in metricReadIds {
+            let existing = (try? await store.metricSeries(deviceId: id, key: "sleep_performance",
+                                                           from: day, to: day)) ?? []
+            if !existing.isEmpty { return nil }
+        }
+        guard let score = AnalyticsEngine.Rest.composite(
+            finalized: sessions, offsetSec: offsetSec,
+            habitualMidsleepSec: habitualMidsleepSec) else { return nil }
+        let point = MetricPoint(day: day, key: "sleep_performance", value: score)
+        guard (try? await store.upsertMetricSeries([point], deviceId: computedId)) == 1 else { return nil }
+        return point
     }
 
     // NOTE (#814 union-model follow-up): the engine intentionally has NO `adoptActiveDeviceId`. Its write
@@ -1195,7 +1380,8 @@ final class IntelligenceEngine: ObservableObject {
         let storedSessions = (try? await store.sleepSessions(deviceId: computedId, from: windowStart,
                                                              to: now, limit: 4000)) ?? []
         let healable = storedSessions.filter {
-            (oldestDay...newestDay).contains(AnalyticsEngine.dayString($0.endTs, offsetSec: tzOffset))
+            (oldestDay...newestDay).contains(
+                AnalyticsEngine.sleepWakeDayKey(endTs: $0.endTs, offsetSec: tzOffset))
         }
         let healDropped = SleepSessionDedup.dedupe(healable, freshStarts: keptStarts).dropped
         for stale in healDropped {
@@ -1477,7 +1663,9 @@ final class IntelligenceEngine: ObservableObject {
     /// touching the night → the detected daily is returned unchanged. (#318)
     static func editedRowsForDay(_ editedRows: [CachedSleepSession], day: String,
                                  tzOffsetSeconds: Int) -> [CachedSleepSession] {
-        editedRows.filter { AnalyticsEngine.dayString($0.endTs, offsetSec: tzOffsetSeconds) == day }
+        editedRows.filter {
+            AnalyticsEngine.sleepWakeDayKey(endTs: $0.endTs, offsetSec: tzOffsetSeconds) == day
+        }
     }
 
     private func sleepEditedDaily(_ daily: DailyMetric, detected: [CachedSleepSession],

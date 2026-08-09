@@ -164,6 +164,28 @@ extension WhoopStore {
 
     // MARK: - Upserts (idempotent by natural key; latest server value wins on conflict)
 
+    /// Insert a sleep session reconstructed from already-banked raw data, without ever rewriting an
+    /// existing detected, imported, or user-edited row. This deliberately differs from
+    /// `upsertSleepSessions`: foreground sleep recovery is additive-only, so a concurrent normal analysis
+    /// or a second recovery pass that reaches the same natural key must be a strict no-op.
+    ///
+    /// This method touches only `sleepSession`; it cannot create or mutate a `dailyMetric` row.
+    /// Returns 1 when inserted and 0 when `(deviceId, startTs)` already exists.
+    @discardableResult
+    public func insertRecoveredSleepSession(_ session: CachedSleepSession, deviceId: String) async throws -> Int {
+        try syncWrite { db in
+            try db.execute(sql: """
+                INSERT INTO sleepSession
+                    (deviceId, startTs, endTs, efficiency, restingHr, avgHrv, stagesJSON,
+                     userEdited, startTsAdjusted)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                ON CONFLICT(deviceId, startTs) DO NOTHING
+                """, arguments: [deviceId, session.startTs, session.endTs, session.efficiency,
+                                  session.restingHr, session.avgHrv, session.stagesJSON])
+            return db.changesCount
+        }
+    }
+
     /// Upsert cached sleep sessions. Natural key (deviceId, startTs). Returns rows changed.
     @discardableResult
     public func upsertSleepSessions(_ sessions: [CachedSleepSession], deviceId: String) async throws -> Int {

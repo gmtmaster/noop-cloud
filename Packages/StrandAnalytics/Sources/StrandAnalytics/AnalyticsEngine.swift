@@ -161,6 +161,13 @@ public enum AnalyticsEngine {
         dayString(ts + offsetSec)
     }
 
+    /// Canonical ownership key for a finalized sleep: the LOCAL calendar day containing its wake.
+    /// The 04:00 presentation rollover is intentionally absent here; completed sleep, Rest series,
+    /// planning history, and UI grouping all use this one wake-day rule.
+    public static func sleepWakeDayKey(endTs: Int, offsetSec: Int) -> String {
+        dayString(endTs, offsetSec: offsetSec)
+    }
+
     /// UTC-midnight epoch seconds of an ISO `day` key (yyyy-MM-dd). `isoDay` is a FIXED-UTC formatter,
     /// so `dayString(ts, offsetSec:) == day` ⇔ `(ts + offsetSec) ∈ [dayStartUtcSeconds(day), +86400)` —
     /// an integer range check that replaces the per-sample DateFormatter the full-day stream filters in
@@ -338,7 +345,10 @@ public enum AnalyticsEngine {
                                                   traceSink: traceSink)
         // Sessions attributed to `day` = those whose end falls on `day` (LOCAL day, #277). `day` is
         // the caller's local-day key; attribute by the same offset so the bucket and the key agree.
-        let matched = allSessions.filter { tsInDay($0.end) }
+        let matched = allSessions.filter {
+            tsInDay($0.end)
+                && sleepWakeDayKey(endTs: $0.end, offsetSec: tzOffsetSeconds) == day
+        }
 
         // ── The day's MAIN night (#525) ───────────────────────────────────────
         // A day can hold an overnight AND a daytime nap (both end on `day`, so both are in `matched`).
@@ -763,6 +773,53 @@ public enum AnalyticsEngine {
                              efficiency: eff, restorativeSeconds: restorativeSec,
                              needHours: needHours, consistency: consistency,
                              deepSeconds: deepSec)
+        }
+
+        /// The canonical Rest score reconstructed from finalized persisted sleep blocks only.
+        /// Selects the same main-night group as `analyzeDay`, excludes naps, folds bridged wake gaps into
+        /// in-bed time, and feeds the exact same `composite` formula. nil means the winning primary sleep
+        /// lacks valid persisted stages; no score is invented. Pure and persistence-independent.
+        public static func composite(finalized sessions: [CachedSleepSession], offsetSec: Int,
+                                     habitualMidsleepSec: Int? = nil,
+                                     needHours: Double = defaultNeedHours,
+                                     consistency: Double? = nil) -> Double? {
+            guard let indices = SleepStageTotals.mainNightGroupIndices(
+                sessions.map {
+                    SleepStageTotals.NightBlock(start: $0.effectiveStartTs, end: $0.endTs)
+                }, offsetSec: offsetSec, habitualMidsleepSec: habitualMidsleepSec),
+                !indices.isEmpty else { return nil }
+
+            let group = indices.map { sessions[$0] }
+            var tstSeconds = 0.0
+            var deepSeconds = 0.0
+            var restorativeSeconds = 0.0
+            var inBedSeconds = 0.0
+            var efficiencyWeighted = 0.0
+
+            for session in group {
+                guard session.endTs > session.effectiveStartTs,
+                      let stages = SleepStageTotals.minutes(fromStagesJSON: session.stagesJSON),
+                      stages.inBed > 0,
+                      let rawEfficiency = session.efficiency else { return nil }
+                let efficiency = rawEfficiency > 1 ? rawEfficiency / 100.0 : rawEfficiency
+                guard efficiency.isFinite, efficiency > 0, efficiency <= 1 else { return nil }
+                let blockInBed = Double(session.endTs - session.effectiveStartTs)
+                inBedSeconds += blockInBed
+                efficiencyWeighted += efficiency * blockInBed
+                tstSeconds += stages.asleep * 60.0
+                deepSeconds += stages.deep * 60.0
+                restorativeSeconds += (stages.deep + stages.rem) * 60.0
+            }
+
+            let gapSeconds = SleepStageTotals.interFragmentAwakeSeconds(
+                group.map { (start: $0.effectiveStartTs, end: $0.endTs) })
+            inBedSeconds += gapSeconds
+            guard inBedSeconds > 0, tstSeconds > 0 else { return nil }
+            let efficiency = efficiencyWeighted / inBedSeconds
+            return composite(tstSeconds: tstSeconds, inBedSeconds: inBedSeconds,
+                             efficiency: efficiency, restorativeSeconds: restorativeSeconds,
+                             needHours: needHours, consistency: consistency,
+                             deepSeconds: deepSeconds)
         }
     }
 

@@ -145,6 +145,9 @@ struct StrandiOSApp: App {
                 Task {
                     health.refreshAuthIfPreviouslyGranted()
                     await health.sync()
+                    // Additive sleep-only repair for an overnight backfill that landed without a finalized
+                    // session. Never invokes daily analysis or writes dailyMetric.
+                    await model.recoverMissingSleepOnForeground()
                     await WidgetSnapshot.publish(from: model)
                 }
             } else if phase == .background {
