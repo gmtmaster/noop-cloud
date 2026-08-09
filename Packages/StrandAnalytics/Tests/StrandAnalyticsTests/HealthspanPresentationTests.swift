@@ -22,6 +22,29 @@ final class HealthspanPresentationTests: XCTestCase {
         XCTAssertEqual(HealthspanWeekCutoff.latestCompletedWeekEnd(now: now, calendar: calendar), "2026-07-25")
     }
 
+    func testBudapestCompletedWeeksAreFixedAndExcludeSundayRollingWindow() {
+        let zone = TimeZone(identifier: "Europe/Budapest")!
+        let now = date("2026-08-09 15:00:00", timeZone: zone)
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+
+        XCTAssertEqual(HealthspanWeekCutoff.completedWeekEnds(
+            firstDay: "2026-07-26", now: now, calendar: calendar),
+            ["2026-08-01", "2026-08-08"])
+        XCTAssertFalse(HealthspanWeekCutoff.completedWeekEnds(
+            firstDay: "2026-07-26", now: now, calendar: calendar).contains("2026-08-09"))
+    }
+
+    func testFourAMPresentationRolloverDoesNotMoveWeeklyOwnership() {
+        let zone = TimeZone(identifier: "Europe/Budapest")!
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+        let justAfterMidnight = date("2026-08-09 00:30:00", timeZone: zone)
+        let afterPresentationRollover = date("2026-08-09 04:30:00", timeZone: zone)
+        XCTAssertEqual(HealthspanWeekCutoff.latestCompletedWeekEnd(
+            now: justAfterMidnight, calendar: calendar), "2026-08-08")
+        XCTAssertEqual(HealthspanWeekCutoff.latestCompletedWeekEnd(
+            now: afterPresentationRollover, calendar: calendar), "2026-08-08")
+    }
+
     func testDirectionThresholdsAreIndependentOfConfidence() {
         XCTAssertEqual(HealthspanDirection.classify(delta: -0.4), .improving)
         XCTAssertEqual(HealthspanDirection.classify(delta: 0.4), .worsening)

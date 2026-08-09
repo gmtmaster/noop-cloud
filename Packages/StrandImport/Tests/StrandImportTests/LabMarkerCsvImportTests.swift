@@ -86,7 +86,7 @@ final class LabMarkerCsvImportTests: XCTestCase {
 
     // MARK: - Custom marker fallback (same key the manual editor mints)
 
-    func testUnknownMarkerImportsAsCustom() {
+    func testNewlyCataloguedMarkerImportsCanonically() {
         let csv = """
         date,marker,value,unit
         2026-05-01,Magnesium,0.84,mmol/L
@@ -94,10 +94,10 @@ final class LabMarkerCsvImportTests: XCTestCase {
         let result = LabMarkerCsvImport.parse(text: csv)
         XCTAssertEqual(result.importedReadings, 1)
         let row = result.rows[0]
-        XCTAssertEqual(row.markerKey, "custom_magnesium")   // MarkerUnits.slug parity
-        XCTAssertEqual(row.category, .other)
-        XCTAssertTrue(row.isCustomMarker)
-        XCTAssertEqual(result.customMarkerKeys, ["custom_magnesium"])
+        XCTAssertEqual(row.markerKey, "magnesium")
+        XCTAssertEqual(row.category, .bloodPanel)
+        XCTAssertFalse(row.isCustomMarker)
+        XCTAssertEqual(result.customMarkerKeys, [])
     }
 
     // MARK: - Blood pressure pairs (diastolic must never be dropped)

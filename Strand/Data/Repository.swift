@@ -761,7 +761,10 @@ final class Repository: ObservableObject {
         )
     }
 
-    /// Imported daily values win field-by-field; computed rows fill only nil imported fields.
+    /// Imported daily values win field-by-field; computed rows fill only nil imported fields, except
+    /// Effort. When NOOP has enough raw HR to produce a computed Effort for a day, that locally-derived,
+    /// artifact-filtered value is authoritative over an imported/strap-native strain value. Imported-only
+    /// days still keep their imported Effort.
     /// This preserves official export/import values while allowing fresh local analysis to populate
     /// Charge, skin temperature deviation, activity totals, or other fields missing from that row.
     ///
@@ -777,6 +780,7 @@ final class Repository: ObservableObject {
         for d in imported {
             if let existing = byDay[d.day] {
                 let merged = d.fillingNilFields(from: existing)
+                    .takingComputedStrain(existing.strain)
                 byDay[d.day] = userEditedDays.contains(d.day)
                     ? merged.takingSleepFields(from: existing)   // edited night: computed sleep wins
                     : merged
@@ -1785,10 +1789,15 @@ final class Repository: ObservableObject {
         for id in computedReadIds.reversed() {
             for p in (try? await store.metricSeries(deviceId: id, key: key, from: from, to: to)) ?? [] { byDay[p.day] = p.value }
         }
-        // Layer 1 (highest): the imported export's metricSeries. UNION active strap + canonical (canonical
-        // first so the active strap's value wins per day).
+        // Layer 1 (normally highest): the imported export's metricSeries. Effort is the exception: when a
+        // locally-computed DailyMetric exists, its artifact-filtered strain must not be replaced by the raw /
+        // imported strain series while reconstructing history. Imported-only days still use this layer.
         for id in importedReadIds.reversed() {
-            for p in (try? await store.metricSeries(deviceId: id, key: key, from: from, to: to)) ?? [] { byDay[p.day] = p.value }
+            for p in (try? await store.metricSeries(deviceId: id, key: key, from: from, to: to)) ?? [] {
+                if key != "strain" || !self.days.contains(where: { $0.day == p.day && $0.strain != nil }) {
+                    byDay[p.day] = p.value
+                }
+            }
         }
 
         return byDay.sorted { $0.key < $1.key }.map { (day: $0.key, value: $0.value) }
@@ -2522,6 +2531,32 @@ final class Repository: ObservableObject {
 }
 
 private extension DailyMetric {
+    /// Preserve every field selected by the normal import-first merge, replacing only Effort when a
+    /// canonical computed row supplied one. This is the persistence-to-read boundary that guarantees
+    /// historical display consumes AnalyticsEngine's artifact-filtered result.
+    func takingComputedStrain(_ computedStrain: Double?) -> DailyMetric {
+        guard let computedStrain else { return self }
+        return DailyMetric(
+            day: day,
+            totalSleepMin: totalSleepMin,
+            efficiency: efficiency,
+            deepMin: deepMin,
+            remMin: remMin,
+            lightMin: lightMin,
+            disturbances: disturbances,
+            restingHr: restingHr,
+            avgHrv: avgHrv,
+            recovery: recovery,
+            strain: computedStrain,
+            exerciseCount: exerciseCount,
+            spo2Pct: spo2Pct,
+            skinTempDevC: skinTempDevC,
+            respRateBpm: respRateBpm,
+            steps: steps,
+            activeKcalEst: activeKcalEst
+        )
+    }
+
     /// A copy of self where every nil field is backfilled from `fallback`. Used by the field-by-field
     /// daily merge so an imported export keeps its own values while a computed row fills the gaps it
     /// doesn't carry (e.g. on-device Charge / skin-temp deviation / activity totals).

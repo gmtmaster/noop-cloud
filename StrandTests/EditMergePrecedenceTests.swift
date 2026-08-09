@@ -26,9 +26,10 @@ final class EditMergePrecedenceTests: XCTestCase {
         XCTAssertEqual(merged[0].remMin, 70)
         XCTAssertEqual(merged[0].lightMin, 180)
         XCTAssertEqual(merged[0].efficiency, 0.85)
-        // Non-sleep fields: import still wins.
+        // Non-sleep fields: import still wins except Effort, whose artifact-filtered computed value is
+        // authoritative whenever canonical analysis produced one.
         XCTAssertEqual(merged[0].recovery, 80)
-        XCTAssertEqual(merged[0].strain, 9.0)
+        XCTAssertEqual(merged[0].strain, 14.0)
     }
 
     /// A NON-edited day is unchanged: imports win for sleep too (the regression guard for the default path).
@@ -43,6 +44,47 @@ final class EditMergePrecedenceTests: XCTestCase {
         XCTAssertEqual(merged[0].totalSleepMin, 480)
         XCTAssertEqual(merged[0].deepMin, 90)
         XCTAssertEqual(merged[0].efficiency, 0.92)
+        XCTAssertEqual(merged[0].strain, 14.0,
+                       "computed artifact-filtered Effort must win independently of sleep edits")
+    }
+
+    func testImportedEffortStillFillsAnImportedOnlyDay() {
+        let imported = full(day: "2026-06-12", totalSleepMin: 480, deepMin: 90, remMin: 110,
+                            lightMin: 280, efficiency: 0.92, recovery: 80, strain: 9.0)
+        XCTAssertEqual(Repository.mergeDaily(imported: [imported], computed: []).first?.strain, 9.0)
+    }
+
+    /// Real-device restore sequence: an imported/raw-derived Aug 8 value may be refreshed after the
+    /// canonical filtered row exists. Re-running the repository merge (refresh/relaunch) must never let
+    /// that later import replace valid NOOP-computed Effort, and adjacent days stay untouched.
+    func testAug8ComputedEffortSurvivesCanonicalImportRefreshAndRelaunch() {
+        let aug7Imported = full(day: "2026-08-07", totalSleepMin: 450, deepMin: 80, remMin: 90,
+                                lightMin: 280, efficiency: 0.88, recovery: 65, strain: 20)
+        let aug8Imported = full(day: "2026-08-08", totalSleepMin: 480, deepMin: 90, remMin: 110,
+                                lightMin: 280, efficiency: 0.92, recovery: 80, strain: 50.95)
+        let aug9Imported = full(day: "2026-08-09", totalSleepMin: 460, deepMin: 85, remMin: 105,
+                                lightMin: 270, efficiency: 0.90, recovery: 74, strain: 3)
+        let aug8Computed = full(day: "2026-08-08", totalSleepMin: 475, deepMin: 88, remMin: 108,
+                                lightMin: 279, efficiency: 0.91, recovery: 78, strain: 29.05)
+
+        func resolved(_ imported: [DailyMetric]) -> [String: DailyMetric] {
+            Dictionary(uniqueKeysWithValues: Repository.mergeDaily(
+                imported: imported, computed: [aug8Computed]).map { ($0.day, $0) })
+        }
+
+        let afterCanonical = resolved([aug7Imported, aug8Imported, aug9Imported])
+        XCTAssertEqual(afterCanonical["2026-08-08"]?.strain, 29.05)
+        XCTAssertEqual(afterCanonical["2026-08-07"], aug7Imported)
+        XCTAssertEqual(afterCanonical["2026-08-09"], aug9Imported)
+
+        // A later WHOOP/metric refresh and a cold repository reconstruction provide fresh value objects,
+        // but the same source rows. Both must resolve identically.
+        let refreshedAug8 = full(day: "2026-08-08", totalSleepMin: 480, deepMin: 90, remMin: 110,
+                                 lightMin: 280, efficiency: 0.92, recovery: 80, strain: 50.95)
+        let afterImportRefresh = resolved([aug7Imported, refreshedAug8, aug9Imported])
+        let afterRelaunch = resolved([aug7Imported, refreshedAug8, aug9Imported])
+        XCTAssertEqual(afterImportRefresh["2026-08-08"]?.strain, 29.05)
+        XCTAssertEqual(afterRelaunch["2026-08-08"]?.strain, 29.05)
     }
 
     /// Only the edited day flips; other imported days keep import-wins precedence.

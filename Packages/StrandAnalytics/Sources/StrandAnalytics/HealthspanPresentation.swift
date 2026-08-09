@@ -12,6 +12,31 @@ public enum HealthspanWeekCutoff {
         let parts = calendar.dateComponents([.year, .month, .day], from: saturday)
         return String(format: "%04d-%02d-%02d", parts.year!, parts.month!, parts.day!)
     }
+
+    /// Fixed, non-overlapping Sunday-through-Saturday snapshots from the first observed day through the
+    /// newest fully completed local week. The current partial week is deliberately absent.
+    public static func completedWeekEnds(firstDay: String, now: Date, calendar input: Calendar) -> [String] {
+        let calendar = input
+        let parts = firstDay.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3,
+              let first = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+        else { return [] }
+        let firstWeekday = calendar.component(.weekday, from: first)
+        let daysToSaturday = (7 - firstWeekday) % 7
+        guard var cursor = calendar.date(byAdding: .day, value: daysToSaturday, to: first) else { return [] }
+        let latestKey = latestCompletedWeekEnd(now: now, calendar: calendar)
+        var result: [String] = []
+        while true {
+            let p = calendar.dateComponents([.year, .month, .day], from: cursor)
+            guard let year = p.year, let month = p.month, let day = p.day else { break }
+            let key = String(format: "%04d-%02d-%02d", year, month, day)
+            guard key <= latestKey else { break }
+            result.append(key)
+            guard let next = calendar.date(byAdding: .day, value: 7, to: cursor) else { break }
+            cursor = next
+        }
+        return result
+    }
 }
 
 public enum HealthspanContributorAvailability: Equatable, Sendable {

@@ -422,7 +422,7 @@ struct RootView: View {
         case .sleep: SleepView()
         case .trends: TrendsView()
         case .workouts: WorkoutsView()
-        case .health: HealthspanView()
+        case .health: HealthOverviewView()
         case .stress: StressView()
         case .labBook: LabBookView()
         case .rhythm: RhythmHost()

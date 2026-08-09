@@ -45,6 +45,33 @@ extension WhoopStore {
         }
     }
 
+    /// Atomically replace a derived metric-series projection for the supplied keys. This is for replayable
+    /// canonical projections whose complete result set is known: stale keys from an older window model, and
+    /// values that became unavailable on recomputation, must be removed rather than surviving an upsert.
+    @discardableResult
+    public func replaceMetricSeriesProjection(_ rows: [MetricPoint], deviceId: String,
+                                              keys: [String]) async throws -> Int {
+        let keySet = Set(keys)
+        precondition(rows.allSatisfy { keySet.contains($0.key) })
+        return try syncWrite { db in
+            var changes = 0
+            for key in keySet {
+                try db.execute(sql: "DELETE FROM metricSeries WHERE deviceId = ? AND key = ?",
+                               arguments: [deviceId, key])
+                changes += db.changesCount
+            }
+            for row in rows {
+                try db.execute(sql: """
+                    INSERT INTO metricSeries (deviceId, day, key, value)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(deviceId, day, key) DO UPDATE SET value = excluded.value
+                    """, arguments: [deviceId, row.day, row.key, row.value])
+                changes += db.changesCount
+            }
+            return changes
+        }
+    }
+
     // MARK: - Reads
 
     /// Points for a single `key` on days in [from, to] (lexicographic YYYY-MM-DD compare),

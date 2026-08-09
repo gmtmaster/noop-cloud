@@ -94,4 +94,27 @@ final class HRArtifactFilterTests: XCTestCase {
         XCTAssertEqual(artifactDay.strain, cleanDay.strain)
         XCTAssertEqual(artifactDay.daily.activeKcalEst, cleanDay.daily.activeKcalEst)
     }
+
+    func testAug8SpikeShapeCanonicalAndLiveCalculationsAgreeWithoutMutatingRawHR() throws {
+        let start = 1_786_140_000
+        var raw = (0..<1_800).map { HRSample(ts: start + $0, bpm: 132) }
+        // Brief bracketed optical island embedded in otherwise genuine sustained activity.
+        for i in 900..<907 { raw[i] = HRSample(ts: start + i, bpm: 190) }
+        let original = raw
+        let profile = UserProfile(weightKg: 70, heightCm: 175, age: 30, sex: "male")
+
+        let filtered = HRArtifactFilter.filteringShortSpikes(raw)
+        let live = try XCTUnwrap(StrainScorer.strain(filtered, maxHR: maxHR,
+                                                     restingHR: rest, sex: profile.sex))
+        let canonical = AnalyticsEngine.analyzeDay(day: "2026-08-08", dayHr: raw,
+                                                    profile: profile, maxHROverride: maxHR)
+        let canonicalStrain = try XCTUnwrap(canonical.strain)
+        let persistedStrain = try XCTUnwrap(canonical.daily.strain)
+
+        XCTAssertEqual(canonicalStrain, live, accuracy: 0.000_001)
+        XCTAssertEqual(persistedStrain, live, accuracy: 0.000_001)
+        XCTAssertEqual(raw, original, "artifact rejection must never mutate durable raw HR")
+        XCTAssertLessThan(live, try XCTUnwrap(StrainScorer.strain(raw, maxHR: maxHR,
+                                                                  restingHR: rest, sex: profile.sex)))
+    }
 }

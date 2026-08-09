@@ -4,21 +4,10 @@ import WhoopStore
 
 @MainActor
 enum NoopAgeInputBuilder {
-    static func evaluate(days: [HealthspanDay], chronologicalAge: Double?, birthDate: Date? = nil) -> [NoopAgeWeekResult] {
+    static func evaluate(days: [HealthspanDay], chronologicalAge: Double?, birthDate: Date? = nil,
+                         now: Date = Date(), calendar: Calendar = .current) -> [NoopAgeWeekResult] {
         guard let first = days.map(\.day).min() else { return [] }
-        let today = dayFormatter.string(from: Date())
-        let latestCompletedWeek = HealthspanWeekCutoff.latestCompletedWeekEnd(now: Date(), calendar: .current)
-        var cutoffs: [String] = [], cursor = saturdayKey(onOrAfter: first)
-        while cursor <= latestCompletedWeek {
-            cutoffs.append(cursor)
-            guard let date = dayFormatter.date(from: cursor),
-                  let next = Calendar.utc.date(byAdding: .day, value: 7, to: date) else { break }
-            cursor = dayFormatter.string(from: next)
-        }
-        // Historical snapshots remain weekly, but the leading snapshot must be anchored to today.
-        // Otherwise every nominally rolling window (180-day age, recent 30-day pace, and the older
-        // comparison window) is frozen at Saturday's boundary for the rest of the week.
-        if cutoffs.last != today { cutoffs.append(today) }
+        let cutoffs = HealthspanWeekCutoff.completedWeekEnds(firstDay: first, now: now, calendar: calendar)
         return NoopAgeEngine.evaluate(days: days, weekEndDays: cutoffs) { key in
             if let birthDate, let end = dayFormatter.date(from: key), birthDate <= end {
                 let p = Calendar.current.dateComponents([.year, .day], from: birthDate, to: end)
@@ -125,7 +114,8 @@ extension Repository {
                     MetricPoint(day: result.weekEndDay, key: $0.key, value: $0.value)
                 }
             }
-            if !points.isEmpty { _ = try? await store.upsertMetricSeries(points, deviceId: Repository.whoopSource + "-noop") }
+            _ = try? await store.replaceMetricSeriesProjection(
+                points, deviceId: Repository.whoopSource + "-noop", keys: ["noop_age", "noop_pace"])
         }
     }
 

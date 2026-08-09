@@ -256,6 +256,10 @@ public enum LabMarkerCsvImport {
     static func resolveMarker(_ rawName: String) -> ResolvedMarker {
         let norm = matchNorm(rawName)
         if norm.isEmpty { return ResolvedMarker(key: nil, isBloodPressureFamily: false) }
+        if let key = MarkerCatalog.canonicalKey(for: rawName) {
+            return ResolvedMarker(key: key,
+                                  isBloodPressureFamily: key == bpSystolicKey || key == bpDiastolicKey)
+        }
         if let mapped = aliasTable[norm] {
             if mapped == bpCombined { return ResolvedMarker(key: nil, isBloodPressureFamily: true) }
             return ResolvedMarker(key: mapped,

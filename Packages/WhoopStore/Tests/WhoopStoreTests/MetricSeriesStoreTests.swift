@@ -4,6 +4,39 @@ import GRDB
 
 final class MetricSeriesStoreTests: XCTestCase {
 
+    func testCanonicalProjectionReplacementUpdatesCompletedWeekAndRemovesRollingWindow() async throws {
+        let store = try await WhoopStore.inMemory()
+        let source = "my-whoop-noop"
+        try await store.upsertMetricSeries([
+            MetricPoint(day: "2026-08-01", key: "noop_age", value: 40.1),
+            MetricPoint(day: "2026-08-08", key: "noop_age", value: 40.2),
+            MetricPoint(day: "2026-08-09", key: "noop_age", value: 40.3),
+            MetricPoint(day: "2026-08-09", key: "noop_pace", value: 1.1),
+            MetricPoint(day: "2026-08-09", key: "unrelated", value: 7),
+        ], deviceId: source)
+
+        try await store.replaceMetricSeriesProjection([
+            MetricPoint(day: "2026-08-01", key: "noop_age", value: 40.1),
+            MetricPoint(day: "2026-08-08", key: "noop_age", value: 39.8),
+            MetricPoint(day: "2026-08-08", key: "noop_pace", value: 0.9),
+        ], deviceId: source, keys: ["noop_age", "noop_pace"])
+
+        let ages = try await store.metricSeries(deviceId: source, key: "noop_age",
+                                                from: "2026-08-01", to: "2026-08-31")
+        let pace = try await store.metricSeries(deviceId: source, key: "noop_pace",
+                                                from: "2026-08-01", to: "2026-08-31")
+        let unrelated = try await store.metricSeries(deviceId: source, key: "unrelated",
+                                                     from: "2026-08-01", to: "2026-08-31")
+        XCTAssertEqual(ages, [
+            MetricPoint(day: "2026-08-01", key: "noop_age", value: 40.1),
+            MetricPoint(day: "2026-08-08", key: "noop_age", value: 39.8),
+        ])
+        XCTAssertEqual(pace, [
+            MetricPoint(day: "2026-08-08", key: "noop_pace", value: 0.9),
+        ])
+        XCTAssertEqual(unrelated.count, 1)
+    }
+
     // MARK: - migration (v9 creates the table with the right PK + index)
 
     func testV9CreatesMetricSeriesTable() async throws {

@@ -22,10 +22,10 @@ import WhoopStore
 // Coach see markers unchanged. The "Compare with a signal" surface reuses the same
 // Pearson idiom + restrained copy as CompareView's pairCard.
 //
-// NON-CLINICAL (load-bearing, spec §"Non-clinical / legal framing"): no word here
-// asserts a clinical judgement — never "abnormal/high/low/normal" as NOOP's own
-// statement; any reference range shown is EXACTLY what the user typed from their own
-// report; correlation copy says "association, not a medical finding". The full
+// NON-CLINICAL (load-bearing, spec §"Non-clinical / legal framing"): NOOP does not
+// diagnose or supply a clinical range. It may describe a numeric result as below/within/above
+// only the range the user copied from that result's own report; correlation copy says
+// "association, not a medical finding". The full
 // disclaimer shows on the screen and (Wave 3) links to the consolidated About & Legal.
 
 struct LabBookView: View {
@@ -52,8 +52,8 @@ struct LabBookView: View {
 
     var body: some View {
         ScreenScaffold(
-            title: "Lab Book",
-            subtitle: "Track laboratory biomarkers over time.",
+            title: "Advanced Labs",
+            subtitle: "Your biomarkers, ranges and history.",
             onRefresh: { await load() },
             // PERF: the column ends in one `categorySection` per marker category (bloods / BP / body / …),
             // each carrying its own sparkline-bearing cards. The LazyVStack path builds the off-screen
@@ -68,8 +68,8 @@ struct LabBookView: View {
                 } else if markers.isEmpty {
                     emptyState
                 } else {
-                    summaryCard
-                    recentSessionCard
+                    needsAttentionSection
+                    recentLabsSection
                     ForEach(orderedCategories, id: \.self) { category in
                         categorySection(category)
                     }
@@ -109,31 +109,31 @@ struct LabBookView: View {
     // MARK: - Header and real-data summary
 
     private var headerCard: some View {
-        NoopCard(tint: StrandPalette.metricCyan) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "books.vertical.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(StrandPalette.metricCyan)
-                        .frame(width: 30, height: 30)
-                        .background(StrandPalette.metricCyan.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Your health record").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
-                        Text("Keep results from your own reports together, privately on \(Platform.deviceNounPhrase).")
-                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+        SolidHealthMonitorCard(padding: 18) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("ADVANCED LABS").strandOverline()
+                    Spacer()
+                    Button { showingDisclaimer = true } label: {
+                        Image(systemName: "info.circle").foregroundStyle(StrandPalette.textTertiary)
+                    }.buttonStyle(.plain).accessibilityLabel("About Advanced Labs")
+                }
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(distinctMarkerCount) / 65")
+                            .font(StrandFont.display(34)).foregroundStyle(StrandPalette.textPrimary)
+                        Text("BIOMARKERS RECORDED").strandOverline().foregroundStyle(StrandPalette.textSecondary)
+                        Text(latestDay.map { "Latest lab · \(LabBookFormat.dayFromKey($0))" } ?? "No lab dates yet")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        Text(classificationSummary)
+                            .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 8)
-                    Button {
-                        showingDisclaimer = true
-                    } label: {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 16, weight: .regular))
-                            .foregroundStyle(StrandPalette.textTertiary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("What Lab Book is (and isn't)")
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    AdvancedLabsBiomarkerRing(totalCapacity: 65, recordedCount: distinctMarkerCount,
+                                               optimalCount: classificationModel.optimalCount,
+                                               sufficientCount: classificationModel.sufficientCount,
+                                               outOfRangeCount: classificationModel.outOfRangeCount)
+                        .frame(width: 142, height: 142)
                 }
                 Button {
                     showingEditor = true
@@ -144,6 +144,26 @@ struct LabBookView: View {
                 .accessibilityLabel("Add a marker reading")
             }
         }
+    }
+
+    private var distinctMarkerCount: Int { min(Set(markers.map(\.markerKey)).count, 65) }
+    private var classificationModel: AdvancedLabsClassificationSummary {
+        AdvancedLabsClassificationSummary.build(results: markers.map {
+            BiomarkerRecordedResult(markerKey: $0.markerKey, value: $0.value, unit: $0.unit,
+                                     reportRangeText: $0.referenceText,
+                                     timestamp: Date(timeIntervalSince1970: TimeInterval($0.takenAt)))
+        })
+    }
+    private var classifiedLatest: [(LabMarkerRow, BiomarkerClinicalRangeStatus)] {
+        Set(markers.map(\.markerKey)).compactMap { key in
+            guard let row = readings(for: key).last else { return nil }
+            return (row, evaluation(for: row).clinicalStatus)
+        }
+    }
+    private var classificationSummary: String {
+        let unknown = classificationModel.unclassifiedCount
+        return unknown == 0 ? String(localized: "All recorded results have report ranges")
+            : String(localized: "\(unknown) recorded biomarkers · range unavailable")
     }
 
     private var summaryCard: some View {
@@ -200,6 +220,59 @@ struct LabBookView: View {
                         }
                     }
                     Spacer(minLength: 8)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var needsAttentionSection: some View {
+        let flagged = classifiedLatest.filter { $0.1 == .below || $0.1 == .above }
+            .sorted { $0.0.takenAt > $1.0.takenAt }
+        if !flagged.isEmpty {
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                SectionHeader("Needs attention", overline: "Outside recorded report range")
+                ForEach(flagged, id: \.0.id) { item in
+                    let row = item.0
+                    let status = item.1
+                    Button { detailKey = row.markerKey } label: {
+                        NoopCard(tint: StrandPalette.statusWarning) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "exclamationmark")
+                                    .foregroundStyle(StrandPalette.statusWarning)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(displayName(for: row.markerKey)).font(StrandFont.headline)
+                                    Text(status == .above ? "Above recorded reference range" : "Below recorded reference range")
+                                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.statusWarning)
+                                }
+                                Spacer()
+                                Text(latestLabel(row, key: row.markerKey)).font(StrandFont.number(17))
+                                Image(systemName: "chevron.right").foregroundStyle(StrandPalette.textTertiary)
+                            }.foregroundStyle(StrandPalette.textPrimary)
+                        }
+                    }.buttonStyle(LiquidPressStyle())
+                }
+            }
+        }
+    }
+
+    private var recentLabsSection: some View {
+        let grouped = Dictionary(grouping: markers, by: \.day)
+        let days = grouped.keys.sorted(by: >)
+        return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Recent labs", overline: "Results grouped by test date")
+            NoopCard(tint: StrandPalette.metricCyan) {
+                VStack(spacing: 0) {
+                    ForEach(Array(days.prefix(5).enumerated()), id: \.element) { index, day in
+                        HStack {
+                            Image(systemName: "calendar").foregroundStyle(StrandPalette.metricCyan)
+                            Text(LabBookFormat.dayFromKey(day)).font(StrandFont.subhead.weight(.semibold))
+                            Spacer()
+                            let count = Set(grouped[day, default: []].map(\.markerKey)).count
+                            Text(count == 1 ? "1 biomarker" : "\(count) biomarkers")
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                        }.padding(.vertical, 10)
+                        if index < min(days.count, 5) - 1 { Divider().overlay(StrandPalette.hairline) }
+                    }
                 }
             }
         }
@@ -437,6 +510,8 @@ struct LabBookView: View {
         let series = readings(for: key)
         let numeric = series.compactMap { $0.value }
         let latest = series.last
+        let range = latest.flatMap(typedRange(for:))
+        let status = latest.map(clinicalStatus(for:)) ?? .unknown
         return Button {
             detailKey = key
         } label: {
@@ -467,6 +542,8 @@ struct LabBookView: View {
                         .foregroundStyle(StrandPalette.textTertiary)
                         .accessibilityHidden(true)
                     }
+                    BiomarkerRangeBar(value: latest?.value, range: range, status: status)
+                        .frame(height: 48)
                     if numeric.count > 1 {
                         Sparkline(values: numeric,
                                   gradient: Gradient(colors: [StrandPalette.metricCyan.opacity(0.45),
@@ -478,16 +555,9 @@ struct LabBookView: View {
                     HStack(spacing: 8) {
                         Text(series.count == 1 ? "1 reading" : "\(series.count) readings")
                             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
-                        if let reference = latest?.referenceText, !reference.isEmpty {
-                            Text("Recorded range: \(reference)")
-                                .font(StrandFont.footnote)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                                .lineLimit(1)
-                        } else {
-                            Text("No reference range")
-                                .font(StrandFont.footnote)
-                                .foregroundStyle(StrandPalette.textTertiary)
-                        }
+                        Text(clinicalStatusLabel(status))
+                            .font(StrandFont.footnote.weight(.semibold))
+                            .foregroundStyle(clinicalStatusColor(status))
                         Spacer(minLength: 0)
                     }
                 }
@@ -555,6 +625,36 @@ struct LabBookView: View {
     private func lastTakenCaption(_ row: LabMarkerRow?) -> String {
         guard let row else { return String(localized: "no readings yet") }
         return String(localized: "last taken \(LabBookFormat.day(row.takenAt))")
+    }
+
+    private func typedRange(for row: LabMarkerRow) -> BiomarkerReferenceRange? {
+        evaluation(for: row).range
+    }
+
+    private func clinicalStatus(for row: LabMarkerRow) -> BiomarkerClinicalRangeStatus {
+        evaluation(for: row).clinicalStatus
+    }
+
+    private func evaluation(for row: LabMarkerRow) -> BiomarkerResultEvaluation {
+        BiomarkerEvaluator.evaluate(markerKey: row.markerKey, value: row.value, unit: row.unit,
+                                    reportRangeText: row.referenceText)
+    }
+
+    private func clinicalStatusLabel(_ status: BiomarkerClinicalRangeStatus) -> String {
+        switch status {
+        case .below: return String(localized: "Below reference range")
+        case .within: return String(localized: "Within reference range")
+        case .above: return String(localized: "Above reference range")
+        case .unknown: return String(localized: "Range unavailable")
+        }
+    }
+
+    private func clinicalStatusColor(_ status: BiomarkerClinicalRangeStatus) -> Color {
+        switch status {
+        case .within: return StrandPalette.metricCyan
+        case .below, .above: return StrandPalette.statusWarning
+        case .unknown: return StrandPalette.textTertiary
+        }
     }
 
     private var detailBinding: Binding<MarkerKeyID?> {
@@ -684,6 +784,74 @@ enum LabBookFormat {
     }
 }
 
+// MARK: - Reference-range visualization
+
+/// A reusable, shape-aware range rail. It renders bounded, upper-only and lower-only intervals
+/// without inventing a missing bound. With no typed range it displays an explicit unavailable rail.
+struct BiomarkerRangeBar: View {
+    let value: Double?
+    let range: BiomarkerReferenceRange?
+    let status: BiomarkerClinicalRangeStatus
+
+    var body: some View {
+        VStack(spacing: 5) {
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(StrandPalette.surfaceInset)
+                    if let range, let layout = BiomarkerRangeRailPolicy.layout(value: value, range: range) {
+                        rangeBand(layout, width: proxy.size.width)
+                        if let fraction = layout.markerFraction {
+                            Circle().fill(markerColor).overlay(Circle().stroke(Color.white.opacity(0.7), lineWidth: 1))
+                                .shadow(color: markerColor.opacity(0.25), radius: 3)
+                                .frame(width: 13, height: 13)
+                                .offset(x: max(0, min(proxy.size.width - 13,
+                                                     fraction * proxy.size.width - 6.5)))
+                        }
+                    } else {
+                        Capsule().strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .foregroundStyle(StrandPalette.hairline)
+                    }
+                }.frame(height: 12).frame(maxHeight: .infinity, alignment: .center)
+            }
+            HStack {
+                Text(lowerLabel).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                Spacer()
+                Text(range == nil ? "Range unavailable" : upperLabel)
+                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            }
+        }.accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityText)
+    }
+
+    @ViewBuilder private func rangeBand(_ layout: BiomarkerRangeRailPolicy.Layout, width: CGFloat) -> some View {
+        let start = layout.acceptableStart
+        let end = layout.acceptableEnd
+        Capsule().fill(LinearGradient(colors: [StrandPalette.metricCyan.opacity(0.48),
+                                                StrandPalette.statusPositive.opacity(0.72)],
+                                      startPoint: .leading, endPoint: .trailing))
+            .frame(width: width * (end - start)).offset(x: width * start)
+    }
+
+    private var markerColor: Color {
+        status == .below || status == .above ? StrandPalette.statusWarning : StrandPalette.metricCyan
+    }
+    private var lowerLabel: String {
+        guard let range else { return "" }
+        if let low = range.lowerBound { return "\(range.lowerInclusive ? "≥" : ">") \(format(low))" }
+        return range.upperBound == nil ? "" : "Acceptable below"
+    }
+    private var upperLabel: String {
+        guard let range else { return "" }
+        if let high = range.upperBound { return "\(range.upperInclusive ? "≤" : "<") \(format(high))" }
+        return range.lowerBound == nil ? "" : "Acceptable above"
+    }
+    private func format(_ number: Double) -> String { number.formatted(.number.precision(.fractionLength(0...2))) }
+    private var accessibilityText: String {
+        guard range != nil else { return "Reference range unavailable" }
+        return "Reference range shown; result status \(status.rawValue)"
+    }
+}
+
 // MARK: - Marker detail (history + trend + "compare with a signal")
 
 private struct MarkerDetailView: View {
@@ -708,6 +876,18 @@ private struct MarkerDetailView: View {
     }
     private var unit: String { readings.last?.unit ?? MarkerCatalog.definition(for: markerKey)?.canonicalUnit ?? "" }
     private var numericReadings: [LabMarkerRow] { readings.filter { $0.value != nil } }
+    private var latest: LabMarkerRow? { readings.last }
+    private var latestRange: BiomarkerReferenceRange? {
+        latestEvaluation.range
+    }
+    private var latestStatus: BiomarkerClinicalRangeStatus {
+        latestEvaluation.clinicalStatus
+    }
+    private var latestEvaluation: BiomarkerResultEvaluation {
+        BiomarkerEvaluator.evaluate(markerKey: markerKey, value: latest?.value, unit: latest?.unit ?? unit,
+                                    reportRangeText: latest?.referenceText)
+    }
+    private var guidance: BiomarkerGuidance? { MarkerCatalog.guidance(for: markerKey) }
 
     var body: some View {
         ScreenScaffold(title: LocalizedStringKey(displayName),
@@ -721,10 +901,12 @@ private struct MarkerDetailView: View {
                        lazy: true) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 latestHero
+                markerContextSection
                 trendSection
+                referenceContextSection
                 if !numericReadings.isEmpty { compareSection }
                 historySection
-                Text("These are your own numbers shown back to you. NOOP doesn't decide whether any value is normal, high or low.")
+                Text("These are your own numbers. Range labels compare a result only with the range saved from its report; they are not a diagnosis or a wellness rating.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -745,9 +927,16 @@ private struct MarkerDetailView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("LATEST RESULT").strandOverline().foregroundStyle(StrandPalette.metricCyan)
                 if let latest = readings.last {
-                    Text(valueLabel(latest))
-                        .font(StrandFont.display(42)).foregroundStyle(StrandPalette.textPrimary)
-                    Text(LabBookFormat.dayFromKey(latest.day))
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(valueLabel(latest))
+                            .font(StrandFont.display(42)).foregroundStyle(StrandPalette.textPrimary)
+                        Spacer()
+                        Text(detailStatusLabel)
+                            .font(StrandFont.footnote.weight(.semibold)).foregroundStyle(detailStatusColor)
+                    }
+                    BiomarkerRangeBar(value: latest.value, range: latestRange, status: latestStatus)
+                        .frame(height: 50)
+                    Text("Latest · \(LabBookFormat.dayFromKey(latest.day))")
                         .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
                     if let reference = latest.referenceText, !reference.isEmpty {
                         HStack(spacing: 6) {
@@ -760,6 +949,88 @@ private struct MarkerDetailView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var markerContextSection: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("What this marker is", overline: categoryLabel)
+            NoopCard(tint: StrandPalette.metricCyan) {
+                if let guidance {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(guidance.summary).font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        Text(guidance.whyItMatters).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    }.fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("A verified marker-specific explanation is not available yet. NOOP is showing your recorded value and history without adding unsourced medical interpretation.")
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private var referenceContextSection: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Reference context", overline: "Range and provenance")
+            NoopCard(tint: latestStatus == .unknown ? nil : StrandPalette.metricCyan) {
+                VStack(alignment: .leading, spacing: 9) {
+                    if let range = latestRange {
+                        HStack { Text("Applicable range"); Spacer(); Text(rangeDescription(range)) }
+                        HStack { Text("Unit"); Spacer(); Text(range.unit) }
+                        HStack { Text("Source"); Spacer(); Text("Your lab report") }
+                        Text("This range was parsed from the text saved with this result. It overrides no other source because NOOP currently ships no configured clinical ranges.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    } else {
+                        Text("Range unavailable").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                        Text("No unambiguous numeric range from the same lab report is attached to this result. NOOP will not substitute a generic range.")
+                            .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                    }
+                    Divider().overlay(StrandPalette.hairline)
+                    Text("General considerations") .strandOverline().foregroundStyle(StrandPalette.textTertiary)
+                    if let guidance {
+                        Text(guidance.commonInfluences.joined(separator: " · "))
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                        Text(guidance.whenToDiscussWithClinician)
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                        ForEach(guidance.sources, id: \.url) { source in
+                            if let url = URL(string: source.url) {
+                                Link("Source: \(source.authority) · reviewed \(source.reviewedOn)", destination: url)
+                                    .font(StrandFont.footnote)
+                            }
+                        }
+                    } else {
+                        Text("Marker-specific influences and next-step guidance will appear only after their educational content and provenance have been reviewed. Consider discussing persistent or unexpected results with a healthcare professional.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var categoryLabel: LocalizedStringKey {
+        guard let raw = latest?.category, let category = LabMarkerCategory(rawValue: raw) else { return "Biomarker" }
+        return LocalizedStringKey(category.displayName)
+    }
+    private var detailStatusLabel: String {
+        switch latestStatus {
+        case .below: return String(localized: "BELOW RANGE")
+        case .within: return String(localized: "IN RANGE")
+        case .above: return String(localized: "ABOVE RANGE")
+        case .unknown: return String(localized: "RANGE UNAVAILABLE")
+        }
+    }
+    private var detailStatusColor: Color {
+        latestStatus == .below || latestStatus == .above ? StrandPalette.statusWarning
+            : latestStatus == .within ? StrandPalette.metricCyan : StrandPalette.textTertiary
+    }
+    private func rangeDescription(_ range: BiomarkerReferenceRange) -> String {
+        let number: (Double) -> String = { $0.formatted(.number.precision(.fractionLength(0...2))) }
+        switch (range.lowerBound, range.upperBound) {
+        case let (low?, high?): return "\(number(low))–\(number(high))"
+        case let (nil, high?): return "\(range.upperInclusive ? "≤" : "<") \(number(high))"
+        case let (low?, nil): return "\(range.lowerInclusive ? "≥" : ">") \(number(low))"
+        default: return String(localized: "Unavailable")
         }
     }
 
@@ -1127,7 +1398,7 @@ private struct LabBookDisclaimerView: View {
             VStack(alignment: .leading, spacing: NoopMetrics.gap) {
                 bullet(String(localized: "NOOP stores and lines up the numbers you enter yourself. It does not test you, read your results, give medical advice, or diagnose anything."))
                 bullet(String(localized: "Anything you see here (including any side-by-side trend) is your own information shown back to you. It's an association, never a cause, and never a medical finding."))
-                bullet(String(localized: "NOOP never decides whether a value is \"normal,\" \"high,\" or \"low.\" Any reference range shown is exactly what you typed from your own report."))
+                bullet(String(localized: "NOOP supplies no clinical ranges. Below, within, or above labels are arithmetic comparisons with the range you saved from that result's own report, not a diagnosis or wellness rating."))
                 bullet(String(localized: "Your records never leave \(Platform.deviceNounPhrase). There's no account, no cloud, no NOOP server. Because NOOP is an independent app you run yourself (not a healthcare provider), it isn't \"HIPAA-covered,\" and that protection doesn't apply here; the safety comes from the data being local-only and yours."))
                 bullet(String(localized: "Always rely on your doctor, pharmacist, or a qualified professional to interpret results and make decisions. If a number worries you, talk to them, not to an app."))
                 Button("Got it") { dismiss() }

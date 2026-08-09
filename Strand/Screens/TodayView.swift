@@ -2014,15 +2014,15 @@ struct TodayView: View {
 
             HStack(alignment: .center) {
                 Text("My Day")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .font(.system(size: 27, weight: .bold, design: .rounded))
                     .foregroundStyle(StrandPalette.textPrimary)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
                 Button { router.requestQuickActions() } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 24, weight: .medium))
+                        .font(.system(size: 20, weight: .medium))
                         .foregroundStyle(Color.black)
-                        .frame(width: 48, height: 48)
+                        .frame(width: 40, height: 40)
                         .background(Color.white, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
                 }
                 .buttonStyle(.plain)
@@ -2158,7 +2158,7 @@ struct TodayView: View {
         if readings.contains(where: { $0.banding.band == .outOfRange }) {
             return (String(localized: "CHECK SIGNALS"), "\(inRange)/5", StrandPalette.statusWarning)
         }
-        return (String(localized: "WITHIN RANGE"), "\(inRange)/5", StrandPalette.statusPositive)
+        return (String(localized: "WITHIN RANGE"), "\(inRange)/5 Metrics", StrandPalette.statusPositive)
     }
 
     private var stressMonitorSummary: (status: String, value: String, tint: Color) {
@@ -2209,7 +2209,7 @@ struct TodayView: View {
             }
         }
         .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 138, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
         .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(StrandPalette.hairline, lineWidth: 0.75))
         .accessibilityElement(children: .combine)
@@ -2229,7 +2229,7 @@ struct TodayView: View {
                 .foregroundStyle(.white.opacity(0.8))
         }
         .padding(.horizontal, 18)
-        .frame(maxWidth: .infinity, minHeight: 76)
+        .frame(maxWidth: .infinity, minHeight: 64)
         .background(
             LinearGradient(colors: [Color(hex: "#575754"), Color(hex: "#29445D")],
                            startPoint: .leading, endPoint: .trailing),
@@ -2531,13 +2531,13 @@ struct TodayView: View {
         let session = sleepToday
         return HStack(spacing: 14) {
             HStack(spacing: 9) {
-                Image(systemName: "moon.fill").font(.system(size: 19, weight: .semibold))
+                Image(systemName: "moon.fill").font(.system(size: 16, weight: .semibold))
                 Text(session.map { hoursMinutes($0.endTs - $0.effectiveStartTs) } ?? "—")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 14)
-            .frame(width: 132, height: 62)
+            .frame(width: 112, height: 52)
             .background(StrandPalette.restColor.opacity(0.75), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             Text("SLEEP").font(.system(size: 15, weight: .bold, design: .rounded)).foregroundStyle(StrandPalette.textPrimary)
             Spacer(minLength: 4)
@@ -2558,12 +2558,12 @@ struct TodayView: View {
         let tint = isStrength ? StrandPalette.strain066 : StrandPalette.effortColor
         return HStack(spacing: 14) {
             HStack(spacing: 9) {
-                Image(systemName: sportSymbol(workout.sport)).font(.system(size: 19, weight: .semibold))
-                Text(workoutDuration(workout)).font(.system(size: 17, weight: .bold, design: .rounded))
+                Image(systemName: sportSymbol(workout.sport)).font(.system(size: 16, weight: .semibold))
+                Text(workoutDuration(workout)).font(.system(size: 15, weight: .bold, design: .rounded))
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .frame(width: 132, height: 62)
+            .padding(.horizontal, 10)
+            .frame(width: 112, height: 52)
             .background(tint, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
                 Text(isStrength ? "STRENGTH TRAINING" : LocalizedStringKey(title.uppercased()))
@@ -3700,12 +3700,14 @@ struct TodayView: View {
         // Design Reset: three EQUAL clean rings (no glow, faint track) in Charge / Effort / Rest order with
         // generous spacing, mirroring the flat mockup. Sized off width so they stay equal on any phone.
         let ring = Self.heroRingDiameter(rowWidth: measured)
-        HStack(alignment: .top, spacing: 22) {
+        HStack(alignment: .top, spacing: 26) {
             // Component 4: Charge/Rest badge their real per-day merge winner; Effort has no badge.
             // A1 (#514/#706): the Charge ring is TAPPABLE (a small chevron cue overlays the ring's bottom
             // edge, INSIDE the ring frame so it adds no stacked height, keeping the #762 self-sizing row
             // untouched). It opens the Charge breakdown sheet (the existing ChargeBreakdownSection), built
             // lazily on tap. No new badge/dot/tier sits under the ring (that would re-load the #762 stack).
+            
+            heroRingColumn(section: .rest, domain: .rest) { restRing(diameter: ring) }
             heroRingColumn(
                 section: .charge,
                 domain: .charge,
@@ -3714,8 +3716,9 @@ struct TodayView: View {
                 chargeRing(score: score, d: d, diameter: ring)
             }
             heroRingColumn(section: .effort, domain: .effort) { effortRing(d: d, diameter: ring) }
-            heroRingColumn(section: .rest, domain: .rest) { restRing(diameter: ring) }
+            
         }
+        .padding(.horizontal, 14)
         .frame(maxWidth: .infinity, alignment: .center)
         // Zero-impact width reader: a clear background that publishes the row's width up via preference. It
         // adds no visual and no intrinsic size, so the HStack's own (self-sizing) height is what lays out.
@@ -3735,9 +3738,9 @@ struct TodayView: View {
     /// Kotlin (the Android hero already reads its label from a localized resource, not the enum name).
     private static func domainLabel(_ domain: DomainTheme) -> LocalizedStringKey {
         switch domain {
-        case .charge: return "Charge"
-        case .effort: return "Effort"
-        case .rest:   return "Rest"
+        case .charge: return "Recovery"
+        case .effort: return "Strain"
+        case .rest:   return "Sleep"
         case .stress: return "Stress"
         }
     }
